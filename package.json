@@ -1,0 +1,10 @@
+{
+  "name": "openreconcile",
+  "version": "0.1.0",
+  "description": "Standalone open-source visual mass balance reconciliation tool",
+  "license": "MIT",
+  "repository": { "type": "git", "url": "https://github.com/SavaStosic3/openReconcile.git" },
+  "private": true,
+  "type": "module",
+  "scripts": { "start": "node server.mjs", "test": "node --test --test-isolation=none tests/*.test.js" }
+}

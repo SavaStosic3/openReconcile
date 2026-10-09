@@ -1,0 +1,70 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+  <meta name="description" content="Build a visual process model, add measurements, and reconcile your mass balance.">
+  <title>MassFlow · Mass Reconciliation</title>
+  <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='8' fill='%230d766e'/%3E%3Cpath d='M7 22V10l9 8 9-8v12' fill='none' stroke='white' stroke-width='3'/%3E%3C/svg%3E">
+  <link rel="stylesheet" href="./styles.css">
+  <script type="module" src="./app.js"></script>
+</head>
+<body>
+  <header class="topbar">
+    <a class="brand" href="./" aria-label="MassFlow home"><span class="brand-mark">M</span><span class="brand-text">MassFlow<small>PROCESS RECONCILIATION</small></span></a>
+    <div class="model-title"><label class="sr-only" for="model-name">Model name</label><input id="model-name" class="model-name" maxlength="160" value="Untitled plant"><span class="save-state" id="save-state">Saved in this browser</span></div>
+    <div class="top-actions"><button class="button secondary" id="help-button">Quick guide</button><button class="button primary" id="run-button"><span aria-hidden="true">▶</span> Run reconciliation</button></div>
+  </header>
+  <nav class="tabbar" role="tablist" aria-label="Workflow">
+    <button id="tab-model" class="tab active" role="tab" aria-selected="true" aria-controls="view-model" data-tab="model"><span class="tab-number">1</span> Flowsheet</button>
+    <button id="tab-data" class="tab" role="tab" aria-selected="false" aria-controls="view-data" data-tab="data"><span class="tab-number">2</span> Measurements <span id="meter-count" class="badge">3</span></button>
+    <button id="tab-results" class="tab" role="tab" aria-selected="false" aria-controls="view-results" data-tab="results"><span class="tab-number">3</span> Results</button>
+    <div class="tab-actions"><button class="text-button" id="new-button">New model</button><button class="text-button" id="demo-button">Load demo</button><span class="divider"></span><button class="text-button" id="import-button">Import</button><button class="text-button" id="export-button">Export model ↓</button><input type="file" id="import-file" accept="application/json,.json" hidden></div>
+  </nav>
+  <main class="workspace">
+    <section id="view-model" class="editor-layout" role="tabpanel" aria-labelledby="tab-model">
+      <aside class="palette">
+        <div class="panel-heading"><p class="eyebrow">YOUR TOOLBOX</p><h2>Build your flowsheet</h2><p class="helper">Drag a unit onto the canvas.<br>Or click to add it.</p></div>
+        <div class="palette-section"><h3>Process units</h3>
+          <button class="palette-item" draggable="true" data-kind="process"><span class="unit-glyph">▢</span><span>Process unit<small>Any mass-balanced operation</small></span><span class="drag-grip">⠿</span></button>
+          <button class="palette-item" draggable="true" data-kind="mixer"><span class="unit-glyph">⋈</span><span>Mixer<small>Combine material streams</small></span><span class="drag-grip">⠿</span></button>
+          <button class="palette-item" draggable="true" data-kind="splitter"><span class="unit-glyph">⑂</span><span>Splitter / separator<small>Divide an incoming stream</small></span><span class="drag-grip">⠿</span></button>
+        </div>
+        <div class="palette-section"><h3>Model boundaries</h3>
+          <button class="palette-item" draggable="true" data-kind="inlet"><span class="boundary-glyph">▶</span><span>Inflow<small>Material enters the model</small></span><span class="drag-grip">⠿</span></button>
+          <button class="palette-item" draggable="true" data-kind="outlet"><span class="boundary-glyph">▶</span><span>Outflow<small>Material leaves the model</small></span><span class="drag-grip">⠿</span></button>
+        </div>
+        <div class="palette-note"><span class="meter-dot">M</span><p>Add a meter by right-clicking any flow connection.</p></div>
+        <div class="scope-note">Total mass · no storage<br><span>Include every material path.</span></div>
+      </aside>
+      <div class="canvas-panel">
+        <div class="canvas-toolbar"><div class="tool-group" role="group" aria-label="Canvas tools"><button class="tool-button active" data-mode="select" title="Select and move (V)"><span aria-hidden="true">↖</span> Select</button><button class="tool-button" data-mode="connect" title="Connect units (C)"><span aria-hidden="true">↗</span> Connect</button><button class="tool-button" data-mode="pan" title="Pan canvas (H)"><span aria-hidden="true">✥</span> Pan</button></div><div class="tool-group"><button class="icon-button" id="undo-button" title="Undo (Ctrl+Z)" aria-label="Undo">↶</button><button class="icon-button" id="redo-button" title="Redo (Ctrl+Shift+Z)" aria-label="Redo">↷</button><span class="divider"></span><button class="icon-button" id="zoom-out" aria-label="Zoom out">−</button><button class="icon-button" id="zoom-in" aria-label="Zoom in">+</button><button class="tool-button" id="fit-button">Fit</button></div></div>
+        <div class="canvas-container"><svg id="flowsheet" aria-label="Plant flowsheet" tabindex="0"></svg><div id="canvas-empty" class="canvas-empty hidden"><span class="empty-diagram">▢ → ▢</span><h2>A plant starts with one unit.</h2><p>Drag a process unit here, then add an inflow and an outflow.</p><button class="button secondary" id="empty-demo">Try the example model</button></div></div>
+        <div class="canvas-footer"><span id="canvas-status">Drag a port to another unit to connect. Right-click a stream to add a meter.</span><span id="model-count">5 units · 4 streams</span></div>
+      </div>
+      <aside class="inspector" id="inspector"></aside>
+    </section>
+    <section id="view-data" class="data-view hidden" role="tabpanel" aria-labelledby="tab-data">
+      <div class="view-header"><div><p class="eyebrow">STEP 02 / INPUT DATA</p><h1>Give your meters a reading.</h1><p class="muted">Enter measurements for this batch. Unmetered streams will be inferred where the model allows.</p></div><div class="batch-controls"><label for="batch-period">Reporting interval</label><select id="batch-period"><option value="1">Hourly · 1 hour</option><option value="24">Daily · 24 hours</option><option value="custom">Custom interval</option></select><label id="custom-hours-label" class="hidden">Hours <input type="number" id="custom-hours" min="0.001" step="any" aria-label="Custom batch duration in hours"></label></div></div>
+      <div class="data-tip"><span class="status-dot"></span><span>Uncertainty is <strong>one standard deviation (1σ)</strong>. A larger uncertainty gives a reading less weight.</span><button class="text-button" id="sample-readings">Reset demo readings</button></div>
+      <div class="table-wrap"><table class="data-table"><thead><tr><th>Stream / material</th><th>From → to</th><th>Measurement</th><th>Reading</th><th>Uncertainty (1σ)</th><th>Mass for this batch</th></tr></thead><tbody id="measurement-rows"></tbody></table></div>
+      <div class="data-bottom"><p class="helper">Density is treated as a fixed conversion factor. Temperature and pressure are reference properties; automatic gas compensation and component balances are outside this MVP.</p><button class="button primary" id="data-run-button">▶ Run reconciliation</button></div>
+    </section>
+    <section id="view-results" class="results-view hidden" role="tabpanel" aria-labelledby="tab-results"></section>
+  </main>
+  <dialog id="stream-dialog" class="dialog"><form id="stream-form"><div class="dialog-header"><div><p class="eyebrow">FLOW CONNECTION</p><h2>Stream properties</h2></div><button type="button" class="icon-button close-dialog" aria-label="Close stream properties">×</button></div><div class="dialog-body">
+    <div class="connection-summary" id="stream-connection"></div>
+    <div class="field-grid"><label class="field">Stream label<input name="name" maxlength="100" required></label><label class="field">Material<input name="material" maxlength="160" required></label></div>
+    <h3 class="form-section-title">Material properties</h3>
+    <div class="field-grid"><label class="field">Phase<select name="phase"><option>Liquid</option><option>Gas</option><option>Solid</option><option>Slurry</option><option>Mixed</option></select></label><label class="field">Density · kg/m³<input name="density" type="number" min="0.000001" step="any" required></label><label class="field">Temperature · °C<input name="temperature" type="number" step="any"></label><label class="field">Pressure · kPa absolute<input name="pressure" type="number" min="0" step="any"></label></div>
+    <p class="helper">Use density at the same conditions as your volume measurement. These properties describe this stream; only density converts volume to mass.</p>
+    <div class="meter-option"><label class="checkbox-field"><input name="measured" type="checkbox"><span><strong>Add a measurement meter</strong><small>Displays an M symbol on the flow connection.</small></span></label></div>
+    <div id="meter-fields"><div class="field-grid"><label class="field">Measurement type<select name="metric"></select></label><label class="field">Unit<select name="unit"></select></label><label class="field">Reading <span class="optional">optional for now</span><input name="value" type="number" min="0" step="any" placeholder="Enter on the Measurements tab"></label><label class="field">Uncertainty (1σ)<div class="input-pair"><input name="uncertainty" type="number" min="0.000001" step="any"><select name="uncertaintyType" aria-label="Uncertainty format"><option value="percent">% of reading</option><option value="absolute">In reading unit</option></select></div></label></div></div>
+    <p class="form-error hidden" id="stream-error" role="alert"></p>
+    </div><div class="dialog-footer"><button type="button" id="delete-stream" class="text-button danger">Delete connection</button><div><button type="button" class="button secondary close-dialog">Cancel</button><button type="submit" class="button primary">Save stream</button></div></div></form></dialog>
+  <dialog id="node-dialog" class="dialog small-dialog"><form id="node-form"><div class="dialog-header"><h2>Edit process unit</h2><button type="button" class="icon-button close-dialog" aria-label="Close process unit properties">×</button></div><div class="dialog-body"><label class="field">Unit name<input name="name" maxlength="100" required></label><p class="helper" id="node-note"></p></div><div class="dialog-footer"><button type="button" id="delete-node" class="text-button danger">Delete unit & connections</button><button class="button primary" type="submit">Save unit</button></div></form></dialog>
+  <dialog id="help-dialog" class="dialog"><div class="dialog-header"><div><p class="eyebrow">A TWO-MINUTE INTRODUCTION</p><h2>From flowsheet to balanced data.</h2></div><button class="icon-button close-dialog" aria-label="Close quick guide">×</button></div><div class="dialog-body"><div class="steps"><div class="step"><span>1</span><div><h3>Place your units</h3><p>Drag a process unit from the toolbox. Add red inflow and outflow triangles to mark your model boundaries.</p></div></div><div class="step"><span>2</span><div><h3>Connect the material paths</h3><p>Drag a unit's right-hand port to the next unit's left-hand port. Or choose Connect, click the source, then click the destination.</p></div></div><div class="step"><span>3</span><div><h3>Add meters and batch readings</h3><p>Right-click a line, enter its material properties, and enable a meter. Open Measurements to enter its reading and uncertainty.</p></div></div><div class="step"><span>4</span><div><h3>Run and review</h3><p>Run reconciliation. Compare measured and reconciled masses, review adjustments, and check which unmetered streams can be inferred.</p></div></div></div><div class="help-note"><strong>What this model assumes</strong><p>No accumulation inside process units. Include all inflows, products, waste and vent paths. A closed balance estimates consistency; it does not prove every meter is correct.</p></div><p class="helper">Double-click a unit to rename it. Double-click a line to edit it. Delete removes the selection. Scroll to zoom. Ctrl+Z undoes edits. Export a JSON file to move a model to another browser.</p></div><div class="dialog-footer"><span class="helper">Runs in your browser. No measurements are sent to a server.</span><button class="button primary close-dialog">Start building</button></div></dialog>
+  <dialog id="confirm-dialog" class="dialog small-dialog"><div class="dialog-header"><h2 id="confirm-title">Replace this model?</h2></div><div class="dialog-body"><p id="confirm-message">Export your current model first if you want to keep a separate copy. You can also undo this change.</p></div><div class="dialog-footer"><button class="button secondary" id="confirm-cancel">Cancel</button><button class="button primary" id="confirm-ok">Continue</button></div></dialog>
+  <div id="toast" class="toast hidden" role="status" aria-live="polite"></div>
+  <noscript><p>This application needs JavaScript to edit flowsheets and run reconciliation.</p></noscript>
+</body>
+</html>

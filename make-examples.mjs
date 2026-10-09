@@ -1,0 +1,10 @@
+import { exampleModel } from './dist/model.js';
+import { mkdir, writeFile } from 'node:fs/promises';
+await mkdir(new URL('./examples/', import.meta.url), { recursive: true });
+const demo = exampleModel();
+await writeFile(new URL('./examples/feed-and-separation.json', import.meta.url), JSON.stringify(demo, null, 2));
+const ambiguous = exampleModel();
+ambiguous.name = 'Example · missing outlet measurements';
+ambiguous.streams.find(s => s.id === 'f3').measured = false;
+ambiguous.streams.find(s => s.id === 'f4').measured = false;
+await writeFile(new URL('./examples/missing-outlet-measurements.json', import.meta.url), JSON.stringify(ambiguous, null, 2));

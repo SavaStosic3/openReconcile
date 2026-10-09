@@ -1,0 +1,112 @@
+{
+  "version": 1,
+  "name": "Demo · feed & separation",
+  "periodHours": 1,
+  "nodes": [
+    {
+      "id": "feed",
+      "kind": "inlet",
+      "name": "Raw feed",
+      "x": 100,
+      "y": 260
+    },
+    {
+      "id": "mix",
+      "kind": "mixer",
+      "name": "Feed mixer",
+      "x": 350,
+      "y": 260
+    },
+    {
+      "id": "split",
+      "kind": "splitter",
+      "name": "Separator",
+      "x": 620,
+      "y": 260
+    },
+    {
+      "id": "product",
+      "kind": "outlet",
+      "name": "Product",
+      "x": 920,
+      "y": 140
+    },
+    {
+      "id": "byproduct",
+      "kind": "outlet",
+      "name": "By-product",
+      "x": 920,
+      "y": 380
+    }
+  ],
+  "streams": [
+    {
+      "id": "f1",
+      "source": "feed",
+      "target": "mix",
+      "name": "F-01",
+      "material": "Feedstock",
+      "phase": "Liquid",
+      "density": 1000,
+      "temperature": 20,
+      "pressure": 101.325,
+      "measured": true,
+      "metric": "mass",
+      "unit": "kg",
+      "value": 100,
+      "uncertainty": 1,
+      "uncertaintyType": "absolute"
+    },
+    {
+      "id": "f2",
+      "source": "mix",
+      "target": "split",
+      "name": "F-02",
+      "material": "Mixed feed",
+      "phase": "Liquid",
+      "density": 1000,
+      "temperature": 20,
+      "pressure": 101.325,
+      "measured": false,
+      "metric": "mass",
+      "unit": "kg",
+      "value": "",
+      "uncertainty": 2,
+      "uncertaintyType": "percent"
+    },
+    {
+      "id": "f3",
+      "source": "split",
+      "target": "product",
+      "name": "F-03",
+      "material": "Product",
+      "phase": "Liquid",
+      "density": 1000,
+      "temperature": 20,
+      "pressure": 101.325,
+      "measured": true,
+      "metric": "mass",
+      "unit": "kg",
+      "value": 60,
+      "uncertainty": 2,
+      "uncertaintyType": "absolute"
+    },
+    {
+      "id": "f4",
+      "source": "split",
+      "target": "byproduct",
+      "name": "F-04",
+      "material": "By-product",
+      "phase": "Liquid",
+      "density": 1000,
+      "temperature": 20,
+      "pressure": 101.325,
+      "measured": true,
+      "metric": "mass",
+      "unit": "kg",
+      "value": 35,
+      "uncertainty": 2,
+      "uncertaintyType": "absolute"
+    }
+  ]
+}

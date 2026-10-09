@@ -1,0 +1,380 @@
+import { measurementToMass, validateModel } from './model.js';
+
+// This solver handles total mass over one interval, fixed density conversions,
+// independent measurement errors, exact conservation, and nonnegative streams.
+// Unmeasured streams have no objective term. A representative of a nonunique
+// solution is used internally, but never exposed as an inferred measurement.
+const EPS = Number.EPSILON;
+const ZERO = 1e-9;
+const dot = (a, b) => a.reduce((s, v, i) => s + v * b[i], 0);
+const norm = a => Math.hypot(...a);
+
+function orthonormalize(vectors) {
+  const basis = [];
+  for (const input of vectors) {
+    const v = [...input];
+    // Two passes limit the loss of orthogonality in dependent process networks.
+    for (let pass = 0; pass < 2; pass++) for (const q of basis) {
+      const projection = dot(q, v);
+      for (let i = 0; i < v.length; i++) v[i] -= projection * q[i];
+    }
+    const length = norm(v);
+    if (length > 128 * EPS * Math.max(1, v.length)) basis.push(v.map(x => x / length));
+  }
+  return basis;
+}
+
+function nullSpace(rows, columns) {
+  const a = rows.map(row => [...row]);
+  const pivots = [];
+  let pivotRow = 0;
+  const tolerance = 128 * EPS * Math.max(1, rows.length, columns);
+  for (let col = 0; col < columns && pivotRow < a.length; col++) {
+    let best = pivotRow;
+    for (let row = pivotRow + 1; row < a.length; row++) if (Math.abs(a[row][col]) > Math.abs(a[best][col])) best = row;
+    if (Math.abs(a[best][col]) <= tolerance) continue;
+    [a[pivotRow], a[best]] = [a[best], a[pivotRow]];
+    const pivot = a[pivotRow][col];
+    for (let j = col; j < columns; j++) a[pivotRow][j] /= pivot;
+    for (let row = 0; row < a.length; row++) if (row !== pivotRow) {
+      const factor = a[row][col];
+      if (Math.abs(factor) <= tolerance) { a[row][col] = 0; continue; }
+      for (let j = col; j < columns; j++) a[row][j] -= factor * a[pivotRow][j];
+      a[row][col] = 0;
+    }
+    pivots.push(col);
+    pivotRow++;
+  }
+  const pivotSet = new Set(pivots), vectors = [];
+  for (let col = 0; col < columns; col++) if (!pivotSet.has(col)) {
+    const v = Array(columns).fill(0); v[col] = 1;
+    for (let row = 0; row < pivots.length; row++) v[pivots[row]] = -a[row][col];
+    vectors.push(v);
+  }
+  return { basis: orthonormalize(vectors), rank: pivots.length };
+}
+
+// Householder QR with column pivoting. The second projection selects the
+// minimum-norm correction in flat (unmeasured) directions; it is not evidence
+// that those directions have identifiable values.
+function leastSquares(matrix, rhs, columns) {
+  const m = matrix.length, n = columns;
+  const a = matrix.map(row => [...row]), b = [...rhs];
+  const permutation = Array.from({ length: n }, (_, i) => i);
+  let initialNorm = 0;
+  for (let j = 0; j < n; j++) initialNorm = Math.max(initialNorm, norm(a.map(row => row[j])));
+  const tolerance = 128 * EPS * Math.max(1, m, n) * initialNorm;
+  let rank = 0;
+  for (let j = 0; j < Math.min(m, n); j++) {
+    let best = j, bestNorm = 0;
+    for (let col = j; col < n; col++) {
+      const length = norm(a.slice(j).map(row => row[col]));
+      if (length > bestNorm) { bestNorm = length; best = col; }
+    }
+    if (bestNorm <= tolerance || bestNorm === 0) break;
+    if (best !== j) {
+      for (const row of a) [row[j], row[best]] = [row[best], row[j]];
+      [permutation[j], permutation[best]] = [permutation[best], permutation[j]];
+    }
+    const alpha = a[j][j] >= 0 ? -bestNorm : bestNorm;
+    const v = a.slice(j).map(row => row[j]); v[0] -= alpha;
+    const vn = norm(v);
+    for (let i = 0; i < v.length; i++) v[i] /= vn;
+    for (let col = j; col < n; col++) {
+      let projection = 0;
+      for (let i = j; i < m; i++) projection += v[i - j] * a[i][col];
+      for (let i = j; i < m; i++) a[i][col] -= 2 * v[i - j] * projection;
+    }
+    let projection = 0;
+    for (let i = j; i < m; i++) projection += v[i - j] * b[i];
+    for (let i = j; i < m; i++) b[i] -= 2 * v[i - j] * projection;
+    a[j][j] = alpha;
+    for (let i = j + 1; i < m; i++) a[i][j] = 0;
+    rank++;
+  }
+  const triangularSolve = target => {
+    const z = Array(rank).fill(0);
+    for (let i = rank - 1; i >= 0; i--) {
+      let value = target[i];
+      for (let j = i + 1; j < rank; j++) value -= a[i][j] * z[j];
+      z[i] = value / a[i][i];
+    }
+    return z;
+  };
+  const pivoted = Array(n).fill(0);
+  const leading = triangularSolve(b.slice(0, rank));
+  for (let i = 0; i < rank; i++) pivoted[i] = leading[i];
+  const nullVectors = [];
+  for (let j = rank; j < n; j++) {
+    const v = Array(n).fill(0); v[j] = 1;
+    const leadingNull = triangularSolve(Array.from({ length: rank }, (_, i) => -a[i][j]));
+    for (let i = 0; i < rank; i++) v[i] = leadingNull[i];
+    nullVectors.push(v);
+  }
+  const pivotedNull = orthonormalize(nullVectors);
+  for (const v of pivotedNull) {
+    const projection = dot(v, pivoted);
+    for (let i = 0; i < n; i++) pivoted[i] -= projection * v[i];
+  }
+  const unpermute = v => {
+    const output = Array(n).fill(0);
+    for (let i = 0; i < n; i++) output[permutation[i]] = v[i];
+    return output;
+  };
+  return {
+    solution: unpermute(pivoted), rank, nullBasis: pivotedNull.map(unpermute),
+    variance(row) {
+      // For an observable coordinate a, a^T z is independent of null(B).
+      // Its variance under unit whitened noise is ||R11^{-T} a1||^2.
+      const permuted = permutation.map(i => row[i]), u = Array(rank).fill(0);
+      for (let i = 0; i < rank; i++) {
+        let value = permuted[i];
+        for (let j = 0; j < i; j++) value -= a[j][i] * u[j];
+        u[i] = value / a[i][i];
+      }
+      return dot(u, u);
+    }
+  };
+}
+
+function graphModel(model) {
+  const internal = model.nodes.filter(n => n.kind !== 'inlet' && n.kind !== 'outlet');
+  const internalIndex = new Map(internal.map((n, i) => [n.id, i]));
+  const boundary = internal.length;
+  const edges = model.streams.map(s => ({ from: internalIndex.get(s.source) ?? boundary, to: internalIndex.get(s.target) ?? boundary }));
+  const a = internal.map((_, row) => edges.map(e => (e.to === row ? 1 : 0) - (e.from === row ? 1 : 0)));
+  const adjacency = Array.from({ length: internal.length + 1 }, () => []);
+  edges.forEach((edge, index) => adjacency[edge.from].push({ to: edge.to, index }));
+  const reachable = (start, end, skip = -1, arcs = adjacency) => {
+    if (start === end) return true;
+    const seen = new Set([start]), queue = [start];
+    for (let at = 0; at < queue.length; at++) for (const arc of arcs[queue[at]]) {
+      if (arc.index === skip || seen.has(arc.to)) continue;
+      if (arc.to === end) return true;
+      seen.add(arc.to); queue.push(arc.to);
+    }
+    return false;
+  };
+  // In a homogeneous directed network a positive feasible flow is a sum of
+  // cycles (all external boundaries are collapsed to the reservoir node).
+  const viable = edges.map((e, i) => reachable(e.to, e.from, i));
+  return { internal, a, edges, vertices: adjacency.length, viable, reachable };
+}
+
+function solveOnFace(a, free, x, measurements, sigmaScale) {
+  if (!free.length) return Array(x.length).fill(0);
+  const space = nullSpace(a.map(row => free.map(i => row[i])), free.length).basis;
+  if (!space.length) return Array(x.length).fill(0);
+  const index = new Map(free.map((i, j) => [i, j]));
+  const relevant = measurements.filter(m => index.has(m.index));
+  const b = relevant.map(m => space.map(v => v[index.get(m.index)] * sigmaScale / m.sigma));
+  const target = relevant.map(m => (m.value - x[m.index]) * sigmaScale / m.sigma);
+  const ls = leastSquares(b, target, space.length);
+  const correction = Array(x.length).fill(0);
+  for (let j = 0; j < free.length; j++) for (let k = 0; k < space.length; k++) correction[free[j]] += space[k][j] * ls.solution[k];
+  return correction;
+}
+
+function negativeCycle(graph, x, gradient) {
+  const arcs = [];
+  const scales = new Map();
+  gradient.forEach((value, i) => {
+    if (graph.viable[i]) {
+      const component = graph.edgeComponent[i];
+      scales.set(component, Math.max(scales.get(component) || 0, Math.abs(value)));
+    }
+  });
+  if (![...scales.values()].some(value => value > 0)) return null;
+  graph.edges.forEach((e, index) => {
+    if (!graph.viable[index]) return;
+    const scale = scales.get(graph.edgeComponent[index]);
+    if (!scale) return;
+    arcs.push({ from: e.from, to: e.to, index, direction: 1, cost: gradient[index] / scale });
+    if (x[index] > ZERO) arcs.push({ from: e.to, to: e.from, index, direction: -1, cost: -gradient[index] / scale });
+  });
+  const distance = Array(graph.vertices).fill(0), previous = Array(graph.vertices).fill(null);
+  let changed = -1;
+  const tolerance = 256 * EPS * Math.max(1, graph.vertices);
+  for (let pass = 0; pass < graph.vertices; pass++) {
+    changed = -1;
+    for (const arc of arcs) if (distance[arc.to] > distance[arc.from] + arc.cost + tolerance) {
+      distance[arc.to] = distance[arc.from] + arc.cost;
+      previous[arc.to] = arc; changed = arc.to;
+    }
+    if (changed < 0) return null;
+  }
+  let vertex = changed;
+  for (let i = 0; i < graph.vertices; i++) {
+    if (!previous[vertex]) return null;
+    vertex = previous[vertex].from;
+  }
+  const start = vertex, cycle = [];
+  do {
+    const arc = previous[vertex];
+    if (!arc || cycle.length > graph.vertices) return null;
+    cycle.push(arc); vertex = arc.from;
+  } while (vertex !== start);
+  const direction = new Map();
+  for (const arc of cycle) direction.set(arc.index, (direction.get(arc.index) || 0) + arc.direction);
+  for (const [index, d] of direction) if (d === 0) direction.delete(index);
+  const cost = [...direction].reduce((sum, [index, d]) => sum + gradient[index] / scales.get(graph.edgeComponent[index]) * d, 0);
+  return cost < -tolerance ? direction : null;
+}
+
+function nonnegativeFit(graph, measurements, sigmaScale) {
+  const n = graph.edges.length;
+  const all = graph.viable.flatMap((value, i) => value ? [i] : []);
+  const x = Array(n).fill(0);
+  const unconstrained = solveOnFace(graph.a, all, x, measurements, sigmaScale);
+  if (unconstrained.every(value => Number.isFinite(value) && value >= -ZERO)) return unconstrained.map(value => Math.max(0, value));
+  const weights = Array(n).fill(0), observed = Array(n).fill(0);
+  for (const m of measurements) { weights[m.index] = (sigmaScale / m.sigma) ** 2; observed[m.index] = m.value; }
+  for (let iteration = 0; iteration < 3000; iteration++) {
+    const gradient = x.map((value, i) => weights[i] * (value - observed[i]));
+    const cycle = negativeCycle(graph, x, gradient);
+    if (!cycle) return x;
+    let curvature = 0, slope = 0, limit = Infinity;
+    for (const [i, direction] of cycle) {
+      curvature += weights[i] * direction ** 2;
+      slope += gradient[i] * direction;
+      if (direction < 0) limit = Math.min(limit, x[i] / -direction);
+    }
+    const step = Math.min(-slope / curvature, limit);
+    if (!(curvature > 0) || !(step > 0) || !Number.isFinite(step)) throw new Error('The numerical optimizer could not find a reliable nonnegative step.');
+    for (const [i, direction] of cycle) x[i] = Math.max(0, x[i] + step * direction);
+    let free = all.filter(i => x[i] > ZERO);
+    // Exact least-squares correction on the current face, with a feasible line
+    // search to any new zero bounds. Each truncated step removes a free edge.
+    for (let face = 0; face <= n; face++) {
+      const direction = solveOnFace(graph.a, free, x, measurements, sigmaScale);
+      let fraction = 1, hit = -1;
+      for (const i of free) if (direction[i] < 0 && x[i] + direction[i] < 0) {
+        const candidate = x[i] / -direction[i];
+        if (candidate < fraction) { fraction = candidate; hit = i; }
+      }
+      for (const i of free) x[i] = Math.max(0, x[i] + fraction * direction[i]);
+      if (hit >= 0) x[hit] = 0;
+      const next = free.filter(i => x[i] > ZERO);
+      if (fraction >= 1 || !next.length) break;
+      if (next.length >= free.length) throw new Error('The numerical optimizer stalled at a nonnegative bound.');
+      free = next;
+    }
+  }
+  throw new Error('The numerical optimizer did not converge. Check the model and uncertainty scales.');
+}
+
+function components(model) {
+  const adjacency = new Map(model.nodes.map(n => [n.id, []]));
+  for (const s of model.streams) { adjacency.get(s.source).push(s.target); adjacency.get(s.target).push(s.source); }
+  const seen = new Set(), nodeComponent = new Map(); let count = 0;
+  for (const n of model.nodes) if (!seen.has(n.id)) {
+    count++; const queue = [n.id]; seen.add(n.id); nodeComponent.set(n.id, count);
+    for (let i = 0; i < queue.length; i++) for (const id of adjacency.get(queue[i])) if (!seen.has(id)) { seen.add(id); nodeComponent.set(id, count); queue.push(id); }
+  }
+  return { count, streamComponent: model.streams.map(s => nodeComponent.get(s.source)) };
+}
+
+function invalid(message) {
+  return { status: 'invalid', message, objective: null, degreesOfFreedom: 0, streams: [], balances: [], warnings: [] };
+}
+
+export function reconcile(model) {
+  try {
+    validateModel(model);
+    if (!model.nodes.length || !model.streams.length) return invalid('Add process units and connected flows before reconciling.');
+    const connectivity = components(model);
+    const graph = { ...graphModel(model), edgeComponent: connectivity.streamComponent }, measurements = [], byIndex = new Map(), warnings = [];
+    model.streams.forEach((s, index) => {
+      if (!s.measured) return;
+      const converted = measurementToMass(s, model.periodHours);
+      if (!Number.isFinite(converted.value) || !Number.isFinite(converted.sigma) || !(converted.sigma > 0)) throw new Error(`${s.name}: converted mass and uncertainty must be finite.`);
+      const measurement = { index, ...converted }; measurements.push(measurement); byIndex.set(index, measurement);
+    });
+    const sigmaScale = measurements.length ? Math.min(...measurements.map(m => m.sigma)) : 1;
+    const viable = graph.viable.flatMap((value, i) => value ? [i] : []);
+    const restricted = nullSpace(graph.a.map(row => viable.map(i => row[i])), viable.length);
+    const base = restricted.basis.map(v => {
+      const embedded = Array(model.streams.length).fill(0);
+      viable.forEach((index, j) => { embedded[index] = v[j]; }); return embedded;
+    });
+    const measuredRows = measurements.map(m => base.map(v => v[m.index]));
+    const unweightedRank = leastSquares(measuredRows, measurements.map(() => 0), base.length).rank;
+    const whitened = measuredRows.map((row, i) => row.map(value => value * sigmaScale / measurements[i].sigma));
+    const decomposition = leastSquares(whitened, measurements.map(m => m.value * sigmaScale / m.sigma), base.length);
+    if (decomposition.rank !== unweightedRank) return invalid('The uncertainty scales make the numerical problem ill-conditioned. Check uncertainties before using results.');
+    const values = nonnegativeFit(graph, measurements, sigmaScale);
+    if (values.some(v => !Number.isFinite(v) || v < -ZERO)) return invalid('The numerical optimizer returned an unreliable flow. Results were withheld.');
+    for (const row of graph.a) {
+      const residual = dot(row, values), magnitude = row.reduce((sum, coefficient, i) => sum + Math.abs(coefficient * values[i]), 0);
+      if (Math.abs(residual) > 1e-7 * Math.max(1, magnitude)) return invalid('Conservation could not be satisfied within numerical tolerance. Results were withheld.');
+    }
+    const objective = measurements.reduce((sum, m) => sum + ((values[m.index] - m.value) / m.sigma) ** 2, 0);
+    if (!Number.isFinite(objective)) return invalid('The objective overflowed. Check measurement and uncertainty scales.');
+    const degreesOfFreedom = measurements.length - decomposition.rank;
+    const missingArcs = Array.from({ length: graph.vertices }, () => []);
+    graph.edges.forEach((e, i) => {
+      if (byIndex.has(i) || !graph.viable[i]) return;
+      missingArcs[e.from].push({ to: e.to, index: i });
+      if (values[i] > ZERO) missingArcs[e.to].push({ to: e.from, index: i });
+    });
+    const boundComponents = new Set();
+    let unobservableCount = 0;
+    const streams = model.streams.map((s, i) => {
+      const measurement = byIndex.get(i), row = base.map(v => v[i]);
+      const linearObservable = decomposition.nullBasis.every(v => Math.abs(dot(v, row)) < 1e-8);
+      const e = graph.edges[i];
+      const canVary = !measurement && !linearObservable && (
+        graph.reachable(e.to, e.from, i, missingArcs) ||
+        (values[i] > ZERO && graph.reachable(e.from, e.to, i, missingArcs))
+      );
+      if (canVary) {
+        unobservableCount++;
+        return { id: s.id, raw: null, value: null, sigma: null, correction: null, normalizedCorrection: null, uncertainty: null, status: 'unobservable' };
+      }
+      const value = values[i] <= ZERO ? 0 : values[i];
+      // An edge outside every directed cycle is identically zero by linear
+      // conservation plus network topology. That is distinct from a clamp at
+      // the boundary of an otherwise feasible flow and does not invalidate
+      // Gaussian covariance elsewhere in the connected process.
+      const atBound = value === 0 && graph.viable[i];
+      if (atBound || !linearObservable) boundComponents.add(connectivity.streamComponent[i]);
+      const variance = linearObservable ? decomposition.variance(row) * sigmaScale ** 2 : null;
+      const uncertainty = !atBound && variance !== null && Number.isFinite(variance) ? Math.sqrt(Math.max(0, variance)) : null;
+      return {
+        id: s.id, raw: measurement?.value ?? null, value, sigma: measurement?.sigma ?? null,
+        correction: measurement ? value - measurement.value : null,
+        normalizedCorrection: measurement ? (value - measurement.value) / measurement.sigma : null,
+        uncertainty, status: measurement ? 'measured' : 'estimated', atBound
+      };
+    });
+    if (boundComponents.size) streams.forEach((s, i) => {
+      if (boundComponents.has(connectivity.streamComponent[i])) s.uncertainty = null;
+    });
+    const balances = graph.internal.map((node, row) => {
+      const coefficients = graph.a[row];
+      const complete = coefficients.every((coefficient, i) => coefficient === 0 || byIndex.has(i));
+      return { id: node.id, name: node.name, raw: complete ? coefficients.reduce((sum, c, i) => sum + c * (byIndex.get(i)?.value ?? 0), 0) : null, reconciled: dot(coefficients, values) };
+    });
+    if (!measurements.length) warnings.push('No streams are measured. Conservation alone may determine only zero flows; add measurements to estimate throughput.');
+    if (unobservableCount) warnings.push(`${unobservableCount} unmeasured stream${unobservableCount === 1 ? ' is' : 's are'} not uniquely identifiable. Add independent measurements or revise the topology; no arbitrary estimates are shown.`);
+    const forcedZero = graph.viable.filter(v => !v).length;
+    if (forcedZero) warnings.push(`${forcedZero} stream${forcedZero === 1 ? ' cannot' : 's cannot'} carry nonzero flow in this steady-state topology. Check missing boundary connections or inventory changes.`);
+    if (connectivity.count > 1) warnings.push('The model has disconnected components. Each connected process is reconciled independently.');
+    if (measurements.some(m => model.streams[m.index].metric.startsWith('volume'))) warnings.push('Densities are fixed conversion inputs. Density uncertainty and shared-input correlations are not modeled.');
+    if (boundComponents.size) warnings.push('One or more flows are determined at a nonnegative bound. Reconciled uncertainties are withheld for the affected connected process; Gaussian uncertainty and chi-square assumptions may not hold.');
+    if (degreesOfFreedom === 0 && measurements.length) warnings.push('There is no independent measurement redundancy. Exact closure alone cannot test the measurements for consistency.');
+    if (degreesOfFreedom > 0) {
+      // Wilson-Hilferty approximation to the 99% chi-square quantile. This is a
+      // global inconsistency flag under the stated Gaussian interior model,
+      // not identification of a particular faulty meter.
+      const threshold = degreesOfFreedom * (1 - 2 / (9 * degreesOfFreedom) + 2.326347874 * Math.sqrt(2 / (9 * degreesOfFreedom))) ** 3;
+      if (objective > threshold) warnings.push('The overall disagreement is larger than expected under the stated uncertainties. Check readings, units, timing, inventory changes and unmodeled paths; this does not identify a bad meter.');
+    }
+    const status = unobservableCount ? 'underdetermined' : warnings.length ? 'warning' : 'ok';
+    return {
+      status,
+      message: unobservableCount ? 'Observable streams are reconciled; some missing flows remain undetermined.' : warnings.length ? 'Reconciliation completed. Review the model and data warnings.' : 'Reconciliation completed with exact modeled mass conservation.',
+      objective, degreesOfFreedom, streams, balances, warnings
+    };
+  } catch (error) { return invalid(error instanceof Error ? error.message : 'The model could not be reconciled.'); }
+}
