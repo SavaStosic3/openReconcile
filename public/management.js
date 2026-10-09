@@ -105,13 +105,16 @@ export function createManagement({ fallbackModel, beforeAction, onActivate, onRu
     $('#run-button').hidden = false;
     $('#help-button').hidden = false;
   }
-  function activate(id, flush = true) {
+  function activate(id, options = {}) {
+    if (typeof options === 'boolean') options = { flush: options };
+    const { flush = true, view } = options;
+    if (view !== undefined && !['published', 'editing'].includes(view)) throw new Error('Choose the published model or model editor.');
     if (backend) return (async () => {
       if (flush) beforeAction?.();
       await backend.flush();
       backend.select(id); pullShared(); selectedId = id;
       leaveManagement();
-      onActivate?.(clone(id ? getModelEntry(catalog, id) : { id: null, model: fallbackModel }));
+      onActivate?.(clone(id ? getModelEntry(catalog, id) : { id: null, model: fallbackModel }), view ? { view } : undefined);
       return true;
     })().catch(error => { onToast?.(error.message); return false; });
     if (flush) beforeAction?.();
@@ -120,7 +123,7 @@ export function createManagement({ fallbackModel, beforeAction, onActivate, onRu
     editorBaseline = JSON.stringify(getModelEntry(catalog, id).model);
     selectedId = id;
     leaveManagement();
-    onActivate?.(clone(getModelEntry(catalog, id)));
+    onActivate?.(clone(getModelEntry(catalog, id)), view ? { view } : undefined);
     return true;
   }
   function sourceOptions(direction, selection) {
@@ -149,6 +152,20 @@ export function createManagement({ fallbackModel, beforeAction, onActivate, onRu
     const { value, unit } = cadence(minutes);
     return `Every ${value} ${value === 1 ? unit.slice(0, -1) : unit}`;
   }
+  function runTarget(entry, run) {
+    if (['draft', 'published'].includes(run.target)) return run.target;
+    if (!backend) return 'draft';
+    // The first publication can adopt a legacy run only when its exact model
+    // snapshot matches. Untagged runs never become results for an edited draft.
+    if (entry.publishedVersion === 1 && entry.publishedModel && JSON.stringify(run.modelSnapshot) === JSON.stringify(entry.publishedModel)) return 'published';
+    return null;
+  }
+  function matchesRun(entry, run, target) {
+    if (runTarget(entry, run) !== target) return false;
+    const snapshot = target === 'published' ? entry.publishedModel : entry.model;
+    if (!snapshot || JSON.stringify(run.modelSnapshot) !== JSON.stringify(snapshot)) return false;
+    return target !== 'published' || run.publishedVersion === entry.publishedVersion || (run.target === undefined && entry.publishedVersion === 1);
+  }
   function render(form = false) {
     if (!pageOpen) return;
     if (backend) {
@@ -160,10 +177,13 @@ export function createManagement({ fallbackModel, beforeAction, onActivate, onRu
       $('#management-model-count').textContent = 'No models assigned to your account';
       $('#schedule-form').querySelectorAll('input, select, button').forEach(control => control.disabled = true);
       $('#management-open-model').disabled = true;
+      $('#management-view-published').disabled = true;
       $('#management-duplicate-model').disabled = true;
       if (backend) {
         $('#model-publication-button').hidden = true;
         $('#model-publication-button').disabled = true;
+        $('#model-unpublish-button').hidden = true;
+        $('#model-unpublish-button').disabled = true;
         $('#model-publication-state').textContent = 'No model selected';
         $('#model-access-note').textContent = 'Select or create a model to manage its publication and access.';
       }
@@ -189,20 +209,23 @@ export function createManagement({ fallbackModel, beforeAction, onActivate, onRu
       const permission = backend.permission(selectedId);
       $('#management-role-label').textContent = backend.user.role === 'admin' ? 'Administrator' : backend.user.role;
       $('#management-new-model').disabled = !['admin', 'editor'].includes(backend.user.role);
-      $('#management-open-model').disabled = false;
+      $('#management-open-model').disabled = !permission.canEdit;
+      $('#management-view-published').disabled = !permission.published || !entry.publishedModel;
       $('#management-duplicate-model').disabled = !['admin', 'editor'].includes(backend.user.role);
       $('#schedule-form').querySelectorAll('input, select, button').forEach(control => control.disabled = !permission.canSchedule);
       $('#schedule-run-now').disabled = !permission.canRun || running.has(selectedId);
-      $('#model-publication-state').textContent = permission.published ? 'Published' : 'Draft';
-      $('#model-publication-button').textContent = permission.published ? 'Unpublish' : 'Publish model';
-      $('#model-publication-button').hidden = !permission.canPublish && !permission.canUnpublish;
-      $('#model-publication-button').disabled = permission.published ? !permission.canUnpublish : !permission.canPublish;
-      $('#model-access-note').textContent = permission.editLocked ? 'Editing is locked by an administrator.' : permission.canEdit ? 'You can edit this model.' : 'Read-only model access.';
+      $('#model-publication-state').textContent = permission.published ? entry.hasUnpublishedChanges ? 'Published · draft changes' : 'Published' : 'Draft';
+      $('#model-publication-button').textContent = permission.published ? 'Publish changes' : 'Publish model';
+      $('#model-publication-button').hidden = !permission.canPublish || (permission.published && !entry.hasUnpublishedChanges);
+      $('#model-publication-button').disabled = !permission.canPublish || (permission.published && !entry.hasUnpublishedChanges);
+      $('#model-unpublish-button').hidden = !permission.published || !permission.canUnpublish;
+      $('#model-unpublish-button').disabled = !permission.published || !permission.canUnpublish;
+      $('#model-access-note').textContent = permission.editLocked ? 'Draft editing is locked by an administrator.' : permission.canEdit ? 'Draft changes do not affect the published model until you publish them.' : 'Read-only model access.';
       if (!permission.published) $('#model-access-note').textContent += ' Publish the model before enabling a schedule.';
     }
     if (form) {
       const select = $('#management-model');
-      select.replaceChildren(...catalog.models.map(item => new Option(item.model.name, item.id)));
+      select.replaceChildren(...catalog.models.map(item => new Option(`${item.model.name}${item.hasUnpublishedChanges ? ' · draft changes' : ''}`, item.id)));
       select.value = selectedId;
       const choice = cadence(schedule.intervalMinutes);
       $('#schedule-enabled').checked = schedule.enabled;
@@ -229,26 +252,28 @@ export function createManagement({ fallbackModel, beforeAction, onActivate, onRu
     if (!runs.length) {
       $('#management-runs').innerHTML = '<div class="management-runs-empty"><h3>No runs yet</h3><p>Run a reconciliation to see its status and results here.</p></div>';
     } else {
-      $('#management-runs').innerHTML = `<div class="table-wrap"><table class="management-runs-table"><thead><tr><th>Run time</th><th>Trigger</th><th>Status</th><th>Result</th></tr></thead><tbody>${[...runs].reverse().slice(0, 10).map(run => `<tr><td>${esc(date(run.startedAt))}</td><td>${run.trigger === 'scheduled' ? 'Scheduled' : 'Manual'}</td><td><span class="status-pill ${run.status === 'ok' ? 'estimated' : run.status === 'failed' || run.status === 'invalid' ? 'unobservable' : ''}">${esc(run.status)}</span></td><td>${run.error ? esc(run.error) : `<span>${esc(run.result?.message || 'Completed')}</span><details><summary>Stream results</summary><ul>${(run.result?.streams || []).map(stream => `<li>${esc(run.modelSnapshot?.streams.find(item => item.id === stream.id)?.name || stream.id)}: ${number(stream.value)} kg · ${esc(stream.status)}</li>`).join('')}</ul></details><button type="button" class="text-button" data-review-run="${esc(run.id)}">View on workbench</button>`}</td></tr>`).join('')}</tbody></table></div>`;
+      $('#management-runs').innerHTML = `<div class="table-wrap"><table class="management-runs-table"><thead><tr><th>Run time</th><th>Model</th><th>Trigger</th><th>Status</th><th>Result</th></tr></thead><tbody>${[...runs].reverse().slice(0, 10).map(run => `<tr><td>${esc(date(run.startedAt))}</td><td>${runTarget(entry, run) === 'published' ? `Published v${esc(run.publishedVersion ?? 1)}` : runTarget(entry, run) === 'draft' ? 'Draft test' : 'Legacy run'}</td><td>${run.trigger === 'scheduled' ? 'Scheduled' : 'Manual'}</td><td><span class="status-pill ${run.status === 'ok' ? 'estimated' : run.status === 'failed' || run.status === 'invalid' ? 'unobservable' : ''}">${esc(run.status)}</span></td><td>${run.error ? esc(run.error) : `<span>${esc(run.result?.message || 'Completed')}</span><details><summary>Stream results</summary><ul>${(run.result?.streams || []).map(stream => `<li>${esc(run.modelSnapshot?.streams.find(item => item.id === stream.id)?.name || stream.id)}: ${number(stream.value)} kg · ${esc(stream.status)}</li>`).join('')}</ul></details><button type="button" class="text-button" data-review-run="${esc(run.id)}">View on diagram</button>`}</td></tr>`).join('')}</tbody></table></div>`;
       $('#management-runs').querySelectorAll('[data-review-run]').forEach(button => button.onclick = async () => {
         const run = catalog.runs[selectedId].find(item => item.id === button.dataset.reviewRun);
-        if (JSON.stringify(getModelEntry(catalog, selectedId).model) !== JSON.stringify(run.modelSnapshot)) {
-          message('This model has changed since that run. The saved stream results are available above; run again for the current diagram.', true);
+        const current = getModelEntry(catalog, selectedId), target = runTarget(current, run);
+        if (!target || !matchesRun(current, run, target)) {
+          message('This model version has changed since that run. The saved stream results are available above; run again for the current diagram.', true);
           return;
         }
-        if (await activate(selectedId)) onReview?.(clone(run));
+        if (await activate(selectedId, { view: target === 'published' ? 'published' : 'editing' })) onReview?.(clone(run));
       });
     }
   }
 
-  async function execute(id, trigger = 'manual') {
+  async function execute(id, trigger = 'manual', { target = trigger === 'scheduled' ? 'published' : 'draft' } = {}) {
+    if (!['published', 'draft'].includes(target)) throw new Error('Choose a published reconciliation or a draft test.');
     if (running.has(id)) throw new Error('This model is already running.');
     running.add(id);
     render();
     try {
       pullShared();
       if (backend) {
-        const run = await backend.execute(id, trigger);
+        const run = await backend.execute(id, trigger, { target });
         pullShared(); onRun?.(clone(run)); return run;
       }
       const { run } = await executeModelRun(clone(catalog), id, { trigger, now, id: crypto.randomUUID(), inputAdapters, outputAdapters });
@@ -304,17 +329,24 @@ export function createManagement({ fallbackModel, beforeAction, onActivate, onRu
     const opening = $('#app-menu').hidden;
     $('#app-menu').hidden = !opening;
     $('#menu-button').setAttribute('aria-expanded', String(opening));
-    if (opening) $('#menu-workbench').focus();
+    if (opening) $('#menu-published').focus();
   };
   document.addEventListener('click', event => { if (!event.target.closest('.application-navigation')) closeMenu(); });
   document.addEventListener('keydown', event => { if (event.key === 'Escape' && !$('#app-menu').hidden) { event.preventDefault(); closeMenu(true); } });
   document.addEventListener('focusin', event => { if (!event.target.closest('.application-navigation')) closeMenu(); });
   const open = () => backend ? (async () => { beforeAction?.(); await backend.flush(); pullShared(); openManagement(); })().catch(error => onToast?.(error.message)) : openManagement();
   $('#menu-model-management').onclick = open;
-  $('#menu-workbench').onclick = () => activate(catalog.activeId);
+  $('#menu-workbench').onclick = () => activate(catalog.activeId, { view: 'editing' });
   $('#management-back').onclick = () => activate(catalog.activeId);
   $('#management-model').onchange = event => { selectedId = event.target.value; render(true); };
-  $('#management-open-model').onclick = () => activate(selectedId);
+  $('#management-open-model').onclick = () => {
+    if (backend && !backend.permission(selectedId).canEdit) { message('You do not have permission to edit this model.', true); return; }
+    return activate(selectedId, { view: 'editing' });
+  };
+  $('#management-view-published').onclick = () => {
+    if (backend && !backend.permission(selectedId).published) { message('Publish this model before opening its live diagram.', true); return; }
+    return activate(selectedId, { view: 'published' });
+  };
   $('#management-new-model').onclick = () => onNewModel?.();
   $('#management-duplicate-model').onclick = () => {
     if (backend) return (async () => {
@@ -350,12 +382,17 @@ export function createManagement({ fallbackModel, beforeAction, onActivate, onRu
   };
   $('#schedule-run-now').onclick = async () => {
     const targetId = selectedId;
-    try { beforeAction?.(); const run = await withLock(() => execute(targetId)); if (selectedId === targetId) message(run.error || run.result?.message || 'Run completed.', run.status === 'failed' || run.status === 'invalid'); }
+    try { beforeAction?.(); const target = backend?.permission(targetId).published ? 'published' : 'draft'; const run = await withLock(() => execute(targetId, 'manual', { target })); if (selectedId === targetId) message(run.error || run.result?.message || 'Run completed.', run.status === 'failed' || run.status === 'invalid'); }
     catch (error) { message(error.message, true); }
   };
   if (backend) $('#model-publication-button').onclick = async () => {
     const targetId = selectedId;
-    try { beforeAction?.(); await backend.publication(targetId, !backend.permission(targetId).published); pullShared(); render(true); }
+    try { beforeAction?.(); await backend.publication(targetId, true); pullShared(); render(true); message('Draft published. Live reconciliation uses this published version.'); }
+    catch (error) { message(error.message, true); }
+  };
+  if (backend) $('#model-unpublish-button').onclick = async () => {
+    const targetId = selectedId;
+    try { beforeAction?.(); await backend.publication(targetId, false); pullShared(); render(true); message('Model unpublished. Its draft remains available in Model editor.'); }
     catch (error) { message(error.message, true); }
   };
   let lastRefresh = Date.now();
@@ -365,7 +402,7 @@ export function createManagement({ fallbackModel, beforeAction, onActivate, onRu
     if (!catalog.models.some(entry => entry.id === selectedId)) selectedId = catalog.activeId;
     if (reason === 'refresh') {
       const current = catalog.activeId ? getModelEntry(catalog) : { id: null, model: fallbackModel };
-      if (previous?.id !== current.id || JSON.stringify(previous?.model) !== JSON.stringify(current.model)) onActivate?.(clone(current));
+      if (previous?.id !== current.id || JSON.stringify(previous?.model) !== JSON.stringify(current.model) || JSON.stringify(previous?.publishedModel) !== JSON.stringify(current.publishedModel) || previous?.publishedVersion !== current.publishedVersion) onActivate?.(clone(current));
     }
     onAccessChange?.(reason); render();
   });
@@ -393,11 +430,13 @@ export function createManagement({ fallbackModel, beforeAction, onActivate, onRu
       return saved;
     },
     create(value) {
-      if (backend) return (async () => { beforeAction?.(); const entry = await backend.create(value); pullShared(); return activate(entry.id, false); })().catch(error => onToast?.(error.message));
-      beforeAction?.(); pullShared(); save(addModel(catalog, value, { id: crypto.randomUUID(), now: now() })); activate(catalog.activeId, false);
+      if (backend) return (async () => { beforeAction?.(); const entry = await backend.create(value); pullShared(); return activate(entry.id, { flush: false, view: 'editing' }); })().catch(error => onToast?.(error.message));
+      beforeAction?.(); pullShared(); save(addModel(catalog, value, { id: crypto.randomUUID(), now: now() })); activate(catalog.activeId, { flush: false, view: 'editing' });
     },
-    latest(id = catalog.activeId) { if (!id) return null; const entry = getModelEntry(catalog, id); return clone([...catalog.runs[id]].reverse().find(run => run.result && JSON.stringify(run.modelSnapshot) === JSON.stringify(entry.model)) || null); },
-    run(id = catalog.activeId) { return withLock(() => execute(id)); },
+    latest(id = catalog.activeId, { target = 'draft' } = {}) { if (!id) return null; const entry = getModelEntry(catalog, id); return clone([...catalog.runs[id]].reverse().find(run => matchesRun(entry, run, target)) || null); },
+    publishedEntries: () => clone(catalog.models.filter(entry => entry.publishedModel && (!backend || backend.permission(entry.id).published))),
+    activate,
+    run(id = catalog.activeId, { target = 'draft' } = {}) { return withLock(() => execute(id, 'manual', { target })); },
     leave: leaveManagement,
     open,
     tick,

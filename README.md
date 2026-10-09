@@ -12,17 +12,18 @@ Requires Node.js 22.13 or later. The application uses a Workers backend, D1 data
 npm ci
 'ADMIN_EMAIL=seedy@sites.test' | Set-Content .dev.vars
 npm run build
-npx wrangler d1 execute DB --local --config dist/server/wrangler.json --file ./drizzle/0000_complete_random.sql
+npx wrangler d1 execute DB --local --config dist/server/wrangler.json --persist-to .wrangler/state --file ./drizzle/0000_complete_random.sql
+npx wrangler d1 execute DB --local --config dist/server/wrangler.json --persist-to .wrangler/state --file ./drizzle/0001_published_snapshots.sql
 npm run dev
 ```
 
-Apply the SQL initialization once to an empty local database. Open the loopback URL printed by the development server, normally http://127.0.0.1:5173. The development server binds to this computer; its local sign-in simulates `seedy@sites.test`. This is a development identity, and the `.dev.vars` file is excluded from Git. Production authentication uses the hosting provider's verified identity, without the local simulation.
+Apply both SQL migrations once, in order, to an empty local database. For an existing database initialized with `0000`, apply only `0001`; it preserves current models, grants, schedules, and runs. The explicit persistence path shares the database with the development server. Open the loopback URL printed by the development server, normally http://127.0.0.1:5173. The development server binds to this computer; its local sign-in simulates `seedy@sites.test`. This is a development identity, and the `.dev.vars` file is excluded from Git. Production authentication uses the hosting provider's verified identity, without the local simulation.
 
 ## Hosted authentication and database setup
 
 The hosted application signs users in with ChatGPT through Sites. Its API stores users, model grants, models, schedules, and run snapshots in the D1 `DB` binding. Reconciliation runs on the server using saved model measurements.
 
-For a new deployment, create a Sites project, set its project ID in `.openai/hosting.json`, provision the `DB` binding, apply `drizzle/0000_complete_random.sql` through the host's D1 migration service, and configure `ADMIN_EMAIL` as a server runtime secret before the intended administrator's first sign-in. Publish the built application through Sites. The generated configuration's database ID is a local development placeholder; the host supplies the production binding.
+For a new deployment, create a Sites project, set its project ID in `.openai/hosting.json`, provision the `DB` binding, apply the ordered SQL files in `drizzle/` through the host's D1 migration service, and configure `ADMIN_EMAIL` as a server runtime secret before the intended administrator's first sign-in. Publish the built application through Sites. Existing deployments apply only pending migrations. The generated configuration's database ID is a local development placeholder; the host supplies the production binding.
 
 Only the verified identity matching `ADMIN_EMAIL` receives the initial administrator role when its account is inserted. Other first-time users become viewers with no model access until an administrator assigns grants. The first visitor does not become an administrator. Changing the secret does not promote an existing account or re-enable a disabled account; an existing administrator or an authorized database migration must handle those changes.
 
@@ -33,7 +34,7 @@ The production backend must be reached through the trusted Sites authentication 
 1. Sign in and open an assigned model, or create one with an editor/administrator account. Drag a pump, valve, heat exchanger, or another process-unit symbol from the toolbox onto the canvas. Click-to-add is also available. Add red inflow/outflow triangles for every external material path.
 2. Drag the right port of a source to the left port of a destination. Alternatively, select Connect and click the source then destination. Drag units to reposition them; lines update automatically.
 3. Right-click or double-click a stream. Set its name, material, phase, density, temperature, and pressure. Enable a meter and choose mass/volume, transferred quantity/flow rate, and units. Double-click a unit to change its name or equipment symbol.
-4. Enter readings and one-standard-deviation uncertainties on Measurements. Pick a 1-hour, 24-hour, or custom batch duration. Run reconciliation and review Results or overlays on the flowsheet.
+4. Enter readings and one-standard-deviation uncertainties on Measurements. Pick a 1-hour, 24-hour, or custom batch duration. **Test draft reconciliation** checks your working draft. Choose **Publish model** or **Publish changes**, then run the published version to show results above its symbols and on its flow lines.
 
 Unmetered streams can be inferred only when the measurements and network uniquely determine them. Otherwise they are clearly marked as needing a measurement. The example starts with a 100 kg feed and 60/35 kg outlets, with uncertainties 1/2/2 kg. Its correct reconciled values are 99.444444, 62.222222, and 37.222222 kg; the missing internal flow is 99.444444 kg.
 
@@ -58,6 +59,16 @@ Double-click an existing unit and choose **Unit symbol** to change its appearanc
 
 Equipment symbols describe the process diagram. Every internal unit uses the same total-mass conservation equation, with no accumulation. Pump curves, pressure drop, compression, heat transfer, particle separation, and storage calculations are not introduced by choosing a symbol. Add every material path explicitly; tank/storage balances remain a separate planned feature.
 
+## Published models and working drafts
+
+**Published model** and **Model editor** are separate views, available above the workbench and in the hamburger menu. Their URLs retain the selected model and view. The published page lists only active publications and provides a read-only diagram with pan, zoom, Fit, result inspection, and permitted reconciliation. Model editor holds the editable draft, measurements, toolbox, and draft test results.
+
+Publishing atomically copies the saved draft, including its topology, symbol positions, material properties, and readings, into a published snapshot. Subsequent autosaved draft edits do not change that snapshot. **Publish changes** promotes them to the next publication version. Editing locks also prevent promotion. Scheduled runs and **Run reconciliation** on the published page always use the published snapshot; draft tests do not replace its results. Model Management provides separate actions for viewing the publication, editing the draft, promoting changes, and unpublishing.
+
+The published diagram loads the latest run for its exact publication version and input snapshot, including after reopening the app. Stream labels show individual reconciled or inferred masses. Badges above symbols show reconciled incoming and outgoing totals in **kg per batch**; boundary triangles show their plant inflow or outflow. Select a symbol to inspect the same totals and its connected streams. Missing or unobservable flows show dashes; no run shows **Awaiting run**. Publishing a new version does not reuse values from a prior version, and a latest failed run is shown as needing attention. The page includes the run time, status, batch duration, and publication version.
+
+The additive `0001` migration changes only the schema. Existing active models appear as publication 1, and their first per-model access atomically preserves that live copy before any draft edit. This bounded initialization attributes only the latest 20 existing results to publication 1 when their recorded snapshot matches; other legacy results remain draft runs. Unpublishing retains snapshots and run history but removes the model from the published page and pauses its schedule. Only the current published copy and working draft are retained as full model records; browsing or restoring every historical model version remains planned.
+
 ## Accounts, model permissions, and protection
 
 The hamburger menu's **Admin** page is available only to active administrators. It lists signed-in users and models, including deleted models when requested. Administrators can set account roles, enable/disable accounts, assign per-model access, publish models, apply locks, and delete or restore models. The backend authenticates and authorizes every API request; hiding controls is an additional UI safeguard.
@@ -71,7 +82,7 @@ The hamburger menu's **Admin** page is available only to active administrators. 
 
 For non-admins, effective access is the lower of their account role and their model grant. A grant of **No access** hides that model. Administrators have access to all models, while disabled accounts cannot access the workspace. Non-admins cannot change their own account role or model grants, and the last active administrator cannot be removed or disabled.
 
-New models are drafts. Publish a model explicitly to make it active and eligible for scheduling. An **editing lock** blocks model-content edits for everyone, including administrators, until an administrator unlocks it. An **unpublishing lock** separately prevents unpublishing; unlock it first. Viewing and permitted reconciliation can continue while editing is locked.
+New models are drafts. Publish a model explicitly to make it active and eligible for scheduling. An **editing lock** blocks model-content edits and publication of draft changes for everyone, including administrators, until an administrator unlocks it. An **unpublishing lock** separately prevents unpublishing; unlock it first. Viewing and permitted reconciliation can continue while editing is locked.
 
 Only administrators can delete a model, including an active, published model. Deletion removes it from users' workspaces and pauses its schedule while retaining the model and run data. An administrator can restore it as a draft with scheduling disabled. It must be published and its schedule re-enabled before scheduled execution resumes.
 
@@ -79,8 +90,8 @@ Only administrators can delete a model, including an active, published model. De
 
 1. Open **Model Management** from the hamburger menu and select a model.
 2. With editor or administrator access, publish the model, enable scheduled runs, and choose a frequency in minutes, hours, or days, with a minimum interval of one minute. Save the schedule. New models start with scheduling disabled.
-3. Leave Input data source and Output destination at their defaults to use the model's saved measurements and save results in the shared workspace. Optional sources must be defined for that model and have a registered input or output adapter. The shipped app has no external adapters or source setup interface, so it does not fetch fresh plant readings or publish to external destinations.
-4. Use **Run now** for a manual run, or keep the app open with an account permitted to run that model for scheduled runs. The backend retains the latest 20 manual/scheduled runs per model, including input snapshots, results, and status; the management page displays the latest 10. A saved run can be viewed on the workbench while the model still matches its snapshot.
+3. Leave Input data source and Output destination at their defaults to use the published snapshot's saved measurements and save results in the shared workspace. Optional sources must be defined for that model and have a registered input or output adapter. The shipped app has no external adapters or source setup interface, so it does not fetch fresh plant readings or publish to external destinations.
+4. Use **Run now** for a manual run of the selected publication (or draft if not published), or keep the app open with an account permitted to run that model for scheduled runs. The backend retains the latest 20 manual/scheduled runs per model, including target, publication version, input snapshots, results, and status; the management page displays the latest 10. A saved run can be viewed on its corresponding diagram while its snapshot and publication version still match.
 
 The open browser triggers scheduled API requests; the server checks authorization, atomically claims due schedules, performs the calculation, and saves the run. Closing all eligible sessions stops triggering; browser sleep and background throttling can delay it. When the app resumes or reopens, an overdue schedule executes once and advances to the next future interval rather than replaying every missed run. Frequencies are elapsed intervals: a day means 24 hours. Timestamps are stored as absolute instants and displayed in the browser's local time zone. Atomic claims prevent two sessions from executing the same due occurrence. Unpublishing or deleting a model pauses its schedule.
 

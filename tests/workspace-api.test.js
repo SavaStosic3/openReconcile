@@ -99,6 +99,32 @@ test('debounce coalesces edits into the newest model and resolves every save wai
   assert.equal(workspace.workspace.catalog.models[0].model.name, 'Newest');
 });
 
+test('explicit published and draft runs preserve the publication snapshot while queued draft saves finish', async t => {
+  const f = setup(t);
+  const entry = f.server.catalog.models[0];
+  entry.publishedModel = exampleModel(); entry.publishedVersion = 1; entry.publishedAt = f.server.serverTime;
+  const workspace = await f.connect();
+  f.handle(call => {
+    if (!call.path.endsWith('/runs')) return null;
+    const published = call.body.target === 'published', saved = f.server.catalog.models[0];
+    return reply({ run: { id: `run-${call.body.target}`, modelId: saved.id, trigger: call.body.trigger, target: call.body.target,
+      publishedVersion: published ? saved.publishedVersion : null, modelSnapshot: clone(published ? saved.publishedModel : saved.model) },
+      permission: clone(f.server.permissions[saved.id]), schedule: clone(f.server.catalog.schedules[saved.id]) });
+  });
+  const changed = exampleModel(); changed.streams[0].value = 120;
+  const save = workspace.queueSave(entry.id, changed);
+  const published = await workspace.execute(entry.id, 'manual', { target: 'published' });
+  assert.equal(await save, true);
+  assert.equal(published.modelSnapshot.streams[0].value, 100);
+  assert.equal(published.publishedVersion, 1);
+  assert.equal(workspace.workspace.catalog.models[0].model.streams[0].value, 120);
+  assert.equal(workspace.workspace.catalog.models[0].publishedModel.streams[0].value, 100);
+  const draft = await workspace.execute(entry.id, 'manual', { target: 'draft' });
+  assert.equal(draft.modelSnapshot.streams[0].value, 120);
+  assert.equal(draft.publishedVersion, null);
+  assert.deepEqual(f.calls.map(call => call.body?.target).filter(Boolean), ['published', 'draft']);
+});
+
 test('failed saves preserve local drafts and block run/refresh instead of using older server readings', async t => {
   const f = setup(t), workspace = await f.connect();
   f.handle(call => call.method === 'PATCH' ? reply({ error: 'Model editing is locked.' }, 403) : null);

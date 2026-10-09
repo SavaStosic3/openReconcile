@@ -53,6 +53,43 @@ test('adding/updating/activating models keeps entries and reused stream IDs isol
   assert.throws(() => addModel(updated, model(), { id: 'plant-a', now: START }), /already exists/);
 });
 
+test('catalog normalization and draft updates preserve published snapshot and run provenance', () => {
+  const original = catalog();
+  Object.assign(original.models[0], { publishedModel: model(), publishedVersion: 3, publishedAt: START, hasUnpublishedChanges: false });
+  const history = appendRun(original, 'plant-a', run('published-run', { target: 'published', publishedVersion: 3, modelSnapshot: model() }));
+  const changed = model('Draft changes'); changed.nodes[1].kind = 'pump'; changed.streams[0].value = 120;
+  const edited = updateModel(history, 'plant-a', changed, stamp(10));
+  assert.equal(edited.models[0].hasUnpublishedChanges, true);
+  assert.deepEqual(edited.models[0].publishedModel, model()); assert.equal(edited.models[0].publishedVersion, 3); assert.equal(edited.models[0].publishedAt, START);
+  assert.deepEqual(validateCatalog(JSON.parse(JSON.stringify(edited))), edited);
+  assert.equal(edited.runs['plant-a'][0].target, 'published'); assert.equal(edited.runs['plant-a'][0].publishedVersion, 3);
+  assert.equal(original.models[0].hasUnpublishedChanges, false); assert.deepEqual(original.models[0].model, model());
+  const reverted = updateModel(edited, 'plant-a', model(), stamp(11)); assert.equal(reverted.models[0].hasUnpublishedChanges, false);
+  const duplicated = duplicateModel(edited, 'plant-a', { id: 'plant-copy', now: stamp(12) });
+  assert.equal(Object.hasOwn(duplicated.models[1], 'publishedModel'), false); assert.deepEqual(duplicated.runs['plant-copy'], []);
+});
+
+test('catalog rejects inconsistent publication metadata and invalid version references in new run records', () => {
+  for (const changes of [
+    { publishedModel: model(), publishedVersion: 0, publishedAt: START },
+    { publishedModel: model(), publishedVersion: 1, publishedAt: null },
+    { publishedModel: null, publishedVersion: 1, publishedAt: START }
+  ]) {
+    const invalid = catalog(); Object.assign(invalid.models[0], changes);
+    assert.throws(() => validateCatalog(invalid), /published snapshot/);
+  }
+  const initial = catalog(); Object.assign(initial.models[0], { publishedModel: null, publishedVersion: 0, publishedAt: null, hasUnpublishedChanges: false });
+  assert.equal(validateCatalog(initial).models[0].hasUnpublishedChanges, true);
+  for (const extra of [
+    { target: 'published', publishedVersion: 0 },
+    { target: 'draft', publishedVersion: 1 },
+    { target: 'unknown', publishedVersion: null }
+  ]) assert.throws(() => appendRun(catalog(), 'plant-a', run('invalid-publication', extra)), /target|version/);
+  // A migration may correctly identify old mutable scheduled data as a draft.
+  const historical = appendRun(catalog(), 'plant-a', run('historical', { trigger: 'scheduled', target: 'draft', publishedVersion: null }));
+  assert.equal(historical.runs['plant-a'][0].target, 'draft');
+});
+
 test('duplicating a model starts with fresh disabled scheduling, sources and history', () => {
   let original = registerSource(catalog(), 'plant-a', { id: 'meter-readings', name: 'Readings', direction: 'input', data: [{ streamId: 'feed', value: 101 }] });
   original = setSchedule(original, 'plant-a', { enabled: true, inputSourceId: 'meter-readings' }, START);

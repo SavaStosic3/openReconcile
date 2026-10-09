@@ -104,6 +104,7 @@ function sharedBackend(catalog) {
     grants: Object.fromEntries(catalog.models.map(entry => [entry.id, { canView: true, canRun: true, canEdit: true, canSchedule: true, canPublish: false, canUnpublish: true, published: true, editLocked: false, unpublishLocked: false }])),
     flush: async () => {}, selections: []
   };
+  state.catalog.models = state.catalog.models.map(entry => ({ publishedModel: clone(entry.model), publishedVersion: 1, publishedAt: new Date(START).toISOString(), hasUnpublishedChanges: false, ...entry }));
   return {
     state,
     get workspace() { return { catalog: clone(state.catalog) }; },
@@ -120,7 +121,7 @@ function sharedBackend(catalog) {
 function withRun(catalog, modelId, id = 'saved-run') {
   const next = clone(catalog), entry = next.models.find(item => item.id === modelId);
   next.runs[modelId].push({
-    id, modelId, trigger: 'manual', status: 'ok',
+    id, modelId, trigger: 'manual', status: 'ok', target: 'draft', publishedVersion: null,
     startedAt: new Date(START).toISOString(), finishedAt: new Date(START).toISOString(),
     modelSnapshot: clone(entry.model),
     result: { message: 'Reconciliation completed.', streams: [{ id: 'f1', value: 99.4444444444, status: 'reconciled' }] }
@@ -292,12 +293,14 @@ test('publication controls follow server-granted publication access after permis
   const controller = env.create({ backend });
   await controller.open();
   const button = env.node('#model-publication-button');
+  const unpublish = env.node('#model-unpublish-button');
   for (const access of [
-    { role: 'viewer', published: false, canPublish: false, canUnpublish: false, hidden: true, text: 'Publish model' },
-    { role: 'operator', published: true, canPublish: false, canUnpublish: false, hidden: true, text: 'Unpublish' },
-    { role: 'editor', published: false, canPublish: true, canUnpublish: false, hidden: false, text: 'Publish model' },
-    { role: 'editor', published: true, canPublish: false, canUnpublish: true, hidden: false, text: 'Unpublish' },
-    { role: 'admin', published: true, canPublish: false, canUnpublish: false, unpublishLocked: true, hidden: true, text: 'Unpublish' }
+    { role: 'viewer', published: false, canPublish: false, canUnpublish: false, hidden: true, unpublishHidden: true, text: 'Publish model' },
+    { role: 'operator', published: true, canPublish: false, canUnpublish: false, hidden: true, unpublishHidden: true, text: 'Publish changes' },
+    { role: 'editor', published: false, canPublish: true, canUnpublish: false, hidden: false, unpublishHidden: true, text: 'Publish model' },
+    { role: 'editor', published: true, canPublish: true, canUnpublish: true, hidden: true, unpublishHidden: false, text: 'Publish changes' },
+    { role: 'admin', published: true, canPublish: true, canUnpublish: false, unpublishLocked: true, hidden: true, unpublishHidden: true, text: 'Publish changes' },
+    { role: 'editor', published: true, canPublish: true, canUnpublish: true, changes: true, hidden: false, unpublishHidden: false, text: 'Publish changes' }
   ]) {
     backend.state.user.role = access.role;
     Object.assign(backend.state.grants['model-a'], {
@@ -306,11 +309,16 @@ test('publication controls follow server-granted publication access after permis
       canRun: access.role !== 'viewer', canEdit: ['editor', 'admin'].includes(access.role),
       canSchedule: access.published && ['editor', 'admin'].includes(access.role)
     });
+    backend.state.catalog.models[0].model.name = access.changes ? 'Changed draft' : backend.state.catalog.models[0].publishedModel.name;
     backend.notify();
     assert.equal(button.hidden, access.hidden, `${access.role} publication visibility`);
     assert.equal(button.disabled, access.hidden, `${access.role} publication availability`);
     assert.equal(button.textContent, access.text);
-    assert.equal(env.node('#model-publication-state').textContent, access.published ? 'Published' : 'Draft');
+    assert.equal(unpublish.hidden, access.unpublishHidden, `${access.role} unpublish visibility`);
+    assert.equal(unpublish.disabled, access.unpublishHidden, `${access.role} unpublish availability`);
+    assert.equal(env.node('#model-publication-state').textContent, access.published ? access.changes ? 'Published · draft changes' : 'Published' : 'Draft');
+    assert.equal(env.node('#management-open-model').disabled, !backend.state.grants['model-a'].canEdit);
+    assert.equal(env.node('#management-view-published').disabled, !access.published);
   }
 });
 
@@ -321,7 +329,7 @@ test('losing all shared model access clears publication, schedule, and saved-run
   env.node('#schedule-form').controls = controls;
   const controller = env.create({ backend });
   await controller.open();
-  assert.equal(env.node('#model-publication-button').hidden, false);
+  assert.equal(env.node('#model-unpublish-button').hidden, false);
   assert.equal(env.node('#schedule-enabled').checked, true);
   assert.equal(env.node('#schedule-summary-frequency').textContent, 'Every 1 hour');
   assert.equal(env.node('#management-runs').reviewButtons.length, 1);
@@ -333,8 +341,11 @@ test('losing all shared model access clears publication, schedule, and saved-run
   assert.equal(controller.isOpen, true);
   assert.equal(env.node('#model-publication-button').hidden, true);
   assert.equal(env.node('#model-publication-button').disabled, true);
+  assert.equal(env.node('#model-unpublish-button').hidden, true);
+  assert.equal(env.node('#model-unpublish-button').disabled, true);
   assert.equal(env.node('#model-publication-state').textContent, 'No model selected');
   assert.equal(env.node('#management-open-model').disabled, true);
+  assert.equal(env.node('#management-view-published').disabled, true);
   assert.equal(env.node('#management-duplicate-model').disabled, true);
   assert.ok(controls.every(control => control.disabled));
   assert.equal(env.node('#schedule-enabled').checked, false);
@@ -350,4 +361,69 @@ test('losing all shared model access clears publication, schedule, and saved-run
   assert.equal(env.node('#schedule-output-help').textContent, '');
   assert.equal(env.node('#management-runs').reviewButtons.length, 0);
   assert.match(env.node('#management-runs').innerHTML, /No model selected/);
+});
+
+test('published and editing activation use the same model identity but request distinct pages', async t => {
+  const env = setup(t), backend = sharedBackend(seed()), activations = [];
+  const controller = env.create({ backend, onActivate: (entry, options) => activations.push({ entry, options }) });
+  await controller.activate('model-a', { view: 'published' });
+  assert.equal(activations[0].entry.publishedVersion, 1);
+  assert.deepEqual(activations[0].options, { view: 'published' });
+  await env.node('#menu-workbench').onclick();
+  assert.deepEqual(activations[1].options, { view: 'editing' });
+  backend.state.catalog.models[0].publishedVersion = 2;
+  backend.notify('refresh');
+  assert.equal(activations.at(-1).options, undefined, 'An automatic refresh must preserve the current page.');
+  assert.equal(controller.current().publishedVersion, 2);
+  assert.equal(controller.publishedEntries().length, 1);
+  backend.state.grants['model-a'].published = false;
+  backend.notify();
+  assert.deepEqual(controller.publishedEntries(), []);
+});
+
+test('latest published results require their exact publication version and retain latest failures', t => {
+  const env = setup(t), backend = sharedBackend(withRun(seed(), 'model-a', 'draft-run'));
+  const base = clone(backend.state.catalog.runs['model-a'][0]);
+  backend.state.catalog.runs['model-a'].push({ ...base, id: 'published-run', target: 'published', publishedVersion: 1 });
+  const controller = env.create({ backend });
+  assert.equal(controller.latest('model-a', { target: 'draft' }).id, 'draft-run');
+  assert.equal(controller.latest('model-a', { target: 'published' }).id, 'published-run');
+  backend.state.catalog.runs['model-a'].push({ ...base, id: 'published-failure', target: 'published', publishedVersion: 1, status: 'failed', result: null, error: 'Input unavailable' });
+  backend.notify();
+  assert.equal(controller.latest('model-a', { target: 'published' }).id, 'published-failure');
+  assert.equal(controller.latest('model-a', { target: 'published' }).result, null);
+  backend.state.catalog.models[0].publishedVersion = 2;
+  backend.notify();
+  assert.equal(controller.latest('model-a', { target: 'published' }), null, 'Identical diagrams at a new version must not borrow the prior publication result.');
+  assert.equal(controller.latest('model-a', { target: 'draft' }).id, 'draft-run');
+});
+
+test('manual target selection and browser scheduler both send explicit execution targets', async t => {
+  const catalog = setSchedule(seed(), 'model-a', { enabled: true, intervalMinutes: 60 }, START - 3_600_000);
+  const env = setup(t), backend = sharedBackend(catalog), calls = [];
+  backend.execute = async (id, trigger, options) => {
+    calls.push({ id, trigger, ...options });
+    return { id: `run-${calls.length}`, modelId: id, trigger, ...options, status: 'ok' };
+  };
+  const controller = env.create({ backend });
+  await controller.run('model-a', { target: 'draft' });
+  await controller.run('model-a', { target: 'published' });
+  await controller.tick();
+  assert.deepEqual(calls, [
+    { id: 'model-a', trigger: 'manual', target: 'draft' },
+    { id: 'model-a', trigger: 'manual', target: 'published' },
+    { id: 'model-a', trigger: 'scheduled', target: 'published' }
+  ]);
+});
+
+test('legacy runs are adopted only by their matching first published snapshot', t => {
+  const env = setup(t), backend = sharedBackend(withRun(seed(), 'model-a'));
+  delete backend.state.catalog.runs['model-a'][0].target;
+  delete backend.state.catalog.runs['model-a'][0].publishedVersion;
+  const controller = env.create({ backend });
+  assert.equal(controller.latest('model-a', { target: 'draft' }), null);
+  assert.equal(controller.latest('model-a', { target: 'published' }).id, 'saved-run');
+  backend.state.catalog.models[0].publishedVersion = 2;
+  backend.notify();
+  assert.equal(controller.latest('model-a', { target: 'published' }), null);
 });

@@ -1,5 +1,6 @@
 import { newNode, newStream, NODE_TYPES } from './model.js';
 import { appendUnitSymbol, getUnitGeometry, portPosition, unitBounds } from './unit-symbols.js';
+import { formatPublishedMass, getPublishedUnitSummary, hasPublishedResults } from './published-results.js';
 
 const NS = 'http://www.w3.org/2000/svg';
 const BLUE = '#2563eb', INK = '#243a54', MUTED = '#7890aa';
@@ -20,6 +21,7 @@ export function createEditor({ svg, canEdit = () => true, onChange = () => {}, o
   let pendingSource = null, pointer = null, ignoreClickUntil = 0, destroyed = false, lastTap = null;
   let width = 900, height = 600, scale = 1, panX = 0, panY = 0;
   let previewPoint = null;
+  let presentation = 'editing';
   const prefix = `flow-${crypto.randomUUID()}`;
   const listeners = [];
   const listen = (target, type, listener, options) => {
@@ -50,7 +52,7 @@ export function createEditor({ svg, canEdit = () => true, onChange = () => {}, o
   function lookupNode(id) { return model.nodes.find(node => node.id === id); }
   const port = portPosition;
   function announce(message) { onStatus(message); }
-  function editable() { return canEdit() === true; }
+  function editable() { return presentation === 'editing' && canEdit() === true; }
   function cancelMutation() {
     if (pointer?.type === 'node' || pointer?.type === 'connect') {
       if (pointer.type === 'node') {
@@ -140,7 +142,7 @@ export function createEditor({ svg, canEdit = () => true, onChange = () => {}, o
     const bottom = Math.max(unitBounds(source).bottom, unitBounds(target).bottom) + 65 + index * 32;
     return routed(`M ${s.x} ${s.y} H ${s.x + 42} V ${bottom} H ${t.x - 42} V ${t.y} H ${t.x}`, { x: (s.x + t.x) / 2, y: bottom }, [s.x, s.x + 42, t.x - 42, t.x], [s.y, t.y, bottom]);
   }
-  function resultFor(stream) { return results?.streams?.find(item => item.id === stream.id); }
+  function resultFor(stream) { return presentation === 'published' && !hasPublishedResults(results) ? null : results?.streams?.find(item => item.id === stream.id); }
   function drawStream(stream, layer) {
     const path = route(stream);
     if (!path) return;
@@ -162,7 +164,7 @@ export function createEditor({ svg, canEdit = () => true, onChange = () => {}, o
     }
     label.append(element('text', { x: stream.measured ? 7 : 0, y: 3, fill: active ? BLUE : INK, 'text-anchor': 'middle', 'font-family': 'inherit', 'font-size': 11, 'font-weight': 650 }, name));
     if (output) {
-      const value = Number.isFinite(output.value) ? `${number(output.value)} kg` : 'Unobservable';
+      const value = Number.isFinite(output.value) ? `${presentation === 'published' ? formatPublishedMass(output.value) : number(output.value)} kg` : 'Unobservable';
       label.append(element('text', { x: 0, y: 27, fill: output.status === 'unobservable' ? '#9c6d24' : '#426184', 'text-anchor': 'middle', 'font-family': 'inherit', 'font-size': 10, 'font-weight': 600, 'paint-order': 'stroke', stroke: '#f7f9fc', 'stroke-width': 4, 'stroke-linejoin': 'round' }, `${value}${output.status === 'estimated' ? ' · inferred' : ''}`));
     }
     group.append(label);
@@ -181,8 +183,9 @@ export function createEditor({ svg, canEdit = () => true, onChange = () => {}, o
   function drawNode(node, layer) {
     const active = selected?.kind === 'node' && selected.id === node.id;
     const pending = pendingSource === node.id;
-    const group = element('g', { transform: `translate(${node.x} ${node.y})`, 'data-node-id': node.id, tabindex: 0, role: 'button', 'aria-label': `${node.name}, ${NODE_TYPES[node.kind]}. ${editable() ? 'Press Enter to edit.' : 'Read-only.'}`, 'aria-pressed': active, class: `flow-node flow-node-${node.kind}${active ? ' is-selected' : ''}${pending ? ' is-connecting' : ''}`, cursor: editable() ? mode === 'connect' ? 'crosshair' : 'grab' : 'pointer' });
-    group.append(element('title', {}, `${node.name} · ${NODE_TYPES[node.kind]}\n${editable() ? 'Drag to move. Double-click to edit.' : 'This model is read-only or locked.'}`));
+    const summary = presentation === 'published' ? getPublishedUnitSummary(node, model, results) : null;
+    const group = element('g', { transform: `translate(${node.x} ${node.y})`, 'data-node-id': node.id, tabindex: 0, role: 'button', 'aria-label': `${node.name}, ${NODE_TYPES[node.kind]}. ${editable() ? 'Press Enter to edit.' : 'Read-only.'}${summary ? ` ${summary.description}` : ''}`, 'aria-pressed': active, class: `flow-node flow-node-${node.kind}${active ? ' is-selected' : ''}${pending ? ' is-connecting' : ''}`, cursor: editable() ? mode === 'connect' ? 'crosshair' : 'grab' : 'pointer' });
+    group.append(element('title', {}, `${node.name} · ${NODE_TYPES[node.kind]}\n${editable() ? 'Drag to move. Double-click to edit.' : 'This model is read-only or locked.'}${summary ? `\n${summary.description}` : ''}`));
     if (boundary(node)) {
       if (active || pending) group.append(element('rect', { x: -38, y: -38, width: 76, height: 76, rx: 18, fill: '#e9f1ff', stroke: '#a5c8ff', 'stroke-width': 1.5 }));
       group.append(element('path', { d: 'M -21 -23 L 24 0 L -21 23 Z', fill: '#ee6666', stroke: '#d74c54', 'stroke-width': 1.5, 'stroke-linejoin': 'round' }));
@@ -202,6 +205,14 @@ export function createEditor({ svg, canEdit = () => true, onChange = () => {}, o
     }
     drawPort(node, 'in', group);
     drawPort(node, 'out', group);
+    if (summary) {
+      const { bounds } = summary;
+      const badge = element('g', { class: 'flow-unit-result', 'data-result-status': summary.status, 'aria-hidden': 'true' });
+      badge.append(element('rect', { x: bounds.left, y: bounds.top, width: bounds.right - bounds.left, height: bounds.bottom - bounds.top, rx: 8, fill: '#fff', stroke: summary.status === 'unresolved' ? '#dfcfa8' : '#c4dfdc', 'stroke-width': 1.2 }));
+      badge.append(element('text', { x: 0, y: bounds.top + 18, fill: summary.status === 'awaiting' ? '#7890aa' : '#497c79', 'text-anchor': 'middle', 'font-family': 'inherit', 'font-size': 10, 'font-weight': 650 }, summary.heading));
+      summary.lines.forEach((line, index) => badge.append(element('text', { x: 0, y: bounds.top + 36 + index * 18, fill: summary.status === 'unresolved' ? '#8b6a2e' : '#176b65', 'text-anchor': 'middle', 'font-family': 'inherit', 'font-size': 12, 'font-weight': 700 }, line)));
+      group.append(badge);
+    }
     layer.append(group);
   }
 
@@ -213,6 +224,7 @@ export function createEditor({ svg, canEdit = () => true, onChange = () => {}, o
     const focusedId = focused?.getAttribute(focusedKind === 'node' ? 'data-node-id' : 'data-stream-id');
     svg.replaceChildren();
     svg.dataset.mode = mode;
+    svg.dataset.presentation = presentation;
     svg.style.cursor = pointer?.type === 'pan' ? 'grabbing' : mode === 'pan' ? 'grab' : mode === 'connect' ? 'crosshair' : 'default';
     const defs = element('defs');
     const pattern = element('pattern', { id: `${prefix}-grid`, x: ((panX % (24 * scale)) + 24 * scale) % (24 * scale), y: ((panY % (24 * scale)) + 24 * scale) % (24 * scale), width: 24 * scale, height: 24 * scale, patternUnits: 'userSpaceOnUse' });
@@ -280,7 +292,15 @@ export function createEditor({ svg, canEdit = () => true, onChange = () => {}, o
     dimensions();
     if (!model.nodes.length) { scale = 1; panX = 0; panY = 0; render(); return; }
     let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity;
-    for (const node of model.nodes) { const bounds = unitBounds(node); minX = Math.min(minX, bounds.left); maxX = Math.max(maxX, bounds.right); minY = Math.min(minY, bounds.top); maxY = Math.max(maxY, bounds.bottom); }
+    for (const node of model.nodes) {
+      const bounds = unitBounds(node);
+      minX = Math.min(minX, bounds.left); maxX = Math.max(maxX, bounds.right); minY = Math.min(minY, bounds.top); maxY = Math.max(maxY, bounds.bottom);
+      if (presentation === 'published') {
+        const badge = getPublishedUnitSummary(node, model, results).bounds;
+        minX = Math.min(minX, node.x + badge.left); maxX = Math.max(maxX, node.x + badge.right);
+        minY = Math.min(minY, node.y + badge.top); maxY = Math.max(maxY, node.y + badge.bottom);
+      }
+    }
     for (const stream of model.streams) {
       const path = route(stream);
       if (path) {
@@ -432,6 +452,7 @@ export function createEditor({ svg, canEdit = () => true, onChange = () => {}, o
   return {
     setModel(value) { if (!editable()) cancelMutation(); model = value; selected = null; results = null; pointer = null; lastTap = null; clearPending(); onSelect(null); render(); },
     setResults(value) { results = value; render(); },
+    setPresentation(value) { if (!['published', 'editing'].includes(value)) return false; cancelMutation(); presentation = value; render(); return true; },
     setMode(value) { if (value === 'connect' && !allowEdit()) return false; if (['select', 'connect', 'pan'].includes(value)) { mode = value; clearPending(); render(); if (mode === 'connect') announce('Choose a source unit, then choose its destination.'); } },
     addNode,
     fit,

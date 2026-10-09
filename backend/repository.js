@@ -3,8 +3,15 @@ import { ApiError, permissions, requireAdmin, requirePermission } from './policy
 const rolesFor = { view: ['viewer', 'operator', 'editor'], run: ['operator', 'editor'], edit: ['editor'] };
 const placeholders = values => values.map(() => '?').join(',');
 const changed = result => Number(result?.meta?.changes ?? 0) > 0;
+const legacyPublication = row => Boolean(row?.published && row.published_model_json === null && row.published_version === 0);
 const parse = row => row && ({
   id: row.id, name: row.name, model: JSON.parse(row.model_json), revision: row.revision,
+  // Catalog reads project the old live model until its first per-model access.
+  // The guarded initialization below persists this same copy before any edit.
+  publishedModel: row.published_model_json ? JSON.parse(row.published_model_json) : legacyPublication(row) ? JSON.parse(row.model_json) : null,
+  publishedVersion: legacyPublication(row) ? 1 : row.published_version,
+  publishedAt: legacyPublication(row) ? row.updated_at : row.published_at,
+  hasUnpublishedChanges: !legacyPublication(row) && row.model_json !== row.published_model_json,
   published: Boolean(row.published), editLocked: Boolean(row.edit_locked), unpublishLocked: Boolean(row.unpublish_locked),
   schedule: JSON.parse(row.schedule_json), sources: JSON.parse(row.sources_json),
   createdBy: row.created_by, createdAt: row.created_at, updatedAt: row.updated_at, deletedAt: row.deleted_at
@@ -21,6 +28,11 @@ function accessClause(action, userId) {
   };
 }
 const adminClause = userId => ({ sql: "EXISTS (SELECT 1 FROM users actor WHERE actor.id = ? AND actor.active = 1 AND actor.role = 'admin')", values: [userId] });
+const legacyRun = (run, model) => {
+  if (Object.hasOwn(run, 'target')) return run;
+  const published = model?.publishedVersion === 1 && model.publishedModel !== null && JSON.stringify(run.modelSnapshot) === JSON.stringify(model.publishedModel);
+  return { ...run, target: published ? 'published' : 'draft', publishedVersion: published ? 1 : null };
+};
 
 export class Repository {
   constructor(db, { now = () => Date.now(), uuid = () => crypto.randomUUID() } = {}) {
@@ -42,7 +54,25 @@ export class Repository {
     return user;
   }
   async user(id) { return userRow(await this.first('SELECT * FROM users WHERE id=?', [id])); }
-  async model(id, includeDeleted = false) { return parse(await this.first(`SELECT * FROM models WHERE id=? ${includeDeleted ? '' : 'AND deleted_at IS NULL'}`, [id])); }
+  async model(id, includeDeleted = false) {
+    const sql = `SELECT * FROM models WHERE id=? ${includeDeleted ? '' : 'AND deleted_at IS NULL'}`;
+    let row = await this.first(sql, [id]);
+    if (legacyPublication(row)) {
+      await this.initializePublication(id);
+      row = await this.first(sql, [id]);
+    }
+    return parse(row);
+  }
+  async initializePublication(id) {
+    // Sites migrations stay schema-only. This bounded, idempotent transaction
+    // preserves one existing live copy without changing draft/revision/policy.
+    // Legacy result attribution is fixed before a subsequent promotion can
+    // replace publication 1, and touches at most the retained 20 run records.
+    const snapshot = this.statement('UPDATE models SET published_model_json=model_json,published_version=1,published_at=updated_at WHERE id=? AND published=1 AND published_model_json IS NULL AND published_version=0', [id]);
+    const matching = "EXISTS(SELECT 1 FROM models WHERE models.id=model_runs.model_id AND published_version=1 AND published_model_json=json_extract(model_runs.run_json,'$.modelSnapshot'))";
+    const runs = this.statement(`UPDATE model_runs SET run_json=json_set(run_json,'$.target',CASE WHEN ${matching} THEN 'published' ELSE 'draft' END,'$.publishedVersion',CASE WHEN ${matching} THEN 1 ELSE NULL END) WHERE model_id=? AND json_type(run_json,'$.target') IS NULL AND id IN(SELECT id FROM model_runs WHERE model_id=? ORDER BY started_at DESC,id DESC LIMIT 20)`, [id, id]);
+    await this.db.batch([snapshot, runs]);
+  }
   async grant(modelId, userId) { return (await this.first('SELECT level FROM model_grants WHERE model_id=? AND user_id=?', [modelId, userId]))?.level || 'none'; }
   async permission(user, model) { return permissions(await this.user(user.id), model, await this.grant(model.id, user.id)); }
   async accessibleModel(user, id, action = 'canView') {
@@ -52,8 +82,15 @@ export class Repository {
     requirePermission(permission, action);
     return { model, permission };
   }
-  async runs(modelId) { return (await this.all('SELECT run_json FROM (SELECT run_json,started_at,id FROM model_runs WHERE model_id=? ORDER BY started_at DESC,id DESC LIMIT 20) ORDER BY started_at,id', [modelId])).map(row => JSON.parse(row.run_json)); }
-  entry(model) { return { id: model.id, model: model.model, updatedAt: model.updatedAt }; }
+  async runs(modelId, model = null) {
+    model ??= await this.model(modelId);
+    return (await this.all('SELECT run_json FROM (SELECT run_json,started_at,id FROM model_runs WHERE model_id=? ORDER BY started_at DESC,id DESC LIMIT 20) ORDER BY started_at,id', [modelId])).map(row => legacyRun(JSON.parse(row.run_json), model));
+  }
+  entry(model) {
+    return { id: model.id, model: model.model, updatedAt: model.updatedAt,
+      publishedModel: model.publishedModel, publishedVersion: model.publishedVersion,
+      publishedAt: model.publishedAt, hasUnpublishedChanges: model.hasUnpublishedChanges };
+  }
   async workspace(user) {
     user = await this.user(user.id);
     if (!user?.active) throw new ApiError(403, 'Your account is disabled.');
@@ -62,13 +99,13 @@ export class Repository {
     const catalog = { version: 1, activeId: visible[0]?.id ?? null, models: [], schedules: {}, sources: {}, runs: {} }, policy = {};
     for (const model of visible) {
       catalog.models.push(this.entry(model)); catalog.schedules[model.id] = model.schedule; catalog.sources[model.id] = model.sources;
-      catalog.runs[model.id] = await this.runs(model.id); policy[model.id] = await this.permission(user, model);
+      catalog.runs[model.id] = await this.runs(model.id, model); policy[model.id] = await this.permission(user, model);
     }
     return { user, catalog, permissions: policy, serverTime: this.stamp() };
   }
   async admin(user) {
     requireAdmin(await this.user(user.id));
-    const models = (await this.all('SELECT * FROM models ORDER BY created_at,id')).map(parse).map(({ model, schedule, sources, ...summary }) => ({ ...summary, streams: model.streams.length, scheduleEnabled: schedule.enabled }));
+    const models = (await this.all('SELECT * FROM models ORDER BY created_at,id')).map(parse).map(({ model, publishedModel, schedule, sources, ...summary }) => ({ ...summary, streams: model.streams.length, scheduleEnabled: schedule.enabled }));
     return { users: (await this.all('SELECT * FROM users ORDER BY created_at,id')).map(userRow), models, grants: (await this.all('SELECT model_id,user_id,level FROM model_grants')).map(row => ({ modelId: row.model_id, userId: row.user_id, level: row.level })) };
   }
   async createModel(user, model, schedule) {
@@ -91,6 +128,7 @@ export class Repository {
     throw new ApiError(409, 'The model state changed. Refresh the workspace and try again.');
   }
   async updateModel(user, id, model, revision) {
+    await this.model(id);
     const guard = accessClause('edit', user.id);
     const result = await this.statement(`UPDATE models SET name=?,model_json=?,revision=revision+1,updated_at=? WHERE id=? AND revision=? AND deleted_at IS NULL AND edit_locked=0 AND ${guard.sql}`, [model.name, JSON.stringify(model), this.stamp(), id, revision, ...guard.values]).run();
     if (!changed(result)) await this.rejectWrite(user, id, revision, 'canEdit');
@@ -98,6 +136,7 @@ export class Repository {
     return { entry: this.entry(saved), permission: await this.permission(user, saved) };
   }
   async updateSchedule(user, id, schedule, revision) {
+    await this.model(id);
     const guard = accessClause('edit', user.id);
     const result = await this.statement(`UPDATE models SET schedule_json=?,revision=revision+1,updated_at=? WHERE id=? AND revision=? AND deleted_at IS NULL AND published=1 AND ${guard.sql}`, [JSON.stringify(schedule), this.stamp(), id, revision, ...guard.values]).run();
     if (!changed(result)) await this.rejectWrite(user, id, revision, 'canSchedule');
@@ -107,7 +146,11 @@ export class Repository {
   async updatePublication(user, id, published, revision, disabledSchedule) {
     const { model } = await this.accessibleModel(user, id);
     const guard = accessClause('edit', user.id);
-    const result = await this.statement(`UPDATE models SET published=?,schedule_json=?,revision=revision+1,updated_at=? WHERE id=? AND revision=? AND deleted_at IS NULL AND NOT(published=1 AND ?=0 AND unpublish_locked=1) AND ${guard.sql}`, [Number(published), JSON.stringify(published ? model.schedule : disabledSchedule), this.stamp(), id, revision, Number(published), ...guard.values]).run();
+    // Promotion copies the draft inside the guarded SQL update, so a concurrent
+    // edit can never produce a snapshot labelled as a different publication.
+    const promotion = published ? ',published_model_json=model_json,published_version=published_version+1,published_at=?' : '';
+    const stamp = this.stamp();
+    const result = await this.statement(`UPDATE models SET published=?,schedule_json=?,revision=revision+1,updated_at=?${promotion} WHERE id=? AND revision=? AND deleted_at IS NULL AND ${published ? "edit_locked=0 AND (published=0 OR model_json<>published_model_json OR published_model_json IS NULL)" : 'published=1 AND unpublish_locked=0'} AND ${guard.sql}`, [Number(published), JSON.stringify(published ? model.schedule : disabledSchedule), stamp, ...(published ? [stamp] : []), id, revision, ...guard.values]).run();
     if (!changed(result)) {
       const fresh = await this.model(id);
       const permission = fresh ? await this.permission(user, fresh) : null;
@@ -118,10 +161,13 @@ export class Repository {
     return { entry: this.entry(saved), permission: await this.permission(user, saved), schedule: saved.schedule };
   }
   async claimSchedule(user, model, schedule) {
+    await this.model(model.id);
     const guard = accessClause('run', user.id);
     const result = await this.statement(`UPDATE models SET schedule_json=?,revision=revision+1,updated_at=? WHERE id=? AND revision=? AND deleted_at IS NULL AND published=1 AND schedule_json=? AND ${guard.sql}`, [JSON.stringify(schedule), this.stamp(), model.id, model.revision, JSON.stringify(model.schedule), ...guard.values]).run();
     if (!changed(result)) await this.rejectWrite(user, model.id, model.revision, 'canRun');
-    return this.model(model.id);
+    // Keep the snapshot from the successful claim. A promotion after this SQL
+    // update must not substitute a newer snapshot into the already claimed run.
+    return { ...model, schedule, revision: model.revision + 1 };
   }
   async appendRun(user, modelId, run) {
     const guard = accessClause('run', user.id);
@@ -157,26 +203,34 @@ export class Repository {
     const { model } = await this.accessibleModel(actor, id);
     requireAdmin(await this.user(actor.id));
     const published = changes.published ?? model.published, editLocked = changes.editLocked ?? model.editLocked, unpublishLocked = changes.unpublishLocked ?? model.unpublishLocked;
+    // The admin settings form sends its publication checkbox with lock changes.
+    // Only a transition to active publishes here; republishing is an explicit
+    // /publication action, so saving a lock never silently promotes a draft.
+    const promote = changes.published === true && !model.published;
     const guard = adminClause(actor.id);
     // Unlock and unpublish are separate requests. This makes a persisted lock
     // an actual prerequisite, including when the administrator performs it.
-    const result = await this.statement(`UPDATE models SET published=?,edit_locked=?,unpublish_locked=?,schedule_json=?,revision=revision+1,updated_at=? WHERE id=? AND revision=? AND deleted_at IS NULL AND NOT(published=1 AND ?=0 AND unpublish_locked=1) AND ${guard.sql}`, [Number(published), Number(editLocked), Number(unpublishLocked), JSON.stringify(published ? model.schedule : disabledSchedule), this.stamp(), id, revision, Number(published), ...guard.values]).run();
+    const stamp = this.stamp(), promotion = promote ? ',published_model_json=model_json,published_version=published_version+1,published_at=?' : '';
+    const result = await this.statement(`UPDATE models SET published=?,edit_locked=?,unpublish_locked=?,schedule_json=?,revision=revision+1,updated_at=?${promotion} WHERE id=? AND revision=? AND deleted_at IS NULL AND NOT(published=1 AND ?=0 AND unpublish_locked=1) ${promote ? 'AND edit_locked=0' : ''} AND ${guard.sql}`, [Number(published), Number(editLocked), Number(unpublishLocked), JSON.stringify(published ? model.schedule : disabledSchedule), stamp, ...(promote ? [stamp] : []), id, revision, Number(published), ...guard.values]).run();
     if (!changed(result)) {
       const fresh = await this.model(id);
       requireAdmin(await this.user(actor.id));
       if (fresh?.published && !published && fresh.unpublishLocked) throw new ApiError(403, 'Unlock unpublishing before unpublishing this model.');
+      if (promote && fresh?.editLocked) throw new ApiError(403, 'Unlock editing before publishing this model.');
       await this.rejectWrite(actor, id, revision, 'admin');
     }
     const saved = await this.model(id);
     return { entry: this.entry(saved), permission: await this.permission(actor, saved), schedule: saved.schedule };
   }
   async deleteModel(actor, id, revision, disabledSchedule) {
+    await this.model(id);
     const guard = adminClause(actor.id);
     const result = await this.statement(`UPDATE models SET deleted_at=?,schedule_json=?,revision=revision+1,updated_at=? WHERE id=? AND revision=? AND deleted_at IS NULL AND ${guard.sql}`, [this.stamp(), JSON.stringify(disabledSchedule), this.stamp(), id, revision, ...guard.values]).run();
     if (!changed(result)) await this.rejectWrite(actor, id, revision, 'admin');
     return { id, deleted: true };
   }
   async restoreModel(actor, id, revision) {
+    await this.model(id, true);
     const guard = adminClause(actor.id);
     const result = await this.statement(`UPDATE models SET deleted_at=NULL,published=0,revision=revision+1,updated_at=? WHERE id=? AND revision=? AND deleted_at IS NOT NULL AND ${guard.sql}`, [this.stamp(), id, revision, ...guard.values]).run();
     if (!changed(result)) await this.rejectWrite(actor, id, revision, 'admin', { includeDeleted: true });

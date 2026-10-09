@@ -3,6 +3,8 @@ import assert from 'node:assert/strict';
 import { createEditor } from '../public/editor.js';
 import { exampleModel, newStream } from '../public/model.js';
 import { unitBounds } from '../public/unit-symbols.js';
+import { reconcile } from '../public/solver.js';
+import { getPublishedUnitSummary } from '../public/published-results.js';
 
 const EQUIPMENT = ['process', 'mixer', 'splitter', 'pump', 'compressor', 'valve', 'heatExchanger', 'filter', 'cyclone', 'conveyor'];
 
@@ -265,5 +267,79 @@ test('reverse-routed streams clear equipment names and keep both endpoints on th
   assert.ok(path.endsWith(`V ${target.y} H ${target.x - 56}`));
   const lowest = Math.max(...[...path.matchAll(/V ([-\d.]+)/g)].map(match => Number(match[1])));
   assert.ok(lowest >= Math.max(unitBounds(source).bottom, unitBounds(target).bottom) + 40, 'the return leg must clear both symbol labels');
+  assert.equal(f.state.changes, 0);
+});
+
+test('published presentation renders accessible mass badges and 3-decimal stream values only for saved results', t => {
+  const f = setup(t, true), result = reconcile(f.model);
+  f.editor.setResults(result);
+  assert.equal(f.svg.querySelectorAll('[data-result-status]').length, 0, 'editing view keeps its current compact symbols');
+  assert.equal(f.editor.setPresentation('published'), true);
+  assert.equal(f.svg.dataset.presentation, 'published');
+  assert.equal(f.svg.querySelectorAll('[data-result-status]').length, f.model.nodes.length);
+  let texts = f.svg.querySelectorAll('[font-size]');
+  assert.ok(texts.some(item => item.textContent === 'In 99.444'));
+  assert.ok(texts.some(item => item.textContent === 'Out 99.444'));
+  assert.ok(texts.some(item => item.textContent === '62.222 kg'));
+  assert.match(f.node('mix').getAttribute('aria-label'), /incoming mass: 99\.444 kg per batch/);
+  f.editor.setResults(null);
+  texts = f.svg.querySelectorAll('[font-size]');
+  assert.equal(texts.filter(item => item.textContent === 'Awaiting run').length, f.model.nodes.length);
+  assert.ok(!texts.some(item => item.textContent === 'In 99.444'));
+  f.editor.setResults({ status: 'invalid', streams: result.streams });
+  assert.ok(!f.svg.querySelectorAll('[font-size]').some(item => item.textContent === '62.222 kg'), 'failed runs cannot masquerade as successful stream results');
+  assert.equal(f.editor.setPresentation('other'), false);
+  assert.equal(f.svg.dataset.presentation, 'published');
+});
+
+test('published presentation independently blocks editing but preserves selection, pan, and zoom', t => {
+  const f = setup(t, true), original = structuredClone(f.model);
+  f.editor.setPresentation('published');
+  f.editor.setResults(reconcile(f.model));
+  for (const kind of EQUIPMENT) assert.equal(f.editor.addNode(kind), false);
+  f.svg.fire('pointerdown', { target: f.node('mix') });
+  f.svg.fire('pointermove', { clientX: 200, clientY: 300 });
+  f.svg.fire('pointerup', { clientX: 200, clientY: 300 });
+  assert.deepEqual(f.state.selected, { kind: 'node', id: 'mix' });
+  f.svg.fire('dblclick', { target: f.node('mix') });
+  f.svg.fire('keydown', { target: f.node('mix'), key: 'Enter' });
+  f.svg.fire('keydown', { target: f.node('mix'), key: 'ArrowRight' });
+  assert.equal(f.editor.deleteSelection(), false);
+  assert.equal(f.editor.setMode('connect'), false);
+  const world = () => f.svg.children.find(item => item.getAttribute('class') === 'flow-world').getAttribute('transform');
+  const before = world();
+  f.editor.setMode('pan'); f.svg.fire('pointerdown');
+  f.svg.fire('pointermove', { clientX: 170, clientY: 300 }); f.svg.fire('pointerup', { clientX: 170, clientY: 300 });
+  assert.notEqual(world(), before);
+  const panned = world(); f.editor.zoom(0.2); assert.notEqual(world(), panned);
+  assert.deepEqual(f.model, original); assert.equal(f.state.changes, 0); assert.deepEqual(f.state.edits, []);
+  f.editor.setPresentation('editing');
+  assert.ok(f.editor.addNode('pump'), 'switching back restores the caller-granted editing permission');
+});
+
+test('published fit includes each unit mass badge without moving symbols or their fixed ports', t => {
+  const f = setup(t, false), original = structuredClone(f.model), result = reconcile(f.model);
+  f.editor.setPresentation('published'); f.editor.setResults(result); f.editor.fit();
+  const world = f.svg.children.find(item => item.getAttribute('class') === 'flow-world');
+  const match = world.getAttribute('transform').match(/^translate\(([-\d.e]+) ([-\d.e]+)\) scale\(([-\d.e]+)\)$/i);
+  const [, px, py, zoom] = match.map(Number);
+  for (const node of f.model.nodes) {
+    const badge = getPublishedUnitSummary(node, f.model, result).bounds;
+    assert.ok((node.x + badge.left) * zoom + px >= 48 - 1e-8);
+    assert.ok((node.x + badge.right) * zoom + px <= 900 - 48 + 1e-8);
+    assert.ok((node.y + badge.top) * zoom + py >= 48 - 1e-8);
+    assert.ok((node.y + badge.bottom) * zoom + py <= 600 - 48 + 1e-8);
+    assert.ok(badge.bottom < 0, 'annotations are clear of the horizontal connection ports');
+  }
+  assert.deepEqual(f.model, original);
+});
+
+test('switching to published presentation rolls back a temporary edit and preserves original port locations', t => {
+  const f = setup(t, true);
+  f.svg.fire('pointerdown', { target: f.node('feed') });
+  f.svg.fire('pointermove', { clientX: 170, clientY: 320 });
+  assert.equal(f.model.nodes[0].x, 170);
+  f.editor.setPresentation('published');
+  assert.equal(f.model.nodes[0].x, 100); assert.equal(f.model.nodes[0].y, 260);
   assert.equal(f.state.changes, 0);
 });

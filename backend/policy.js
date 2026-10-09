@@ -15,7 +15,7 @@ export function permissions(user, model, grant = 'none') {
     canView: level >= 0, canRun: level >= 1,
     canEdit: level >= 2 && !model.editLocked,
     canSchedule: level >= 2 && Boolean(model.published),
-    canPublish: level >= 2 && !model.published,
+    canPublish: level >= 2 && !model.editLocked && (!model.published || Boolean(model.hasUnpublishedChanges)),
     canUnpublish: level >= 2 && Boolean(model.published) && !model.unpublishLocked,
     canDelete: admin
   };

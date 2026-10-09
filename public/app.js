@@ -5,6 +5,7 @@ import { validateEditableModel } from './management-store.js';
 import { connectWorkspace } from './workspace-api.js';
 import { createAdmin } from './admin.js';
 import { UNIT_SYMBOLS, appendUnitSymbol } from './unit-symbols.js';
+import { getPublishedUnitSummary } from './published-results.js';
 
 const $ = (s, root = document) => root.querySelector(s);
 const $$ = (s, root = document) => [...root.querySelectorAll(s)];
@@ -34,11 +35,14 @@ function buildPalette() {
   $('#node-form').elements.kind.innerHTML = Object.entries(UNIT_SYMBOLS).map(([kind, symbol]) => `<option value="${kind}">${esc(symbol.label)}</option>`).join('');
 }
 buildPalette();
-let model = emptyModel(), results = null, selection = null, activeTab = 'model', mode = 'select', editingStream = null, editingNode = null, confirmAction = null, toastTimer, admin = null, runningWorkbench = false;
+let model = emptyModel(), results = null, selection = null, activeTab = 'model', mode = 'select', editingStream = null, editingNode = null, confirmAction = null, toastTimer, admin = null, runningWorkbench = false, viewMode = 'editing', activeRun = null;
 const modelSessions = new Map();
 const backend = await connectWorkspace(toast);
-const management = createManagement({ backend, fallbackModel: model, beforeAction: () => { admin?.leave(); flushVisibleDraft(); }, onActivate: activateManagedModel, onRun: acceptManagedRun, onNewModel: () => replaceModel(emptyModel()), onToast: toast, onAccessChange: refreshChrome, onReview: record => { acceptManagedRun(record); switchTab('results'); } });
-model = management.current().model;
+const initialPage = new URL(location.href);
+if (backend.workspace.catalog.models.some(entry => entry.id === initialPage.searchParams.get('model'))) backend.select(initialPage.searchParams.get('model'));
+const management = createManagement({ backend, fallbackModel: model, beforeAction: () => { admin?.leave(); flushVisibleDraft(); }, onActivate: activateManagedModel, onRun: acceptManagedRun, onNewModel: () => replaceModel(emptyModel()), onToast: toast, onAccessChange: reason => { if (viewMode === 'published' && ['refresh', 'publication', 'run'].includes(reason)) refreshPublishedModel(); refreshChrome(); }, onReview: record => { acceptManagedRun(record); switchTab('results'); } });
+viewMode = initialPage.searchParams.get('view') === 'editing' ? 'editing' : initialPage.searchParams.get('view') === 'published' || backend.permission(management.activeId).published ? 'published' : 'editing';
+model = clone(viewMode === 'published' ? backend.permission(management.activeId).published && management.current().publishedModel || emptyModel() : management.current().model);
 let editingModelId = management.activeId;
 let history = [JSON.stringify(model)], historyIndex = 0;
 
@@ -57,7 +61,7 @@ function commit() {
   if (json !== history[historyIndex]) {
     history = history.slice(0, historyIndex + 1); history.push(json);
     if (history.length > 100) history.shift(); historyIndex = history.length - 1;
-    results = null; editor.setResults(null); persist();
+    results = null; activeRun = null; editor.setResults(null); persist();
   }
   refreshChrome(); renderInspector(); if (activeTab === 'results') renderResults();
 }
@@ -68,10 +72,12 @@ function refreshChrome() {
   $('#meter-count').textContent = count;
   $('#model-count').textContent = `${model.nodes.length} units · ${model.streams.length} streams`;
   $('#canvas-empty').classList.toggle('hidden', model.nodes.length > 0);
-  const permission = backend.permission(editingModelId), editable = Boolean(permission.canEdit), exists = Boolean(editingModelId);
+  const permission = backend.permission(editingModelId), editable = canEdit(), exists = Boolean(editingModelId);
   $('#undo-button').disabled = !editable || historyIndex === 0; $('#redo-button').disabled = !editable || historyIndex >= history.length - 1;
   $('#model-name').disabled = !editable || management.isOpen || Boolean(admin?.isOpen);
-  $('#run-button').disabled = !permission.canRun || runningWorkbench; $('#data-run-button').disabled = !permission.canRun || runningWorkbench;
+  const available = viewMode !== 'published' || hasPublishedModel();
+  $('#run-button').disabled = !permission.canRun || !available || runningWorkbench; $('#data-run-button').disabled = !permission.canRun || runningWorkbench;
+  if (!runningWorkbench) $('#run-button').innerHTML = `<span aria-hidden="true">▶</span> ${viewMode === 'published' ? 'Run reconciliation' : 'Test draft reconciliation'}`;
   $$('.palette-item').forEach(button => { button.disabled = !editable; button.draggable = editable; });
   $$('[data-field], #batch-period, #custom-hours, #sample-readings').forEach(input => input.disabled = !editable);
   $$('.stream-name-button, [data-add-meter], #inspect-edit-node, #inspect-edit-stream, #inspect-delete').forEach(button => button.disabled = !editable);
@@ -92,13 +98,91 @@ function refreshChrome() {
   $('#workspace-empty-message').textContent = canCreate() ? 'Create a model, load the demo, or import a model from a file or your previous browser workspace.' : 'Ask your administrator to give you access to a model. Assigned models will appear here.';
   $('#empty-new-model').hidden = !canCreate(); $('#empty-import-legacy').hidden = !canCreate();
   $$('.tab').forEach(button => button.disabled = !exists);
-  if (!exists && !management.isOpen && !admin?.isOpen) $$('[role="tabpanel"]').forEach(view => view.classList.add('hidden'));
-  if (exists && permission.editLocked) $('#canvas-status').textContent = 'Editing is locked by an administrator. You can still review and run this model if permitted.';
+  if ((!exists || !available) && !management.isOpen && !admin?.isOpen) $$('[role="tabpanel"]').forEach(view => view.classList.add('hidden'));
+  if (viewMode === 'published') $('#canvas-status').textContent = 'Published diagram · mass values in kg per batch. Select a unit or stream to inspect its results.';
+  else if (exists && permission.editLocked) $('#canvas-status').textContent = 'Editing is locked by an administrator. You can still review and run this model if permitted.';
   else if (exists && !editable) $('#canvas-status').textContent = 'Read-only model. Your assigned permissions control editing and reconciliation.';
+  refreshPageChrome();
 }
-function canEdit() { return Boolean(backend.permission(editingModelId).canEdit); }
+function canEdit() { return viewMode === 'editing' && Boolean(backend.permission(editingModelId).canEdit); }
 function canCreate() { return ['admin', 'editor'].includes(backend.user.role); }
 function requireEdit() { if (canEdit()) return true; toast('This model is read-only or locked by an administrator.'); return false; }
+function currentEntry() { return backend.workspace.catalog.models.find(entry => entry.id === editingModelId) || null; }
+function hasPublishedModel() { return Boolean(backend.permission(editingModelId).published && currentEntry()?.publishedModel); }
+function runResult(record) {
+  if (!record) return null;
+  return record.result || { status: 'invalid', message: record.error || 'This run could not be completed.', streams: [], balances: [], warnings: [], objective: null, degreesOfFreedom: 0 };
+}
+function refreshPageChrome() {
+  const published = viewMode === 'published', pageOpen = !management.isOpen && !admin?.isOpen;
+  const entry = currentEntry(), permission = backend.permission(editingModelId), available = hasPublishedModel();
+  document.body.classList.toggle('is-published', published);
+  $('#model-view-switch').hidden = !pageOpen;
+  $('#published-banner').hidden = !pageOpen || !published;
+  $('#editing-banner').hidden = !pageOpen || published || !entry;
+  $('#published-empty').hidden = !pageOpen || !published || available;
+  $('#workflow-nav').classList.toggle('hidden', !pageOpen || !entry || (published && !available));
+  $('#workspace-empty').hidden = published || Boolean(entry) || !pageOpen;
+  $('#workspace-empty').classList.toggle('hidden', $('#workspace-empty').hidden);
+  $('#open-published-view').setAttribute('aria-pressed', String(published));
+  $('#open-editing-view').setAttribute('aria-pressed', String(!published));
+  $('#open-published-view').classList.toggle('active', published);
+  $('#open-editing-view').classList.toggle('active', !published);
+  $('#tab-data').hidden = published;
+  for (const id of ['new-button', 'demo-button', 'import-button', 'undo-button', 'redo-button']) $(`#${id}`).hidden = published;
+  $('[data-mode="connect"]').hidden = published;
+  const entries = backend.workspace.catalog.models.filter(item => backend.permission(item.id).published && item.publishedModel);
+  const select = $('#published-model-select');
+  if (document.activeElement !== select) {
+    const choices = entries.map(item => new Option(item.publishedModel.name, item.id));
+    if (!available) choices.unshift(new Option(entries.length ? 'Choose a published model' : 'No published models', ''));
+    select.replaceChildren(...choices);
+    select.value = available ? editingModelId : '';
+  }
+  select.disabled = !entries.length;
+  $('#published-version').textContent = available ? `Published version ${entry.publishedVersion}` : 'No published version';
+  $('#published-run-time').textContent = activeRun ? `Last run ${new Intl.DateTimeFormat(undefined, { dateStyle: 'medium', timeStyle: 'short' }).format(new Date(activeRun.finishedAt || activeRun.startedAt))}` : 'No run for this version yet';
+  $('#published-result-status').textContent = activeRun ? activeRun.status === 'ok' ? 'Reconciled' : activeRun.status === 'underdetermined' ? 'Needs measurements' : activeRun.status === 'warning' ? 'Review warnings' : 'Run needs attention' : 'Awaiting reconciliation';
+  $('#published-result-status').dataset.status = activeRun?.status || 'pending';
+  $('#published-message').textContent = available ? `${fmt(Number(model.periodHours))}-hour batch · kg per batch. ${activeRun ? activeRun.result?.message || activeRun.error || 'Run completed.' : 'Run reconciliation to display the saved version’s values.'}${entry.hasUnpublishedChanges ? ' Draft changes are separate from this published model.' : ''}` : 'Choose a published model, or publish a draft from Model editor.';
+  const changed = entry && (!entry.publishedModel || JSON.stringify(viewMode === 'editing' ? model : entry.model) !== JSON.stringify(entry.publishedModel));
+  $('#editing-status').textContent = permission.published ? changed ? `Draft changes · published version ${entry?.publishedVersion} is unchanged` : `Draft matches published version ${entry?.publishedVersion}` : 'Draft · not published';
+  $('#publish-draft-button').textContent = permission.published ? 'Publish changes' : 'Publish model';
+  $('#publish-draft-button').hidden = !permission.canEdit;
+  $('#publish-draft-button').disabled = !permission.canEdit || !changed || runningWorkbench;
+  $('#view-live-button').hidden = !available;
+  $('#view-live-button').disabled = !available;
+  if (published) $('#save-state').textContent = available ? `Published version ${entry.publishedVersion} · read-only diagram` : 'No published model selected';
+  for (const id of ['results-run', 'results-data', 'results-fix-data']) {
+    const button = $(`#${id}`);
+    if (button) { if (id === 'results-run') button.disabled = !permission.canRun || !available || runningWorkbench; else button.hidden = published; }
+  }
+}
+function refreshPublishedModel() {
+  if (viewMode !== 'published') return;
+  const entry = currentEntry();
+  const next = hasPublishedModel() ? entry.publishedModel : emptyModel();
+  const changed = JSON.stringify(model) !== JSON.stringify(next);
+  if (changed) { model = clone(next); selection = null; editor.setModel(model); }
+  activeRun = hasPublishedModel() ? management.latest(editingModelId, { target: 'published' }) : null;
+  results = runResult(activeRun); editor.setResults(results); renderInspector();
+  if (changed) editor.fit();
+  if (activeTab === 'results') renderResults();
+}
+async function openPage(view, id = editingModelId) {
+  if (view === 'published' && !backend.permission(id).published) id = backend.workspace.catalog.models.find(entry => backend.permission(entry.id).published && entry.publishedModel)?.id || id;
+  await management.activate(id, { view });
+}
+async function publishDraft() {
+  if (!canEdit()) return;
+  const id = editingModelId;
+  try {
+    flushVisibleDraft(); await backend.flush();
+    await backend.publication(id, true);
+    await management.activate(id, { view: 'published' });
+    toast('Draft published. Reconcile this version to see its values.');
+  } catch (error) { toast(error.message); }
+}
 const editor = createEditor({
   canEdit,
   svg: $('#flowsheet'), onChange: commit,
@@ -106,6 +190,7 @@ const editor = createEditor({
   onEditStream: openStream, onEditNode: openNode,
   onStatus: message => { $('#canvas-status').textContent = message; }
 });
+editor.setPresentation(viewMode === 'published' ? 'published' : 'editing');
 editor.setModel(model); refreshChrome(); renderInspector();
 admin = createAdmin({ api: backend.api, getUser: () => backend.user, beforeOpen: async () => { flushVisibleDraft(); await backend.flush(); management.leave(); }, onChange: () => backend.refresh(), onBack: () => switchTab('model'), onToast: toast });
 $('#empty-new-model').onclick = () => replaceModel(emptyModel());
@@ -124,6 +209,7 @@ $('#empty-import-legacy').onclick = () => {
 };
 
 function switchTab(name) {
+  if (viewMode === 'published' && name === 'data') name = 'model';
   admin?.leave();
   management.leave();
   activeTab = name;
@@ -135,7 +221,7 @@ function switchTab(name) {
 $$('.tab').forEach(button => button.addEventListener('click', () => switchTab(button.dataset.tab)));
 $('.tabbar').addEventListener('keydown', event => {
   if (!['ArrowLeft','ArrowRight'].includes(event.key) || !event.target.matches('.tab')) return;
-  event.preventDefault(); const tabs = $$('.tab'); const i = tabs.indexOf(event.target); const next = tabs[(i + (event.key === 'ArrowRight' ? 1 : 2)) % 3]; next.click(); next.focus();
+  event.preventDefault(); const tabs = $$('.tab').filter(tab => !tab.hidden); const i = tabs.indexOf(event.target); const next = tabs[(i + (event.key === 'ArrowRight' ? 1 : tabs.length - 1)) % tabs.length]; next.click(); next.focus();
 });
 function setMode(value) { mode = value; editor.setMode(value); $$('button[data-mode]').forEach(b => b.classList.toggle('active', b.dataset.mode === value)); }
 $$('button[data-mode]').forEach(button => button.addEventListener('click', () => setMode(button.dataset.mode)));
@@ -147,7 +233,7 @@ $('#fit-button').onclick = () => editor.fit(); $('#zoom-in').onclick = () => edi
 function travel(delta) {
   if (!requireEdit()) return;
   const next = historyIndex + delta; if (next < 0 || next >= history.length) return;
-  historyIndex = next; model = JSON.parse(history[next]); results = null; selection = null; editor.setModel(model); editor.setResults(null); persist(); refreshChrome(); renderInspector();
+  historyIndex = next; model = JSON.parse(history[next]); results = null; activeRun = null; selection = null; editor.setModel(model); editor.setResults(null); persist(); refreshChrome(); renderInspector();
   if (activeTab === 'data') renderData(); if (activeTab === 'results') renderResults();
   $('#canvas-status').textContent = delta < 0 ? 'Change undone.' : 'Change restored.';
 }
@@ -179,20 +265,33 @@ function flushVisibleDraft() {
   }
   commit();
 }
-function activateManagedModel(entry) {
-  modelSessions.set(editingModelId, { history, historyIndex, results, json: JSON.stringify(model) });
-  editingModelId = entry.id; model = clone(entry.model); selection = null;
+function activateManagedModel(entry, options = {}) {
+  if (viewMode === 'editing') modelSessions.set(editingModelId, { history, historyIndex, results, activeRun, json: JSON.stringify(model) });
+  viewMode = options.view || viewMode;
+  editingModelId = entry.id; model = clone(viewMode === 'published' ? backend.permission(entry.id).published && entry.publishedModel || emptyModel() : entry.model); selection = null;
   const previous = modelSessions.get(entry.id), same = previous?.json === JSON.stringify(model);
-  history = same ? previous.history : [JSON.stringify(model)]; historyIndex = same ? previous.historyIndex : 0;
-  results = management.latest(entry.id)?.result || (same ? previous.results : null);
-  editor.setModel(model); editor.setResults(results); refreshChrome(); renderInspector(); if (!admin?.isOpen && !management.isOpen) switchTab('model'); editor.fit();
+  history = viewMode === 'editing' && same ? previous.history : [JSON.stringify(model)]; historyIndex = viewMode === 'editing' && same ? previous.historyIndex : 0;
+  activeRun = viewMode === 'published' && !hasPublishedModel() ? null : management.latest(entry.id, { target: viewMode === 'published' ? 'published' : 'draft' });
+  results = runResult(activeRun);
+  editor.setPresentation(viewMode === 'published' ? 'published' : 'editing'); editor.setModel(model); editor.setResults(results); setMode('select');
+  refreshChrome(); renderInspector(); if (!admin?.isOpen && !management.isOpen) switchTab('model'); editor.fit();
+  const url = new URL(location.href); url.searchParams.set('view', viewMode);
+  if (entry.id) url.searchParams.set('model', entry.id); else url.searchParams.delete('model');
+  window.history.replaceState({}, '', url);
 }
 function acceptManagedRun(record) {
-  if (record.modelId !== editingModelId || JSON.stringify(record.modelSnapshot) !== JSON.stringify(model) || !record.result) return;
-  results = record.result; editor.setResults(results);
+  if (record.modelId !== editingModelId || record.target !== (viewMode === 'published' ? 'published' : 'draft') || JSON.stringify(record.modelSnapshot) !== JSON.stringify(model)) return;
+  if (viewMode === 'published' && record.publishedVersion !== currentEntry()?.publishedVersion) return;
+  activeRun = record; results = runResult(record); editor.setResults(results); refreshChrome(); renderInspector();
   if (activeTab === 'results' && !management.isOpen) renderResults();
 }
 function replaceModel(next) { if (!canCreate()) { toast('Your account cannot create models.'); return; } management.create(next); }
+$('#open-published-view').onclick = () => openPage('published');
+$('#open-editing-view').onclick = () => openPage('editing');
+$('#menu-published').onclick = () => openPage('published');
+$('#published-model-select').onchange = event => openPage('published', event.target.value);
+$('#view-live-button').onclick = () => openPage('published');
+$('#publish-draft-button').onclick = publishDraft;
 $('#new-button').onclick = () => askReplace('Start a new model?', () => replaceModel(emptyModel()));
 function loadDemo() { askReplace('Load the example model?', () => { replaceModel(exampleModel()); toast('Demo loaded: 3 measured streams and 1 unmetered stream.'); }); }
 $('#demo-button').onclick = loadDemo; $('#empty-demo').onclick = loadDemo;
@@ -207,6 +306,12 @@ function renderInspector() {
     const incoming = model.streams.filter(s => s.target === node.id), outgoing = model.streams.filter(s => s.source === node.id);
     $('#inspector').innerHTML = `<p class="eyebrow">SELECTED UNIT</p><h2>${esc(node.name)}</h2><span class="pill">${esc(NODE_TYPES[node.kind])}</span><p class="helper">${['inlet','outlet'].includes(node.kind) ? 'A model boundary. Conservation is enforced at process units inside the model.' : 'All incoming mass equals all outgoing mass. No accumulation is assumed.'}</p><div class="inspector-stats"><div><strong>${incoming.length}</strong><span>incoming</span></div><div><strong>${outgoing.length}</strong><span>outgoing</span></div></div><button class="button secondary full-width" id="inspect-edit-node">Edit unit</button><button class="text-button danger" id="inspect-delete">Delete selection</button><hr><h3>Connected streams</h3>${[...incoming,...outgoing].map(s => `<button class="stream-list-item" data-inspect-stream="${esc(s.id)}"><span>${esc(s.name)}</span><small>${s.measured ? 'Ⓜ Measured' : 'Unmetered'}</small></button>`).join('') || '<p class="helper">Use Connect or drag a port to another unit.</p>'}`;
     $('#inspect-edit-node').onclick = () => openNode(node.id);
+    if (viewMode === 'published') {
+      const summary = getPublishedUnitSummary(node, model, results);
+      const card = document.createElement('div'); card.className = 'published-unit-readout';
+      card.innerHTML = `<span>${esc(summary.heading)}</span>${summary.lines.map(line => `<strong>${esc(line)}</strong>`).join('')}<p class="helper">${esc(summary.description)}</p>`;
+      $('.inspector-stats').after(card);
+    }
   } else if (stream) {
     const source = model.nodes.find(n => n.id === stream.source), target = model.nodes.find(n => n.id === stream.target); const rec = results?.streams.find(s => s.id === stream.id);
     $('#inspector').innerHTML = `<p class="eyebrow">SELECTED STREAM</p><h2>${esc(stream.name)}</h2><p class="connection-mini">${esc(source?.name)}<br><span>↓</span><br>${esc(target?.name)}</p><span class="pill">${stream.measured ? 'Ⓜ Measured' : 'Unmetered'}</span><dl class="properties-list"><dt>Material</dt><dd>${esc(stream.material)}</dd><dt>Phase</dt><dd>${esc(stream.phase)}</dd><dt>Density</dt><dd>${fmt(Number(stream.density))} kg/m³</dd><dt>Reading</dt><dd>${stream.measured ? `${stream.value === '' ? 'Not entered' : esc(stream.value)} ${esc(stream.unit)}` : 'To be inferred'}</dd>${rec ? `<dt>Reconciled</dt><dd>${fmt(rec.value)} kg</dd>` : ''}</dl><button class="button secondary full-width" id="inspect-edit-stream">Edit stream & meter</button><button class="text-button danger" id="inspect-delete">Delete selection</button>`;
@@ -214,6 +319,9 @@ function renderInspector() {
   } else {
     $('#inspector').innerHTML = `<p class="eyebrow">A CLEARER PICTURE</p><h2>Every stream.<br>One balance.</h2><p class="helper">Build the physical model, add what you measure, then let conservation connect the dots.</p><ol class="mini-steps"><li><strong>Place units</strong><span>Drag from the toolbox.</span></li><li><strong>Connect flows</strong><span>Drag between connection ports.</span></li><li><strong>Add measurements</strong><span>Right-click a stream to add a meter.</span></li><li><strong>Enter data & run</strong><span>Review adjustments and inferred flows.</span></li></ol><div class="inspector-callout"><span class="boundary-glyph">▶</span><p>Red triangles mark where material enters and leaves your model.</p></div><button class="button secondary full-width" id="inspect-guide">Open quick guide</button><div class="scope-note">Workspace autosave is enabled.<br><span>Export a file for a portable copy.</span></div>`;
     $('#inspect-guide').onclick = () => $('#help-dialog').showModal();
+    if (viewMode === 'published') {
+      $('#inspector').innerHTML = `<p class="eyebrow">PUBLISHED MODEL</p><h2>Reconciled values.<br>At a glance.</h2><p class="helper">Each unit shows incoming and outgoing mass above its symbol. Lines show the reconciled value of each stream.</p><div class="published-unit-readout"><span>${esc(activeRun ? `Version ${currentEntry()?.publishedVersion} · ${activeRun.status}` : 'Awaiting reconciliation')}</span><p class="helper">${esc(activeRun?.result?.message || activeRun?.error || 'Run this published version to show its batch values.')}</p></div><p class="helper">All values are kg per batch. Inferred stream values are marked. A dash means the available measurements do not determine the value.</p><p class="helper">Select a unit or line for more detail. Draft edits stay in Model editor until published.</p>`;
+    }
   }
   if ($('#inspect-delete')) $('#inspect-delete').onclick = () => editor.deleteSelection();
   for (const selector of ['#inspect-edit-node', '#inspect-edit-stream', '#inspect-delete']) {
@@ -294,21 +402,20 @@ $('#custom-hours').onchange = event => { if (!requireEdit()) return; const n = N
 $('#sample-readings').onclick = () => { if (!requireEdit()) return; for (const [id,value,uncertainty] of [['f1',100,1],['f3',60,2],['f4',35,2]]) { const stream = model.streams.find(s => s.id === id); if (stream) Object.assign(stream,{measured:true,metric:'mass',unit:'kg',value,uncertainty,uncertaintyType:'absolute'}); } editor.setModel(model); commit(); renderData(); toast('Example readings restored.'); };
 
 async function run() {
-  if (!backend.permission(editingModelId).canRun) { toast('Your account cannot run this model.'); return; }
+  if (!backend.permission(editingModelId).canRun || (viewMode === 'published' && !hasPublishedModel())) { toast('Your account cannot run this model.'); return; }
   if ($('dialog[open]')) return;
   flushVisibleDraft();
-  const targetId = editingModelId, snapshot = JSON.stringify(model);
+  const targetId = editingModelId, target = viewMode === 'published' ? 'published' : 'draft', snapshot = JSON.stringify(model), version = target === 'published' ? currentEntry()?.publishedVersion : null;
   runningWorkbench = true; $('#run-button').disabled = true; $('#data-run-button').disabled = true; $('#run-button').textContent = 'Reconciling…';
-  await new Promise(resolve => setTimeout(resolve, 20));
   try {
-    const record = await management.run(targetId);
-    if (editingModelId === targetId && JSON.stringify(model) === snapshot && JSON.stringify(record.modelSnapshot) === snapshot) {
-      results = record.result || {status:'invalid',message:record.error || 'The model could not be reconciled.',streams:[],balances:[],warnings:[],objective:null,degreesOfFreedom:0};
-      editor.setResults(results); switchTab('results'); renderInspector();
+    const record = await management.run(targetId, { target });
+    if (editingModelId === targetId && (viewMode === 'published' ? 'published' : 'draft') === target && JSON.stringify(model) === snapshot && JSON.stringify(record.modelSnapshot) === snapshot && (target !== 'published' || record.publishedVersion === version)) {
+      activeRun = record; results = runResult(record);
+      editor.setResults(results); switchTab(target === 'published' ? 'model' : 'results'); renderInspector(); editor.fit();
     }
   }
   catch (error) { toast(error.message || 'The model could not be reconciled.'); }
-  finally { runningWorkbench = false; refreshChrome(); $('#run-button').innerHTML = '<span aria-hidden="true">▶</span> Run reconciliation'; }
+  finally { runningWorkbench = false; refreshChrome(); }
 }
 $('#run-button').onclick = run; $('#data-run-button').onclick = run;
 function renderResults() {
@@ -332,5 +439,5 @@ $('#auth-export-draft').onclick = () => {
 $('#import-button').onclick = () => $('#import-file').click();
 $('#import-file').onchange = async event => { const file = event.target.files[0]; event.target.value = ''; if (!file) return; try { if (file.size > 2e6) throw new Error('Choose a model file smaller than 2 MB.'); const loaded = validateEditableModel(JSON.parse(await file.text())); askReplace('Import this plant model?', () => { replaceModel(loaded); toast('Model imported.'); }); } catch (error) { toast(`Import failed: ${error.message}`); } };
 function exportResults() { const cell = value => { let text = String(value ?? ''); if (typeof value === 'string' && /^[=+\-@\t\r]/.test(text)) text = `'${text}`; return `"${text.replace(/"/g,'""')}"`; }; const rows = [['Stream','Material','Measured kg','Reconciled kg','Adjustment kg','Standard uncertainty kg','Status']]; for (const s of results.streams) { const stream = model.streams.find(v => v.id === s.id); rows.push([stream?.name,stream?.material,s.raw,s.value,s.correction,s.uncertainty,s.status]); } download(`${safeFilename()}-results.csv`,rows.map(row=>row.map(cell).join(',')).join('\r\n'),'text/csv;charset=utf-8'); }
-switchTab('model');
+activateManagedModel(management.current(), { view: viewMode });
 requestAnimationFrame(() => editor.fit());

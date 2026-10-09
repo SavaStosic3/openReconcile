@@ -29,7 +29,7 @@ Every API request enforces authentication and permissions. Content writes also c
 - Extend the permission model to connector credentials and publishing results to external systems as those integrations are introduced.
 - Record significant administrative and model changes in an audit history.
 
-Revision checks and run snapshots are implemented; a user-facing model version history remains planned.
+Revision checks, run snapshots, and separate working drafts and published snapshots are implemented. Publishing promotes the saved draft to a numbered publication; manual published runs and schedules use that copy while edits remain separate. A user-facing history for browsing or restoring every model version remains planned.
 
 ## 3. Tanks and storage units
 
@@ -87,7 +87,11 @@ Revision checks and run snapshots are implemented; a user-facing model version h
 
 ## 11. Reconciled results on the visual diagram
 
-- Extend the existing reconciled-value labels with selectable overlays for measured/reconciled values, corrections, uncertainty, and result status.
+**Implemented initial published view:** the read-only published diagram shows each stream's reconciled or inferred mass and incoming/outgoing mass totals above every unit symbol, in kg per batch. Its header identifies the publication version, last run, and status. Values are loaded only from runs matching that publication version and input snapshot; missing runs and unresolved values are explicit. Draft editing and test results stay separate until the draft is published.
+
+Further enhancements:
+
+- Extend the existing reconciled-value labels and unit totals with selectable overlays for measured/reconciled values, corrections, uncertainty, and result status.
 - Identify physical measurements, virtual meters, inferred flows, unresolved values, and bounds or quality warnings.
 - Support selecting a saved run/reporting interval and inspecting detailed stream results directly from the diagram.
 - Keep dense diagrams legible and indicate when results are stale after a model or data change.

@@ -105,6 +105,12 @@ function normalizedRun(run, modelId) {
   if (!RUN_STATUSES.has(run.status)) throw new Error('Choose a supported run status.');
   const trigger = run.trigger ?? 'manual';
   if (!['manual', 'scheduled'].includes(trigger)) throw new Error('A run trigger must be manual or scheduled.');
+  if (run.target !== undefined) {
+    // Historical schedules ran the editable model before snapshots existed.
+    // New scheduled API requests enforce published targets at their boundary.
+    if (!['draft', 'published'].includes(run.target)) throw new Error('Choose a valid draft or published run target.');
+    if (run.target === 'published' ? !Number.isSafeInteger(run.publishedVersion) || run.publishedVersion < 1 : run.publishedVersion !== null) throw new Error('A run must identify its published version, or null for a draft.');
+  }
   const startedAt = iso(run.startedAt, 'Run start'), finishedAt = iso(run.finishedAt, 'Run finish');
   if (timeToEpoch(finishedAt) < timeToEpoch(startedAt)) throw new Error('A run cannot finish before it starts.');
   for (const key of ['inputSourceId', 'outputSourceId']) if (run[key] !== undefined && run[key] !== null) validId(run[key], 'Run source ID');
@@ -120,7 +126,15 @@ export function validateCatalog(catalog) {
     validId(entry.id, 'Model ID');
     if (ids.has(entry.id)) throw new Error('Model IDs must be unique.');
     ids.add(entry.id);
-    result.models.push({ id: entry.id, model: validateEditableModel(entry.model), updatedAt: iso(entry.updatedAt, 'Model update') });
+    const normalized = { id: entry.id, model: validateEditableModel(entry.model), updatedAt: iso(entry.updatedAt, 'Model update') };
+    if (['publishedModel', 'publishedVersion', 'publishedAt', 'hasUnpublishedChanges'].some(key => own(entry, key))) {
+      const snapshot = entry.publishedModel === null ? null : validateEditableModel(entry.publishedModel);
+      if (snapshot === null ? entry.publishedVersion !== 0 || entry.publishedAt !== null : !Number.isSafeInteger(entry.publishedVersion) || entry.publishedVersion < 1 || entry.publishedAt === null) throw new Error('A published snapshot needs a matching version and publication timestamp.');
+      Object.assign(normalized, { publishedModel: snapshot, publishedVersion: entry.publishedVersion,
+        publishedAt: snapshot === null ? null : iso(entry.publishedAt, 'Model publication'),
+        hasUnpublishedChanges: JSON.stringify(normalized.model) !== JSON.stringify(snapshot) });
+    }
+    result.models.push(normalized);
     if (!own(catalog.sources, entry.id) || !Array.isArray(catalog.sources[entry.id])) throw new Error('Every model needs a source registry.');
     result.sources[entry.id] = catalog.sources[entry.id].map(normalizedSource);
     if (new Set(result.sources[entry.id].map(source => source.id)).size !== result.sources[entry.id].length) throw new Error('Source IDs must be unique within a model.');
@@ -168,6 +182,7 @@ export function updateModel(catalog, modelId, model, now) {
   const result = validateCatalog(catalog), entry = existing(result, modelId);
   entry.model = validateEditableModel(model);
   entry.updatedAt = iso(now, 'Model update');
+  if (own(entry, 'publishedModel')) entry.hasUnpublishedChanges = JSON.stringify(entry.model) !== JSON.stringify(entry.publishedModel);
   return result;
 }
 

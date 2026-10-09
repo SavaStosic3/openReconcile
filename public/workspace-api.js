@@ -199,10 +199,10 @@ export async function connectWorkspace(onError) {
         applyChange(id, result, 'publication'); return result;
       });
     },
-    execute(id, trigger = 'manual') {
+    execute(id, trigger = 'manual', { target } = {}) {
       return enqueue(async () => {
         await drain();
-        const result = await request(`/api/models/${encodeURIComponent(id)}/runs`, 'POST', { trigger });
+        const result = await request(`/api/models/${encodeURIComponent(id)}/runs`, 'POST', { trigger, ...(target ? { target } : {}) });
         applyChange(id, result, 'run'); return result.run;
       });
     },

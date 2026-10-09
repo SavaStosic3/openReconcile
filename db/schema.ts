@@ -10,6 +10,8 @@ export const users = sqliteTable('users', {
 export const models = sqliteTable('models', {
   id: text('id').primaryKey(), name: text('name').notNull(), modelJson: text('model_json').notNull(),
   revision: integer('revision').notNull().default(1), published: integer('published', { mode: 'boolean' }).notNull().default(false),
+  publishedModelJson: text('published_model_json'), publishedVersion: integer('published_version').notNull().default(0),
+  publishedAt: text('published_at'),
   editLocked: integer('edit_locked', { mode: 'boolean' }).notNull().default(false),
   unpublishLocked: integer('unpublish_locked', { mode: 'boolean' }).notNull().default(false),
   scheduleJson: text('schedule_json').notNull(), sourcesJson: text('sources_json').notNull().default('[]'),

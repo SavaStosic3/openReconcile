@@ -1,6 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { DatabaseSync } from 'node:sqlite';
+import { readFileSync } from 'node:fs';
 import { handleApi } from '../backend/api.js';
 import { Repository } from '../backend/repository.js';
 import { permissions } from '../backend/policy.js';
@@ -9,13 +10,21 @@ import { reconcile } from '../public/solver.js';
 
 // Execute the production SQL against SQLite, matching D1's prepared/batch API.
 // Authorization tests therefore exercise WHERE guards rather than mocked calls.
-function fixture(t) {
+function fixture(t, { legacyModel = null } = {}) {
   const sqlite = new DatabaseSync(':memory:');
-  sqlite.exec(`PRAGMA foreign_keys=ON;
-    CREATE TABLE users(id TEXT PRIMARY KEY,email TEXT NOT NULL,name TEXT NOT NULL,role TEXT NOT NULL DEFAULT 'viewer',active INTEGER NOT NULL DEFAULT 1,created_at TEXT NOT NULL,updated_at TEXT NOT NULL);
-    CREATE TABLE models(id TEXT PRIMARY KEY,name TEXT NOT NULL,model_json TEXT NOT NULL,revision INTEGER NOT NULL DEFAULT 1,published INTEGER NOT NULL DEFAULT 0,edit_locked INTEGER NOT NULL DEFAULT 0,unpublish_locked INTEGER NOT NULL DEFAULT 0,schedule_json TEXT NOT NULL,sources_json TEXT NOT NULL DEFAULT '[]',created_by TEXT NOT NULL REFERENCES users(id),created_at TEXT NOT NULL,updated_at TEXT NOT NULL,deleted_at TEXT);
-    CREATE TABLE model_grants(model_id TEXT NOT NULL REFERENCES models(id),user_id TEXT NOT NULL REFERENCES users(id),level TEXT NOT NULL,PRIMARY KEY(model_id,user_id));
-    CREATE TABLE model_runs(id TEXT PRIMARY KEY,model_id TEXT NOT NULL REFERENCES models(id),run_json TEXT NOT NULL,started_at TEXT NOT NULL,created_by TEXT NOT NULL REFERENCES users(id));`);
+  sqlite.exec('PRAGMA foreign_keys=ON;');
+  sqlite.exec(readFileSync(new URL('../drizzle/0000_complete_random.sql', import.meta.url), 'utf8'));
+  if (legacyModel) {
+    const stamp = '2026-10-09T19:00:00.000Z';
+    sqlite.prepare('INSERT INTO users(id,email,name,role,active,created_at,updated_at) VALUES (?,?,?,\'admin\',1,?,?)').run('owner-subject', 'OWNER@example.com', 'Owner', stamp, stamp);
+    sqlite.prepare('INSERT INTO models(id,name,model_json,revision,published,schedule_json,created_by,created_at,updated_at) VALUES (?,?,?,1,1,?,?,?,?)').run('legacy-model', legacyModel.name, JSON.stringify(legacyModel), JSON.stringify({ enabled: false, intervalMinutes: 60, inputSourceId: null, outputSourceId: null, nextRunAt: null }), 'owner-subject', stamp, stamp);
+    for (const [id, snapshot] of [['legacy-match', legacyModel], ['legacy-different', { ...legacyModel, name: 'Earlier draft' }]]) {
+      const run = { id, modelId: 'legacy-model', modelName: snapshot.name, modelUpdatedAt: stamp, modelSnapshot: snapshot, trigger: 'scheduled', startedAt: stamp, finishedAt: stamp, status: 'ok', result: reconcile(snapshot) };
+      sqlite.prepare('INSERT INTO model_runs(id,model_id,run_json,started_at,created_by) VALUES (?,?,?,?,?)').run(id, 'legacy-model', JSON.stringify(run), stamp, 'owner-subject');
+    }
+  }
+  sqlite.exec(readFileSync(new URL('../drizzle/0001_published_snapshots.sql', import.meta.url), 'utf8'));
+  let batchTail = Promise.resolve();
   const DB = {
     prepare(sql) {
       return {
@@ -26,9 +35,15 @@ function fixture(t) {
       };
     },
     async batch(statements) {
-      sqlite.exec('BEGIN');
-      try { const results = []; for (const statement of statements) results.push(await statement.run()); sqlite.exec('COMMIT'); return results; }
-      catch (error) { sqlite.exec('ROLLBACK'); throw error; }
+      // D1 serializes atomic batches; DatabaseSync needs the same queue when
+      // independent requests initialize the same legacy model concurrently.
+      const execute = batchTail.then(async () => {
+        sqlite.exec('BEGIN');
+        try { const results = []; for (const statement of statements) results.push(await statement.run()); sqlite.exec('COMMIT'); return results; }
+        catch (error) { sqlite.exec('ROLLBACK'); throw error; }
+      });
+      batchTail = execute.catch(() => {});
+      return execute;
     }
   };
   let time = Date.parse('2026-10-09T20:00:00.000Z'), serial = 0;
@@ -209,21 +224,189 @@ test('permission matrix reserves deletion for admins and publication for effecti
   }
   const locked = permissions({ role: 'admin', active: true }, { revision: 1, published: true, editLocked: true, unpublishLocked: true });
   assert.equal(locked.canEdit, false); assert.equal(locked.canUnpublish, false); assert.equal(locked.canDelete, true);
+  for (const role of ['viewer', 'operator', 'editor']) for (const grant of ['none', 'viewer', 'operator', 'editor']) {
+    const changed = permissions({ role, active: true }, { revision: 2, published: true, editLocked: false, unpublishLocked: false, hasUnpublishedChanges: true }, grant);
+    assert.equal(changed.canPublish, role === 'editor' && grant === 'editor');
+  }
+  assert.equal(permissions({ role: 'admin', active: true }, { published: true, editLocked: true, hasUnpublishedChanges: true }).canPublish, false);
 });
 
-test('effective editor publication is permitted independently of content locks but cannot bypass unpublish lock', async t => {
+test('effective editor publication requires unlocked edits and cannot bypass unpublish lock', async t => {
   const f = fixture(t); const created = await f.create(); const id = created.entry.id;
   await f.register(); await f.role('editor'); await f.assign(id, 'editor');
   assert.equal((await f.request(`/api/admin/models/${id}`, 'PATCH', { editLocked: true, revision: 1 })).status, 200);
-  const published = await f.request(`/api/models/${id}/publication`, 'PATCH', { published: true, revision: 2 }, f.viewer);
-  assert.equal(published.status, 200); assert.equal(published.body.permission.published, true); assert.equal(published.body.permission.canEdit, false);
-  assert.equal((await f.request(`/api/models/${id}/publication`, 'PATCH', { published: false, revision: 2 }, f.viewer)).status, 409);
-  assert.equal((await f.request(`/api/admin/models/${id}`, 'PATCH', { unpublishLocked: true, revision: 3 })).status, 200);
-  assert.equal((await f.request(`/api/models/${id}/publication`, 'PATCH', { published: false, revision: 4 }, f.viewer)).status, 403);
-  assert.equal((await f.request(`/api/admin/models/${id}`, 'PATCH', { unpublishLocked: false, revision: 4 })).status, 200);
-  assert.equal((await f.request(`/api/models/${id}/publication`, 'PATCH', { published: false, revision: 5 }, f.viewer)).status, 200);
+  assert.equal((await f.request(`/api/models/${id}/publication`, 'PATCH', { published: true, revision: 2 }, f.viewer)).status, 403);
+  assert.equal((await f.request(`/api/admin/models/${id}`, 'PATCH', { published: true, revision: 2 })).status, 403);
+  assert.equal((await f.request(`/api/admin/models/${id}`, 'PATCH', { editLocked: false, revision: 2 })).status, 200);
+  const published = await f.request(`/api/models/${id}/publication`, 'PATCH', { published: true, revision: 3 }, f.viewer);
+  assert.equal(published.status, 200); assert.equal(published.body.permission.published, true); assert.equal(published.body.permission.canEdit, true);
+  assert.equal((await f.request(`/api/models/${id}/publication`, 'PATCH', { published: false, revision: 3 }, f.viewer)).status, 409);
+  assert.equal((await f.request(`/api/admin/models/${id}`, 'PATCH', { unpublishLocked: true, revision: 4 })).status, 200);
+  assert.equal((await f.request(`/api/models/${id}/publication`, 'PATCH', { published: false, revision: 5 }, f.viewer)).status, 403);
+  assert.equal((await f.request(`/api/admin/models/${id}`, 'PATCH', { unpublishLocked: false, revision: 5 })).status, 200);
+  assert.equal((await f.request(`/api/models/${id}/publication`, 'PATCH', { published: false, revision: 6 }, f.viewer)).status, 200);
   await f.assign(id, 'operator');
-  assert.equal((await f.request(`/api/models/${id}/publication`, 'PATCH', { published: true, revision: 6 }, f.viewer)).status, 403);
+  assert.equal((await f.request(`/api/models/${id}/publication`, 'PATCH', { published: true, revision: 7 }, f.viewer)).status, 403);
+});
+
+test('published snapshots stay isolated from draft edits and manual or scheduled runs select the requested version', async t => {
+  const f = fixture(t); const created = await f.create(); const id = created.entry.id;
+  assert.equal(created.entry.publishedModel, null); assert.equal(created.entry.publishedVersion, 0); assert.equal(created.entry.publishedAt, null);
+  const first = await f.request(`/api/models/${id}/publication`, 'PATCH', { published: true, revision: 1 });
+  assert.equal(first.status, 200, JSON.stringify(first.body)); assert.equal(first.body.entry.publishedVersion, 1);
+  assert.deepEqual(first.body.entry.publishedModel, exampleModel()); assert.equal(first.body.entry.hasUnpublishedChanges, false);
+  assert.equal(first.body.permission.canPublish, false);
+  f.advance(1000);
+  const draft = exampleModel(); draft.name = 'Edited plant'; draft.nodes[1].kind = 'pump'; draft.streams[0].value = 120;
+  const saved = await f.request(`/api/models/${id}`, 'PATCH', { model: draft, revision: 2 });
+  assert.equal(saved.status, 200); assert.deepEqual(saved.body.entry.model, draft);
+  assert.deepEqual(saved.body.entry.publishedModel, exampleModel()); assert.equal(saved.body.entry.publishedAt, first.body.entry.publishedAt);
+  assert.equal(saved.body.entry.hasUnpublishedChanges, true); assert.equal(saved.body.permission.canPublish, true);
+  const publishedRun = await f.request(`/api/models/${id}/runs`, 'POST', { trigger: 'manual' });
+  assert.equal(publishedRun.status, 200); assert.equal(publishedRun.body.run.target, 'published'); assert.equal(publishedRun.body.run.publishedVersion, 1);
+  assert.deepEqual(publishedRun.body.run.modelSnapshot, exampleModel()); assert.deepEqual(publishedRun.body.run.result, reconcile(exampleModel()));
+  const draftRun = await f.request(`/api/models/${id}/runs`, 'POST', { trigger: 'manual', target: 'draft' });
+  assert.equal(draftRun.status, 200); assert.equal(draftRun.body.run.target, 'draft'); assert.equal(draftRun.body.run.publishedVersion, null);
+  assert.deepEqual(draftRun.body.run.modelSnapshot, draft); assert.deepEqual(draftRun.body.run.result, reconcile(draft));
+  assert.equal((await f.request(`/api/models/${id}/runs`, 'POST', { trigger: 'scheduled', target: 'draft' })).status, 400);
+  assert.equal((await f.request(`/api/models/${id}/runs`, 'POST', { trigger: 'manual', target: 'other' })).status, 400);
+  assert.equal((await f.request(`/api/models/${id}/schedule`, 'PATCH', { changes: { enabled: true, intervalMinutes: 1 }, revision: 3 })).status, 200);
+  f.advance(60_000);
+  const scheduled = await f.request(`/api/models/${id}/runs`, 'POST', { trigger: 'scheduled' });
+  assert.equal(scheduled.status, 200); assert.equal(scheduled.body.run.target, 'published'); assert.equal(scheduled.body.run.publishedVersion, 1);
+  assert.deepEqual(scheduled.body.run.modelSnapshot, exampleModel()); assert.deepEqual(scheduled.body.run.result, reconcile(exampleModel()));
+  const promoted = await f.request(`/api/models/${id}/publication`, 'PATCH', { published: true, revision: scheduled.body.permission.revision });
+  assert.equal(promoted.status, 200); assert.equal(promoted.body.entry.publishedVersion, 2); assert.deepEqual(promoted.body.entry.publishedModel, draft);
+  assert.equal(promoted.body.entry.hasUnpublishedChanges, false); assert.equal(promoted.body.permission.canPublish, false);
+  const latest = await f.request(`/api/models/${id}/runs`, 'POST', { trigger: 'manual', target: 'published' });
+  assert.equal(latest.body.run.publishedVersion, 2); assert.deepEqual(latest.body.run.modelSnapshot, draft);
+  const history = (await f.request('/api/workspace')).body.catalog.runs[id];
+  assert.equal(history.find(run => run.id === publishedRun.body.run.id).publishedVersion, 1);
+  assert.deepEqual(history.find(run => run.id === publishedRun.body.run.id).modelSnapshot, exampleModel());
+});
+
+test('unpublishing pauses scheduling and retains snapshot history without allowing published execution', async t => {
+  const f = fixture(t); const created = await f.create(); const id = created.entry.id;
+  assert.equal((await f.request(`/api/models/${id}/runs`, 'POST', { trigger: 'manual', target: 'published' })).status, 403);
+  const draft = await f.request(`/api/models/${id}/runs`, 'POST', { trigger: 'manual' });
+  assert.equal(draft.body.run.target, 'draft'); assert.equal(draft.body.run.publishedVersion, null);
+  await f.request(`/api/models/${id}/publication`, 'PATCH', { published: true, revision: 1 });
+  await f.request(`/api/models/${id}/schedule`, 'PATCH', { changes: { enabled: true }, revision: 2 });
+  const unpublished = await f.request(`/api/models/${id}/publication`, 'PATCH', { published: false, revision: 3 });
+  assert.equal(unpublished.status, 200); assert.equal(unpublished.body.permission.published, false); assert.equal(unpublished.body.schedule.enabled, false);
+  assert.equal(unpublished.body.entry.publishedVersion, 1); assert.deepEqual(unpublished.body.entry.publishedModel, exampleModel());
+  assert.equal((await f.request(`/api/models/${id}/runs`, 'POST', { trigger: 'manual', target: 'published' })).status, 403);
+  const republished = await f.request(`/api/models/${id}/publication`, 'PATCH', { published: true, revision: 4 });
+  assert.equal(republished.status, 200); assert.equal(republished.body.entry.publishedVersion, 2);
+});
+
+test('saving administrator lock settings never silently republishes an edited draft', async t => {
+  const f = fixture(t); const created = await f.create(); const id = created.entry.id;
+  await f.request(`/api/models/${id}/publication`, 'PATCH', { published: true, revision: 1 });
+  const draft = exampleModel(); draft.streams[0].value = 150;
+  await f.request(`/api/models/${id}`, 'PATCH', { model: draft, revision: 2 });
+  const locked = await f.request(`/api/admin/models/${id}`, 'PATCH', { published: true, editLocked: true, unpublishLocked: true, revision: 3 });
+  assert.equal(locked.status, 200); assert.equal(locked.body.entry.publishedVersion, 1);
+  assert.deepEqual(locked.body.entry.publishedModel, exampleModel()); assert.deepEqual(locked.body.entry.model, draft);
+  assert.equal(locked.body.entry.hasUnpublishedChanges, true); assert.equal(locked.body.permission.canPublish, false);
+});
+
+test('schema-only migration projects existing active models and legacy results without changing their data', async t => {
+  const f = fixture(t, { legacyModel: exampleModel() });
+  const pending = readFileSync(new URL('../drizzle/0001_published_snapshots.sql', import.meta.url), 'utf8');
+  const statements = pending.split('--> statement-breakpoint').map(statement => statement.trim()).filter(Boolean);
+  assert.equal(statements.length, 3); for (const statement of statements) assert.match(statement, /^ALTER TABLE `models` ADD /);
+  const persisted = f.sqlite.prepare('SELECT * FROM models WHERE id=\'legacy-model\'').get();
+  assert.equal(persisted.published_model_json, null); assert.equal(persisted.published_version, 0); assert.equal(persisted.revision, 1);
+  const workspace = await f.request('/api/workspace'); assert.equal(workspace.status, 200);
+  const entry = workspace.body.catalog.models.find(item => item.id === 'legacy-model');
+  assert.deepEqual(entry.model, exampleModel()); assert.deepEqual(entry.publishedModel, exampleModel());
+  assert.equal(entry.publishedVersion, 1); assert.equal(entry.publishedAt, '2026-10-09T19:00:00.000Z'); assert.equal(entry.hasUnpublishedChanges, false);
+  const history = workspace.body.catalog.runs['legacy-model'];
+  assert.equal(history.find(run => run.id === 'legacy-match').target, 'published'); assert.equal(history.find(run => run.id === 'legacy-match').publishedVersion, 1);
+  assert.equal(history.find(run => run.id === 'legacy-different').target, 'draft'); assert.equal(history.find(run => run.id === 'legacy-different').publishedVersion, null);
+  assert.equal(f.sqlite.prepare('SELECT published_version FROM models WHERE id=\'legacy-model\'').get().published_version, 0);
+  const admin = await f.request('/api/admin'); assert.equal(admin.body.models.find(model => model.id === 'legacy-model').publishedVersion, 1);
+  assert.equal(f.sqlite.prepare('SELECT published_version FROM models WHERE id=\'legacy-model\'').get().published_version, 0);
+});
+
+test('first legacy draft edit initializes its live copy and result provenance before changing the draft', async t => {
+  const f = fixture(t, { legacyModel: exampleModel() });
+  const previous = f.sqlite.prepare('SELECT * FROM models WHERE id=\'legacy-model\'').get();
+  const draft = exampleModel(); draft.streams[0].value = 150;
+  const edited = await f.request('/api/models/legacy-model', 'PATCH', { model: draft, revision: 1 });
+  assert.equal(edited.status, 200); assert.deepEqual(edited.body.entry.model, draft); assert.deepEqual(edited.body.entry.publishedModel, exampleModel());
+  assert.equal(edited.body.entry.publishedVersion, 1); assert.equal(edited.body.entry.publishedAt, previous.updated_at); assert.equal(edited.body.entry.hasUnpublishedChanges, true);
+  assert.equal(edited.body.permission.revision, 2);
+  const persisted = f.sqlite.prepare('SELECT * FROM models WHERE id=\'legacy-model\'').get();
+  assert.equal(persisted.schedule_json, previous.schedule_json); assert.equal(persisted.sources_json, previous.sources_json);
+  assert.equal(persisted.edit_locked, previous.edit_locked); assert.equal(persisted.unpublish_locked, previous.unpublish_locked);
+  const first = JSON.parse(f.sqlite.prepare('SELECT run_json FROM model_runs WHERE id=\'legacy-match\'').get().run_json);
+  assert.equal(first.target, 'published'); assert.equal(first.publishedVersion, 1);
+  const promoted = await f.request('/api/models/legacy-model/publication', 'PATCH', { published: true, revision: 2 });
+  assert.equal(promoted.status, 200); assert.equal(promoted.body.entry.publishedVersion, 2);
+  const historical = (await f.request('/api/workspace')).body.catalog.runs['legacy-model'].find(run => run.id === 'legacy-match');
+  assert.equal(historical.target, 'published'); assert.equal(historical.publishedVersion, 1); assert.deepEqual(historical.modelSnapshot, exampleModel());
+});
+
+test('concurrent first accesses initialize a legacy publication once without changing revision or any live settings', async t => {
+  const f = fixture(t, { legacyModel: exampleModel() });
+  const before = f.sqlite.prepare('SELECT * FROM models WHERE id=\'legacy-model\'').get();
+  const repo = new Repository(f.env.DB, { now: f.env.NOW, uuid: f.env.UUID });
+  const models = await Promise.all([repo.model('legacy-model'), repo.model('legacy-model'), repo.model('legacy-model')]);
+  for (const model of models) { assert.equal(model.publishedVersion, 1); assert.equal(model.revision, 1); assert.deepEqual(model.publishedModel, exampleModel()); }
+  const after = f.sqlite.prepare('SELECT * FROM models WHERE id=\'legacy-model\'').get();
+  for (const key of Object.keys(before).filter(key => !['published_model_json', 'published_version', 'published_at'].includes(key))) assert.equal(after[key], before[key], key);
+  assert.equal(after.published_version, 1); assert.equal(after.published_at, before.updated_at);
+  await repo.model('legacy-model'); assert.equal(f.sqlite.prepare('SELECT published_version FROM models WHERE id=\'legacy-model\'').get().published_version, 1);
+});
+
+test('legacy initialization tags at most twenty runs and never auto-publishes an unpublished model', async t => {
+  const f = fixture(t, { legacyModel: exampleModel() });
+  const base = JSON.parse(f.sqlite.prepare('SELECT run_json FROM model_runs WHERE id=\'legacy-match\'').get().run_json);
+  for (let index = 0; index < 25; index++) {
+    const id = `legacy-extra-${String(index).padStart(2, '0')}`, stamp = new Date(Date.parse(base.startedAt) + (index + 1) * 1000).toISOString();
+    f.sqlite.prepare('INSERT INTO model_runs(id,model_id,run_json,started_at,created_by) VALUES (?,?,?,?,?)').run(id, 'legacy-model', JSON.stringify({ ...base, id, startedAt: stamp, finishedAt: stamp }), stamp, 'owner-subject');
+  }
+  const repo = new Repository(f.env.DB, { now: f.env.NOW });
+  await repo.model('legacy-model');
+  assert.equal(f.sqlite.prepare("SELECT count(*) AS count FROM model_runs WHERE json_type(run_json,'$.target') IS NOT NULL").get().count, 20);
+  assert.equal(f.sqlite.prepare("SELECT count(*) AS count FROM model_runs WHERE json_type(run_json,'$.target') IS NULL").get().count, 7);
+  const created = await f.create(); await repo.model(created.entry.id);
+  assert.equal(f.sqlite.prepare('SELECT published,published_version,published_model_json FROM models WHERE id=?').get(created.entry.id).published, 0);
+  assert.equal(f.sqlite.prepare('SELECT published_version FROM models WHERE id=?').get(created.entry.id).published_version, 0);
+  // An old inactive model also remains unpublished after first access.
+  f.sqlite.prepare('UPDATE models SET published=0,published_model_json=NULL,published_version=0,published_at=NULL WHERE id=\'legacy-model\'').run();
+  const inactive = await repo.model('legacy-model'); assert.equal(inactive.published, false); assert.equal(inactive.publishedModel, null); assert.equal(inactive.publishedVersion, 0);
+});
+
+test('schedule claims retain the selected publication if a newer publication appears immediately afterward', async t => {
+  const f = fixture(t); const created = await f.create(); const id = created.entry.id;
+  await f.request(`/api/models/${id}/publication`, 'PATCH', { published: true, revision: 1 });
+  await f.request(`/api/models/${id}/schedule`, 'PATCH', { changes: { enabled: true, intervalMinutes: 1 }, revision: 2 });
+  f.advance(60_000);
+  const prepare = f.env.DB.prepare;
+  let interposed = false;
+  f.env.DB.prepare = sql => {
+    const statement = prepare(sql), execute = statement.run;
+    if (sql.startsWith('UPDATE models SET schedule_json=?') && sql.includes('schedule_json=? AND')) {
+      statement.run = async function () {
+        const result = await execute.call(this);
+        if (result.meta.changes && !interposed) {
+          interposed = true;
+          const newer = exampleModel(); newer.streams[0].value = 130;
+          f.sqlite.prepare('UPDATE models SET model_json=?,published_model_json=?,published_version=2,revision=revision+1 WHERE id=?').run(JSON.stringify(newer), JSON.stringify(newer), id);
+        }
+        return result;
+      };
+    }
+    return statement;
+  };
+  const executed = await f.request(`/api/models/${id}/runs`, 'POST', { trigger: 'scheduled' });
+  assert.equal(executed.status, 200, JSON.stringify(executed.body)); assert.equal(interposed, true);
+  assert.equal(executed.body.run.target, 'published'); assert.equal(executed.body.run.publishedVersion, 1);
+  assert.deepEqual(executed.body.run.modelSnapshot, exampleModel());
+  assert.equal((await f.request('/api/workspace')).body.catalog.models[0].publishedVersion, 2);
 });
 
 test('invalid draft readings are preserved and recorded as an invalid run rather than discarded', async t => {

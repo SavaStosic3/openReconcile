@@ -36,8 +36,8 @@ async function readBody(request) {
   } finally { reader.releaseLock(); }
 }
 
-function singleCatalog(model) {
-  const catalog = createCatalog(model.model, { id: model.id, now: model.updatedAt });
+function singleCatalog(model, target = 'draft') {
+  const catalog = createCatalog(target === 'published' ? model.publishedModel : model.model, { id: model.id, now: target === 'published' ? model.publishedAt : model.updatedAt });
   catalog.schedules[model.id] = model.schedule; catalog.sources[model.id] = model.sources;
   return catalog;
 }
@@ -92,24 +92,29 @@ export async function handleApi(request, env, identity) {
     if (route.kind === 'publication') {
       fields(body, ['published', 'revision'], ['published', 'revision']); validateRevision(body.revision); booleanFields(body, ['published']);
       const { model, permission } = await repo.accessibleModel(user, route.id);
-      if (!(permission.canPublish || permission.canUnpublish || permission.canSchedule)) throw new ApiError(403, 'Editor access is required to publish or unpublish a model.');
+      requirePermission(permission, body.published ? 'canPublish' : 'canUnpublish');
       if (model.revision !== body.revision) throw new ApiError(409, 'This model changed. Refresh the workspace before saving.');
       return response(await repo.updatePublication(user, route.id, body.published, body.revision, { ...model.schedule, enabled: false, nextRunAt: null }));
     }
     if (route.kind === 'runs') {
-      fields(body, ['trigger'], ['trigger']);
+      fields(body, ['trigger', 'target'], ['trigger']);
       if (!['manual', 'scheduled'].includes(body.trigger)) throw new ApiError(400, 'Choose a manual or scheduled run.');
+      if (Object.hasOwn(body, 'target') && !['draft', 'published'].includes(body.target)) throw new ApiError(400, 'Choose the draft or published model for this run.');
+      if (body.trigger === 'scheduled' && body.target === 'draft') throw new ApiError(400, 'Scheduled runs use the published model.');
       let { model, permission } = await repo.accessibleModel(user, route.id, 'canRun');
-      let catalog = singleCatalog(model);
+      const target = body.trigger === 'scheduled' ? 'published' : body.target ?? (model.published ? 'published' : 'draft');
+      if (target === 'published' && (!model.published || !model.publishedModel || model.publishedVersion < 1)) throw new ApiError(403, 'Publish this model before running its published version.');
+      let catalog = singleCatalog(model, target);
       if (body.trigger === 'scheduled') {
         if (!model.published || !model.schedule.enabled) throw new ApiError(403, 'Only a published model with an enabled schedule can run on schedule.');
         const now = clock(env)();
         if (Date.parse(model.schedule.nextRunAt) > now) throw new ApiError(409, 'This schedule is not due yet.');
         catalog = advanceSchedule(catalog, route.id, now);
         model = await repo.claimSchedule(user, model, catalog.schedules[route.id]);
-        catalog = singleCatalog(model);
+        catalog = singleCatalog(model, target);
       }
       const { run } = await executeModelRun(catalog, route.id, { trigger: body.trigger, id: repo.uuid(), now: clock(env) });
+      run.target = target; run.publishedVersion = target === 'published' ? model.publishedVersion : null;
       await repo.appendRun(user, route.id, run);
       const fresh = await repo.model(route.id);
       if (!fresh) throw new ApiError(404, 'That model was deleted during the run.');
