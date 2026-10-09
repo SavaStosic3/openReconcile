@@ -1,6 +1,6 @@
 # Feature roadmap
 
-Current capabilities and planned enhancements for openReconcile, a standalone, open-source mass balance reconciliation tool. Browser-triggered scheduling, authenticated shared models, and administrator/model permissions are implemented as described in sections 1 and 2. Remaining items describe planned behavior. Basic reconciled-value labels already exist on the visual diagram.
+Current capabilities and planned enhancements for openReconcile, a standalone, open-source mass balance reconciliation tool. Browser-triggered scheduling, authenticated shared models, administrator/model permissions, and the initial process-unit symbol library are implemented as described in sections 1, 2, and 12. Remaining items describe planned behavior. Basic reconciled-value labels already exist on the visual diagram.
 
 ## 1. Scheduled reconciliation
 
@@ -94,6 +94,10 @@ Revision checks and run snapshots are implemented; a user-facing model version h
 
 ## 12. Process-unit symbols
 
-- Offer recognizable equipment symbols, such as pumps, valves, compressors, heat exchangers, mixers, separators, and tanks, in place of generic blocks.
-- Preserve clear names, connection ports, selection targets, accessible controls, and consistent behavior while units are moved or connected.
-- Store the equipment/symbol choice with the model. A symbol alone does not introduce additional physical equations; storage behavior is provided through the tank/storage feature.
+**Implemented initial library:** ten internal symbols represent pumps, compressors, valves, heat exchangers, filters, cyclones, conveyors, mixers, splitters, and generic process units. The toolbox and flowsheet use the same SVG artwork. Red inflow/outflow triangles remain distinct boundaries.
+
+Each internal unit has consistent left input and right output ports; each accepts multiple streams. Clear names, selection targets, keyboard controls, movement, and connection behavior remain available. Double-click a unit to change its symbol while preserving its identity, position, connections, and readings. The choice is saved with the model and retained in JSON import/export and undo/redo. Boundary direction remains fixed, and existing edit permissions and locks apply.
+
+Symbols are diagram labels: all internal units retain the existing total-mass conservation equation without accumulation or equipment-specific physics. Additional materials leaving a filter or cyclone must be modeled as explicit streams. Tanks and their inventory/accumulation behavior remain part of the planned tank/storage feature.
+
+**Future symbol capabilities:** expand the library and add additional port arrangements where they improve diagram readability.

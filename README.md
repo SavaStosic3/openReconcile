@@ -30,9 +30,9 @@ The production backend must be reached through the trusted Sites authentication 
 
 ## The two-minute workflow
 
-1. Sign in and open an assigned model, or create one with an editor/administrator account. Drag a process unit, mixer, or splitter from the toolbox onto the canvas. Click-to-add is also available. Add red inflow/outflow triangles for every external material path.
+1. Sign in and open an assigned model, or create one with an editor/administrator account. Drag a pump, valve, heat exchanger, or another process-unit symbol from the toolbox onto the canvas. Click-to-add is also available. Add red inflow/outflow triangles for every external material path.
 2. Drag the right port of a source to the left port of a destination. Alternatively, select Connect and click the source then destination. Drag units to reposition them; lines update automatically.
-3. Right-click or double-click a stream. Set its name, material, phase, density, temperature, and pressure. Enable a meter and choose mass/volume, transferred quantity/flow rate, and units. Double-click a unit to rename it.
+3. Right-click or double-click a stream. Set its name, material, phase, density, temperature, and pressure. Enable a meter and choose mass/volume, transferred quantity/flow rate, and units. Double-click a unit to change its name or equipment symbol.
 4. Enter readings and one-standard-deviation uncertainties on Measurements. Pick a 1-hour, 24-hour, or custom batch duration. Run reconciliation and review Results or overlays on the flowsheet.
 
 Unmetered streams can be inferred only when the measurements and network uniquely determine them. Otherwise they are clearly marked as needing a measurement. The example starts with a 100 kg feed and 60/35 kg outlets, with uncertainties 1/2/2 kg. Its correct reconciled values are 99.444444, 62.222222, and 37.222222 kg; the missing internal flow is 99.444444 kg.
@@ -47,6 +47,16 @@ Unmetered streams can be inferred only when the measurements and network uniquel
 - The backend checks permissions and model revisions before saving. A stale edit is rejected rather than overwriting someone else's changes; export your unsaved draft, then refresh the workspace. Revision checks support concurrent editing and are not a browsable model version history.
 - Earlier browser data is retained locally and is not uploaded automatically. **Import browser models** asks before importing the last single-model autosave into the shared workspace. Use JSON export/import for additional models from the previous browser library. Export files also provide portable backups.
 - Export model saves a JSON file including all properties and readings. Import adds a model from that format. Export results produces CSV with normalized masses and estimated uncertainties.
+
+## Process-unit symbols
+
+The toolbox provides ten internal unit symbols: **pump, compressor, valve, heat exchanger, filter, cyclone, conveyor, mixer, splitter, and generic process unit**. The same concise SVG artwork appears in the toolbox and flowsheet. Red inflow/outflow triangles remain distinct model boundaries.
+
+Drag a symbol onto the canvas or click its toolbox button to add it. Each internal unit has a left input port and a right output port; each port accepts multiple streams for mixing, splitting, or additional material paths. Drag from an output port to an input port, or use Connect mode. Names, ports, and selection targets remain consistent across symbols.
+
+Double-click an existing unit and choose **Unit symbol** to change its appearance. This preserves its identity, location, connections, material properties, and readings, and works with undo/redo, saving, and JSON import/export. Boundary direction stays fixed, and edit permissions and locks still apply.
+
+Equipment symbols describe the process diagram. Every internal unit uses the same total-mass conservation equation, with no accumulation. Pump curves, pressure drop, compression, heat transfer, particle separation, and storage calculations are not introduced by choosing a symbol. Add every material path explicitly; tank/storage balances remain a separate planned feature.
 
 ## Accounts, model permissions, and protection
 

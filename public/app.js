@@ -4,12 +4,36 @@ import { createManagement } from './management.js';
 import { validateEditableModel } from './management-store.js';
 import { connectWorkspace } from './workspace-api.js';
 import { createAdmin } from './admin.js';
+import { UNIT_SYMBOLS, appendUnitSymbol } from './unit-symbols.js';
 
 const $ = (s, root = document) => root.querySelector(s);
 const $$ = (s, root = document) => [...root.querySelectorAll(s)];
 const esc = value => String(value ?? '').replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
 const fmt = n => n === null || n === undefined || !Number.isFinite(n) ? '—' : new Intl.NumberFormat('en', { maximumFractionDigits: 3 }).format(Math.abs(n) < 1e-8 ? 0 : n);
 const clone = v => structuredClone(v);
+const isBoundary = kind => kind === 'inlet' || kind === 'outlet';
+function buildPalette() {
+  const groups = [
+    { label: 'Machinery', kinds: ['pump', 'compressor', 'conveyor'] },
+    { label: 'Flow & separation', kinds: ['valve', 'filter', 'cyclone', 'mixer', 'splitter'] },
+    { label: 'Process', kinds: ['heatExchanger', 'process'] }
+  ];
+  $('#equipment-palette').innerHTML = groups.map(group => `<div class="palette-section"><h3>${esc(group.label)}</h3>${group.kinds.map(kind => {
+    const symbol = UNIT_SYMBOLS[kind];
+    return `<button type="button" class="palette-item" draggable="true" data-kind="${kind}" title="${esc(symbol.description)}"><span class="unit-glyph" aria-hidden="true"></span><span>${esc(symbol.label)}<small>${esc(symbol.description)}</small></span><span class="drag-grip" aria-hidden="true">⠿</span></button>`;
+  }).join('')}</div>`).join('');
+  for (const button of $$('.palette-item')) {
+    const svg = document.createElementNS('http://www.w3.org/2000/svg', 'svg');
+    svg.setAttribute('viewBox', '-62 -42 124 84'); svg.setAttribute('aria-hidden', 'true');
+    if (isBoundary(button.dataset.kind)) {
+      const triangle = document.createElementNS('http://www.w3.org/2000/svg', 'path');
+      triangle.setAttribute('d', 'M-26,-26 L30,0 L-26,26 Z'); triangle.setAttribute('fill', 'currentColor'); svg.append(triangle);
+    } else appendUnitSymbol(button.dataset.kind, svg, { stroke: 'currentColor', fill: 'white', strokeWidth: 4 });
+    $('.unit-glyph, .boundary-glyph', button).replaceChildren(svg);
+  }
+  $('#node-form').elements.kind.innerHTML = Object.entries(UNIT_SYMBOLS).map(([kind, symbol]) => `<option value="${kind}">${esc(symbol.label)}</option>`).join('');
+}
+buildPalette();
 let model = emptyModel(), results = null, selection = null, activeTab = 'model', mode = 'select', editingStream = null, editingNode = null, confirmAction = null, toastTimer, admin = null, runningWorkbench = false;
 const modelSessions = new Map();
 const backend = await connectWorkspace(toast);
@@ -227,8 +251,28 @@ streamForm.addEventListener('submit', event => {
   Object.assign(current,next); $('#stream-dialog').close(); editor.setModel(model); commit(); if (activeTab === 'data') renderData(); toast(`${next.name} saved${next.measured ? ' · meter added' : ''}.`);
 });
 $('#delete-stream').onclick = () => { editor.select('stream',editingStream); editor.deleteSelection(); $('#stream-dialog').close(); if (activeTab === 'data') renderData(); };
-function openNode(id) { if (!requireEdit()) return; const node = model.nodes.find(n => n.id === id); if (!node) return; editingNode = id; $('#node-form').elements.name.value = node.name; $('#node-note').textContent = ['inlet','outlet'].includes(node.kind) ? 'Red triangles represent model boundaries.' : 'This unit balances incoming and outgoing mass without storage.'; $('#node-dialog').showModal(); }
-$('#node-form').onsubmit = event => { event.preventDefault(); if (!requireEdit()) return; const node = model.nodes.find(n => n.id === editingNode); if (!node) return; node.name = $('#node-form').elements.name.value.trim() || NODE_TYPES[node.kind]; $('#node-dialog').close(); editor.setModel(model); commit(); };
+function updateNodeNote() {
+  const kind = $('#node-form').elements.kind.value;
+  $('#node-note').textContent = isBoundary(kind) ? 'Red triangles mark the model boundary. Its inflow or outflow direction stays fixed.' : `${UNIT_SYMBOLS[kind].description.replace(/\.$/, '')}. The symbol describes this unit; all incoming mass equals all outgoing mass, with no storage or equipment-specific equations. Changing a symbol keeps its connections and readings.`;
+}
+function openNode(id) {
+  if (!requireEdit()) return;
+  const node = model.nodes.find(n => n.id === id); if (!node) return;
+  editingNode = id;
+  const form = $('#node-form'); form.elements.name.value = node.name;
+  form.elements.kind.innerHTML = isBoundary(node.kind) ? `<option value="${node.kind}">${esc(NODE_TYPES[node.kind])}</option>` : Object.entries(UNIT_SYMBOLS).map(([kind, symbol]) => `<option value="${kind}">${esc(symbol.label)}</option>`).join('');
+  form.elements.kind.value = node.kind; form.elements.kind.disabled = isBoundary(node.kind);
+  updateNodeNote(); $('#node-dialog').showModal();
+}
+$('#node-form').elements.kind.onchange = updateNodeNote;
+$('#node-form').onsubmit = event => {
+  event.preventDefault(); if (!requireEdit()) return;
+  const node = model.nodes.find(n => n.id === editingNode); if (!node) return;
+  const form = $('#node-form'), kind = form.elements.kind.value;
+  if (!isBoundary(node.kind) && Object.hasOwn(UNIT_SYMBOLS, kind)) node.kind = kind;
+  node.name = form.elements.name.value.trim() || NODE_TYPES[node.kind];
+  $('#node-dialog').close(); editor.setModel(model); commit();
+};
 $('#delete-node').onclick = () => { editor.select('node',editingNode); editor.deleteSelection(); $('#node-dialog').close(); };
 
 function massSummary(stream) { if (!stream.measured) return '<span class="muted">Inferred after run</span>'; try { const m = measurementToMass(stream, model.periodHours); return `<strong>${fmt(m.value)} kg</strong><small>σ ${fmt(m.sigma)} kg</small>`; } catch (error) { return `<span class="reading-error" title="${esc(error.message)}">${stream.value === '' ? 'Reading needed' : 'Check input'}</span>`; } }

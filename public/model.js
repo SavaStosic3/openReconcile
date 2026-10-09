@@ -1,4 +1,6 @@
-export const NODE_TYPES = { process: 'Process unit', mixer: 'Mixer', splitter: 'Splitter', inlet: 'Inflow', outlet: 'Outflow' };
+import { UNIT_SYMBOLS } from './unit-symbols.js';
+
+export const NODE_TYPES = { ...Object.fromEntries(Object.entries(UNIT_SYMBOLS).map(([kind, symbol]) => [kind, symbol.label])), inlet: 'Inflow', outlet: 'Outflow' };
 export const METRICS = {
   mass: { label: 'Mass transferred', units: ['kg', 't'], rate: false, volume: false },
   massFlow: { label: 'Mass flow rate', units: ['kg/h', 't/h'], rate: true, volume: false },

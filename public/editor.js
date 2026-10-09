@@ -1,7 +1,7 @@
 import { newNode, newStream, NODE_TYPES } from './model.js';
+import { appendUnitSymbol, getUnitGeometry, portPosition, unitBounds } from './unit-symbols.js';
 
 const NS = 'http://www.w3.org/2000/svg';
-const CARD_W = 176, CARD_H = 80;
 const BLUE = '#2563eb', INK = '#243a54', MUTED = '#7890aa';
 const element = (tag, attrs = {}, content) => {
   const node = document.createElementNS(NS, tag);
@@ -11,7 +11,6 @@ const element = (tag, attrs = {}, content) => {
 };
 const short = (value, length = 22) => value.length > length ? `${value.slice(0, length - 1)}…` : value;
 const boundary = node => node.kind === 'inlet' || node.kind === 'outlet';
-const halfWidth = node => boundary(node) ? 27 : CARD_W / 2;
 const hasInput = node => node.kind !== 'inlet';
 const hasOutput = node => node.kind !== 'outlet';
 const number = value => new Intl.NumberFormat(undefined, { maximumFractionDigits: 2 }).format(value);
@@ -49,7 +48,7 @@ export function createEditor({ svg, canEdit = () => true, onChange = () => {}, o
     return { x: (p.x - panX) / scale, y: (p.y - panY) / scale };
   }
   function lookupNode(id) { return model.nodes.find(node => node.id === id); }
-  function port(node, type) { return { x: node.x + (type === 'out' ? halfWidth(node) : -halfWidth(node)), y: node.y }; }
+  const port = portPosition;
   function announce(message) { onStatus(message); }
   function editable() { return canEdit() === true; }
   function cancelMutation() {
@@ -129,16 +128,17 @@ export function createEditor({ svg, canEdit = () => true, onChange = () => {}, o
     const parallel = model.streams.filter(edge => edge.source === stream.source && edge.target === stream.target);
     const index = parallel.findIndex(edge => edge.id === stream.id);
     const lane = (index - (parallel.length - 1) / 2) * 32;
+    const routed = (d, label, xs, ys) => ({ d, label, bounds: { left: Math.min(...xs), right: Math.max(...xs), top: Math.min(...ys), bottom: Math.max(...ys) } });
     if (t.x - s.x > 85) {
       const mid = (s.x + t.x) / 2 + lane;
       if (Math.abs(s.y - t.y) < 6 && parallel.length > 1) {
         const y = s.y + lane;
-        return { d: `M ${s.x} ${s.y} H ${s.x + 34} V ${y} H ${t.x - 34} V ${t.y} H ${t.x}`, label: { x: (s.x + t.x) / 2, y } };
+        return routed(`M ${s.x} ${s.y} H ${s.x + 34} V ${y} H ${t.x - 34} V ${t.y} H ${t.x}`, { x: (s.x + t.x) / 2, y }, [s.x, s.x + 34, t.x - 34, t.x], [s.y, t.y, y]);
       }
-      return { d: `M ${s.x} ${s.y} H ${mid} V ${t.y} H ${t.x}`, label: { x: mid, y: (s.y + t.y) / 2 } };
+      return routed(`M ${s.x} ${s.y} H ${mid} V ${t.y} H ${t.x}`, { x: mid, y: (s.y + t.y) / 2 }, [s.x, mid, t.x], [s.y, t.y]);
     }
-    const bottom = Math.max(source.y + CARD_H / 2, target.y + CARD_H / 2) + 65 + index * 32;
-    return { d: `M ${s.x} ${s.y} H ${s.x + 42} V ${bottom} H ${t.x - 42} V ${t.y} H ${t.x}`, label: { x: (s.x + t.x) / 2, y: bottom } };
+    const bottom = Math.max(unitBounds(source).bottom, unitBounds(target).bottom) + 65 + index * 32;
+    return routed(`M ${s.x} ${s.y} H ${s.x + 42} V ${bottom} H ${t.x - 42} V ${t.y} H ${t.x}`, { x: (s.x + t.x) / 2, y: bottom }, [s.x, s.x + 42, t.x - 42, t.x], [s.y, t.y, bottom]);
   }
   function resultFor(stream) { return results?.streams?.find(item => item.id === stream.id); }
   function drawStream(stream, layer) {
@@ -168,22 +168,9 @@ export function createEditor({ svg, canEdit = () => true, onChange = () => {}, o
     group.append(label);
     layer.append(group);
   }
-  function drawIcon(kind, layer) {
-    const attrs = { fill: 'none', stroke: '#6489b7', 'stroke-width': 1.6, 'stroke-linecap': 'round', 'stroke-linejoin': 'round' };
-    if (kind === 'process') {
-      layer.append(element('rect', { x: -10, y: -12, width: 20, height: 24, rx: 4, ...attrs }));
-      layer.append(element('path', { d: 'M -10 -3 H 10 M -10 4 H 10', ...attrs }));
-    } else if (kind === 'mixer') {
-      layer.append(element('path', { d: 'M -11 -9 L 1 0 L 11 0 M -11 9 L 1 0', ...attrs }));
-      layer.append(element('circle', { cx: 0, cy: 0, r: 3, fill: '#6489b7' }));
-    } else {
-      layer.append(element('path', { d: 'M -11 0 H -1 L 11 -9 M -1 0 L 11 9', ...attrs }));
-      layer.append(element('circle', { cx: 0, cy: 0, r: 3, fill: '#6489b7' }));
-    }
-  }
   function drawPort(node, type, group) {
     if (type === 'in' && !hasInput(node) || type === 'out' && !hasOutput(node)) return;
-    const x = type === 'out' ? halfWidth(node) : -halfWidth(node);
+    const x = port(node, type).x - node.x;
     const pending = pendingSource === node.id && type === 'out';
     const wrapper = element('g', { 'data-port': type, 'data-node-id': node.id, cursor: editable() ? 'crosshair' : 'default', class: `flow-port flow-port-${type}` });
     wrapper.append(element('circle', { cx: x, cy: 0, r: 13, fill: 'transparent', 'pointer-events': 'all' }));
@@ -203,14 +190,15 @@ export function createEditor({ svg, canEdit = () => true, onChange = () => {}, o
       group.append(element('text', { y: 48, fill: INK, 'text-anchor': 'middle', 'font-family': 'inherit', 'font-size': 12, 'font-weight': 650 }, short(node.name)));
       group.append(element('text', { y: 64, fill: '#8b9ab0', 'text-anchor': 'middle', 'font-family': 'inherit', 'font-size': 10 }, NODE_TYPES[node.kind]));
     } else {
-      group.append(element('rect', { x: -CARD_W / 2, y: -CARD_H / 2 + 3, width: CARD_W, height: CARD_H, rx: 13, fill: '#dce4ef', opacity: 0.28 }));
-      group.append(element('rect', { x: -CARD_W / 2, y: -CARD_H / 2, width: CARD_W, height: CARD_H, rx: 13, fill: active || pending ? '#f0f6ff' : '#fff', stroke: active || pending ? BLUE : '#d9e3ef', 'stroke-width': active || pending ? 2 : 1.3 }));
-      const icon = element('g', { transform: 'translate(-57 0)' });
-      icon.append(element('rect', { x: -18, y: -18, width: 36, height: 36, rx: 9, fill: '#f0f5fc' }));
-      drawIcon(node.kind, icon);
-      group.append(icon);
-      group.append(element('text', { x: -28, y: -4, fill: INK, 'font-family': 'inherit', 'font-size': 12, 'font-weight': 650 }, short(node.name, 16)));
-      group.append(element('text', { x: -28, y: 15, fill: '#8b9ab0', 'font-family': 'inherit', 'font-size': 10 }, NODE_TYPES[node.kind]));
+      const geometry = getUnitGeometry(node.kind), bounds = geometry.bounds;
+      // A generous invisible hit area keeps fine SVG strokes easy to select and drag.
+      group.append(element('rect', { x: bounds.left, y: bounds.top, width: bounds.right - bounds.left, height: bounds.bottom - bounds.top, fill: 'transparent', 'pointer-events': 'all', class: 'flow-node-hit' }));
+      if (active || pending) group.append(element('rect', { x: bounds.left, y: bounds.top, width: bounds.right - bounds.left, height: bounds.bottom - bounds.top, rx: 8, fill: '#eff6ff', stroke: active ? BLUE : '#a5c8ff', 'stroke-width': 1.3, 'stroke-dasharray': '4 4', 'pointer-events': 'none', class: 'flow-node-selection' }));
+      const symbol = element('g', { class: 'flow-unit-symbol', 'aria-hidden': 'true' });
+      appendUnitSymbol(node.kind, symbol, { stroke: active || pending ? BLUE : INK, fill: active || pending ? '#eff6ff' : '#fff', strokeWidth: 2 });
+      group.append(symbol);
+      group.append(element('text', { y: geometry.labelY, fill: INK, 'text-anchor': 'middle', 'font-family': 'inherit', 'font-size': 12, 'font-weight': 650 }, short(node.name, 22)));
+      group.append(element('text', { y: geometry.typeY, fill: '#7890aa', 'text-anchor': 'middle', 'font-family': 'inherit', 'font-size': 10 }, NODE_TYPES[node.kind]));
     }
     drawPort(node, 'in', group);
     drawPort(node, 'out', group);
@@ -292,8 +280,15 @@ export function createEditor({ svg, canEdit = () => true, onChange = () => {}, o
     dimensions();
     if (!model.nodes.length) { scale = 1; panX = 0; panY = 0; render(); return; }
     let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity;
-    for (const node of model.nodes) { minX = Math.min(minX, node.x - 105); maxX = Math.max(maxX, node.x + 105); minY = Math.min(minY, node.y - 60); maxY = Math.max(maxY, node.y + 80); }
-    for (const stream of model.streams) { const path = route(stream); if (path) { minY = Math.min(minY, path.label.y - 40); maxY = Math.max(maxY, path.label.y + 40); } }
+    for (const node of model.nodes) { const bounds = unitBounds(node); minX = Math.min(minX, bounds.left); maxX = Math.max(maxX, bounds.right); minY = Math.min(minY, bounds.top); maxY = Math.max(maxY, bounds.bottom); }
+    for (const stream of model.streams) {
+      const path = route(stream);
+      if (path) {
+        const labelHalfWidth = Math.max(70, short(stream.name, 18).length * 3.3 + 17);
+        minX = Math.min(minX, path.bounds.left, path.label.x - labelHalfWidth); maxX = Math.max(maxX, path.bounds.right, path.label.x + labelHalfWidth);
+        minY = Math.min(minY, path.bounds.top, path.label.y - 40); maxY = Math.max(maxY, path.bounds.bottom, path.label.y + 40);
+      }
+    }
     const padding = 48;
     scale = Math.max(0.15, Math.min(1.4, (width - padding * 2) / Math.max(1, maxX - minX), (height - padding * 2) / Math.max(1, maxY - minY)));
     panX = width / 2 - (minX + maxX) / 2 * scale;

@@ -4,7 +4,8 @@ import { DatabaseSync } from 'node:sqlite';
 import { handleApi } from '../backend/api.js';
 import { Repository } from '../backend/repository.js';
 import { permissions } from '../backend/policy.js';
-import { exampleModel } from '../public/model.js';
+import { exampleModel, emptyModel, newStream } from '../public/model.js';
+import { reconcile } from '../public/solver.js';
 
 // Execute the production SQL against SQLite, matching D1's prepared/batch API.
 // Authorization tests therefore exercise WHERE guards rather than mocked calls.
@@ -243,4 +244,38 @@ test('concurrent administrator self-demotions retain one active administrator', 
   ]);
   assert.deepEqual(changed.map(result => result.status).sort(), [200, 409]);
   assert.equal(f.sqlite.prepare("SELECT count(*) AS count FROM users WHERE role='admin' AND active=1").get().count, 1);
+});
+
+test('new equipment kinds persist through authenticated saves and reconcile as ordinary mass-conserving units', async t => {
+  const f = fixture(t);
+  const kinds = ['process', 'mixer', 'splitter', 'pump', 'compressor', 'valve', 'heatExchanger', 'filter', 'cyclone', 'conveyor'];
+  const model = emptyModel(); model.name = 'Equipment symbol validation';
+  model.nodes = [
+    { id: 'symbol-feed', kind: 'inlet', name: 'Feed', x: 100, y: 200 },
+    ...kinds.map((kind, index) => ({ id: `symbol-${kind}`, kind, name: kind, x: 300 + index * 180, y: 200 })),
+    { id: 'symbol-output', kind: 'outlet', name: 'Product', x: 2300, y: 200 }
+  ];
+  model.streams = model.nodes.slice(0, -1).map((node, index) => ({ ...newStream(node.id, model.nodes[index + 1].id, index + 1), id: `symbol-flow-${index}` }));
+  Object.assign(model.streams[0], { measured: true, value: 100, uncertainty: 1, uncertaintyType: 'absolute' });
+  Object.assign(model.streams.at(-1), { measured: true, value: 95, uncertainty: 2, uncertaintyType: 'absolute' });
+  const created = await f.request('/api/models', 'POST', { model });
+  assert.equal(created.status, 201, JSON.stringify(created.body));
+  const id = created.body.entry.id;
+  assert.deepEqual((await f.request('/api/workspace')).body.catalog.models.find(entry => entry.id === id).model, model);
+  const changed = structuredClone(model);
+  changed.nodes.find(node => node.kind === 'pump').kind = 'filter';
+  const saved = await f.request(`/api/models/${id}`, 'PATCH', { model: changed, revision: 1 });
+  assert.equal(saved.status, 200, JSON.stringify(saved.body));
+  assert.deepEqual(saved.body.entry.model, changed);
+  const unknown = structuredClone(changed); unknown.nodes[1].kind = 'unknown-equipment';
+  assert.equal((await f.request(`/api/models/${id}`, 'PATCH', { model: unknown, revision: 2 })).status, 400);
+  const executed = await f.request(`/api/models/${id}/runs`, 'POST', { trigger: 'manual' });
+  assert.equal(executed.status, 200, JSON.stringify(executed.body));
+  assert.deepEqual(executed.body.run.modelSnapshot, changed);
+  const baseline = structuredClone(changed);
+  for (const node of baseline.nodes) if (node.kind !== 'inlet' && node.kind !== 'outlet') node.kind = 'process';
+  assert.deepEqual(executed.body.run.result, reconcile(baseline));
+  assert.equal(executed.body.run.result.balances.length, kinds.length);
+  for (const stream of executed.body.run.result.streams) assert.ok(Math.abs(stream.value - 99) < 1e-8);
+  for (const balance of executed.body.run.result.balances) assert.ok(Math.abs(balance.reconciled) < 1e-8);
 });
