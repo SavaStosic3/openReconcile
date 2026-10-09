@@ -1,18 +1,31 @@
 # Feature roadmap
 
-Planned features and enhancements for openReconcile, a standalone, open-source mass balance reconciliation tool. This list describes intended behavior; it does not imply that these features are implemented. Basic reconciled-value labels already exist on the visual diagram.
+Current capabilities and planned enhancements for openReconcile, a standalone, open-source mass balance reconciliation tool. Browser-open scheduling and a local saved model library are implemented as described in sections 1 and 2. Remaining items describe planned behavior. Basic reconciled-value labels already exist on the visual diagram.
 
 ## 1. Scheduled reconciliation
 
-- Configure hourly, daily, or custom reconciliation schedules, including a reporting window and time zone.
-- Run without an open browser, retrieve the model's input data, and retain the model version, input snapshot, results, and run status.
-- Support manual reruns, missed-run handling, retries, and protection against duplicate or overlapping runs.
+**Implemented in the browser:** configure each model's elapsed run frequency in minutes, hours, or days from the hamburger menu's Model Management page. Schedules start disabled. Runs use saved model measurements and store results locally by default; optional sources require defined adapters, and no external adapters are included. Manual and scheduled runs retain snapshots, results, and status for the latest 20 runs per model.
+
+Execution requires an open app. Browser sleep and background throttling may delay runs. On resume or reopening, an overdue schedule executes once and skips missed intervals. Timestamps are stored as absolute instants and shown in the browser's local time zone; daily means every 24 hours. Repeated ticks are guarded within a tab, with cross-tab coordination where Web Locks are supported.
+
+**Future server capabilities:**
+
+- Run without an open browser, using a backend scheduler and durable run storage.
+- Configure calendar schedules, reporting windows, and explicit time zones.
+- Retrieve fresh input data through external adapters and retain model versions alongside input snapshots, results, and status.
+- Add retries and server-enforced protection against duplicate or overlapping runs.
 
 ## 2. Multiple models with role-based access control
 
-- Create, organize, duplicate, and manage multiple plant models with stable identities and version history.
-- Apply permissions at the plant/workspace and model levels, with roles such as administrator, editor, operator, and viewer.
+**Implemented locally:** create, select, open, and duplicate saved plant models with stable identities and separate schedules and run histories. New, Demo, and Import preserve existing models. Existing single-model browser data is migrated into the library. Duplicated models start with scheduling disabled and empty history. Models remain in browser localStorage; exports provide portable copies.
+
+**Future shared access and versioning:**
+
+- Add model organization, durable storage, version history, and restoration.
+- Add accounts and shared plant/workspaces with model permissions and roles such as administrator, editor, operator, and viewer.
 - Enforce permissions on the server for viewing, editing, running, scheduling, managing connectors, and publishing results; record significant changes and actions.
+
+Authentication and role-based access control are not implemented in the local browser library.
 
 ## 3. Tanks and storage units
 

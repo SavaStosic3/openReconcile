@@ -1,6 +1,7 @@
-import { exampleModel, emptyModel, METRICS, NODE_TYPES, measurementToMass, validateModel } from './model.js';
+import { exampleModel, emptyModel, METRICS, NODE_TYPES, measurementToMass } from './model.js';
 import { createEditor } from './editor.js';
-import { reconcile } from './solver.js';
+import { createManagement } from './management.js';
+import { validateEditableModel } from './management-store.js';
 
 const $ = (s, root = document) => root.querySelector(s);
 const $$ = (s, root = document) => [...root.querySelectorAll(s)];
@@ -9,7 +10,10 @@ const fmt = n => n === null || n === undefined || !Number.isFinite(n) ? '—' : 
 const clone = v => structuredClone(v);
 const STORE = 'massflow-model-v1';
 let model = exampleModel(), results = null, selection = null, activeTab = 'model', mode = 'select', editingStream = null, editingNode = null, confirmAction = null, toastTimer;
-try { const saved = localStorage.getItem(STORE); if (saved) model = validateModel(JSON.parse(saved)); } catch { /* Invalid saved data falls back to the complete example. */ }
+const modelSessions = new Map();
+const management = createManagement({ fallbackModel: model, beforeAction: flushVisibleDraft, onActivate: activateManagedModel, onRun: acceptManagedRun, onNewModel: () => replaceModel(emptyModel()), onToast: toast, onReview: record => { acceptManagedRun(record); switchTab('results'); } });
+model = management.current().model;
+let editingModelId = management.activeId;
 let history = [JSON.stringify(model)], historyIndex = 0;
 
 function toast(message) {
@@ -17,7 +21,7 @@ function toast(message) {
   toastTimer = setTimeout(() => $('#toast').classList.add('hidden'), 4200);
 }
 function persist() {
-  try { localStorage.setItem(STORE, JSON.stringify(model)); $('#save-state').textContent = 'Saved in this browser'; }
+  try { if (!management.saveCurrent(model)) throw new Error('Storage unavailable'); localStorage.setItem(STORE, JSON.stringify(model)); $('#save-state').textContent = 'Saved in this browser'; }
   catch { $('#save-state').textContent = 'Browser storage unavailable · export to save'; }
 }
 function commit() {
@@ -30,7 +34,7 @@ function commit() {
   refreshChrome(); renderInspector(); if (activeTab === 'results') renderResults();
 }
 function refreshChrome() {
-  $('#model-name').value = model.name;
+  if (document.activeElement !== $('#model-name')) $('#model-name').value = model.name;
   const count = model.streams.filter(s => s.measured).length;
   $('#meter-count').textContent = count;
   $('#model-count').textContent = `${model.nodes.length} units · ${model.streams.length} streams`;
@@ -46,6 +50,7 @@ const editor = createEditor({
 editor.setModel(model); refreshChrome(); persist(); renderInspector();
 
 function switchTab(name) {
+  management.leave();
   activeTab = name;
   for (const button of $$('.tab')) { const active = button.dataset.tab === name; button.classList.toggle('active', active); button.setAttribute('aria-selected', String(active)); button.tabIndex = active ? 0 : -1; }
   for (const view of $$('[role="tabpanel"]')) view.classList.toggle('hidden', view.id !== `view-${name}`);
@@ -72,15 +77,44 @@ function travel(delta) {
 $('#undo-button').onclick = () => travel(-1); $('#redo-button').onclick = () => travel(1);
 document.addEventListener('keydown', event => {
   if (event.target.closest('input,textarea,select,[contenteditable="true"]') || $('dialog[open]')) return;
+  if (management.isOpen) return;
   if ((event.ctrlKey || event.metaKey) && event.key.toLowerCase() === 'z') { event.preventDefault(); travel(event.shiftKey ? 1 : -1); return; }
   if (event.ctrlKey || event.metaKey || event.altKey || activeTab !== 'model') return;
   if (event.key.toLowerCase() === 'v') setMode('select'); if (event.key.toLowerCase() === 'c') setMode('connect'); if (event.key.toLowerCase() === 'h') setMode('pan');
 });
 $('#model-name').addEventListener('change', event => { model.name = event.target.value.trim() || 'Untitled plant'; commit(); });
+$('#model-name').addEventListener('input', event => { model.name = event.target.value.trim() || 'Untitled plant'; commit(); });
 function askReplace(title, action) { $('#confirm-title').textContent = title; confirmAction = action; $('#confirm-dialog').showModal(); }
 $('#confirm-cancel').onclick = () => { confirmAction = null; $('#confirm-dialog').close(); };
 $('#confirm-ok').onclick = () => { $('#confirm-dialog').close(); const action = confirmAction; confirmAction = null; action?.(); };
-function replaceModel(next) { model = next; selection = null; editor.setModel(model); commit(); editor.fit(); switchTab('model'); }
+function flushVisibleDraft() {
+  if (!$('#model-name').disabled) model.name = $('#model-name').value.trim() || 'Untitled plant';
+  if (activeTab === 'data' && !$('#view-data').classList.contains('hidden')) {
+    for (const input of $$('[data-field]')) {
+      const stream = model.streams.find(s => s.id === input.closest('tr').dataset.stream);
+      if (stream) stream[input.dataset.field] = input.dataset.field === 'uncertaintyType' ? input.value : input.value === '' ? '' : Number(input.value);
+    }
+    if ($('#batch-period').value === 'custom') {
+      const hours = Number($('#custom-hours').value);
+      if (Number.isFinite(hours) && hours > 0) model.periodHours = hours;
+    }
+  }
+  commit();
+}
+function activateManagedModel(entry) {
+  modelSessions.set(editingModelId, { history, historyIndex, results, json: JSON.stringify(model) });
+  editingModelId = entry.id; model = clone(entry.model); selection = null;
+  const previous = modelSessions.get(entry.id), same = previous?.json === JSON.stringify(model);
+  history = same ? previous.history : [JSON.stringify(model)]; historyIndex = same ? previous.historyIndex : 0;
+  results = management.latest(entry.id)?.result || (same ? previous.results : null);
+  editor.setModel(model); editor.setResults(results); refreshChrome(); renderInspector(); switchTab('model'); editor.fit();
+}
+function acceptManagedRun(record) {
+  if (record.modelId !== editingModelId || JSON.stringify(record.modelSnapshot) !== JSON.stringify(model) || !record.result) return;
+  results = record.result; editor.setResults(results);
+  if (activeTab === 'results' && !management.isOpen) renderResults();
+}
+function replaceModel(next) { management.create(next); }
 $('#new-button').onclick = () => askReplace('Start a new model?', () => replaceModel(emptyModel()));
 function loadDemo() { askReplace('Load the example model?', () => { replaceModel(exampleModel()); toast('Demo loaded: 3 measured streams and 1 unmetered stream.'); }); }
 $('#demo-button').onclick = loadDemo; $('#empty-demo').onclick = loadDemo;
@@ -155,20 +189,19 @@ $('#sample-readings').onclick = () => { for (const [id,value,uncertainty] of [['
 
 async function run() {
   if ($('dialog[open]')) return;
-  // Read the visible fields explicitly; a run always uses the latest edits, even before blur.
-  if (activeTab === 'data') {
-    for (const input of $$('[data-field]')) {
-      const stream = model.streams.find(s => s.id === input.closest('tr').dataset.stream);
-      if (stream) stream[input.dataset.field] = input.dataset.field === 'uncertaintyType' ? input.value : input.value === '' ? '' : Number(input.value);
-    }
-    commit();
-  }
+  flushVisibleDraft();
+  const targetId = editingModelId, snapshot = JSON.stringify(model);
   $('#run-button').disabled = true; $('#data-run-button').disabled = true; $('#run-button').textContent = 'Reconciling…';
   await new Promise(resolve => setTimeout(resolve, 20));
-  try { results = reconcile(model); }
-  catch (error) { results = {status:'invalid',message:error.message || 'The model could not be reconciled.',streams:[],balances:[],warnings:[],objective:null,degreesOfFreedom:0}; }
+  try {
+    const record = await management.run(targetId);
+    if (editingModelId === targetId && JSON.stringify(model) === snapshot && JSON.stringify(record.modelSnapshot) === snapshot) {
+      results = record.result || {status:'invalid',message:record.error || 'The model could not be reconciled.',streams:[],balances:[],warnings:[],objective:null,degreesOfFreedom:0};
+      editor.setResults(results); switchTab('results'); renderInspector();
+    }
+  }
+  catch (error) { toast(error.message || 'The model could not be reconciled.'); }
   finally { $('#run-button').disabled = false; $('#data-run-button').disabled = false; $('#run-button').innerHTML = '<span aria-hidden="true">▶</span> Run reconciliation'; }
-  editor.setResults(results); switchTab('results'); renderInspector();
 }
 $('#run-button').onclick = run; $('#data-run-button').onclick = run;
 function renderResults() {
@@ -177,16 +210,16 @@ function renderResults() {
   const balanced = results.balances.filter(b => b.reconciled !== null && Number.isFinite(b.reconciled)); const maxError = balanced.length ? Math.max(...balanced.map(b => Math.abs(b.reconciled))) : null;
   const heading = results.status === 'ok' ? 'Your mass balance is reconciled.' : results.status === 'underdetermined' ? 'Some flows need more information.' : results.status === 'warning' ? 'Balanced, with items to review.' : 'Check your model and inputs.';
   $('#view-results').innerHTML = `<div class="view-header"><div><p class="eyebrow">STEP 03 / RECONCILIATION</p><h1>${esc(heading)}</h1><p class="muted">${esc(model.name)} · ${fmt(Number(model.periodHours))}-hour batch · total mass in kg</p></div><div class="top-actions"><button class="button secondary" id="results-flowsheet">View on flowsheet</button>${good ? '<button class="button secondary" id="export-results">Export results ↓</button>' : ''}</div></div><div class="result-banner ${severe ? 'error' : results.status === 'ok' ? 'success' : 'warning'}"><span class="banner-icon">${severe ? '!' : results.status === 'ok' ? '✓' : '!'}</span><div><strong>${esc(results.message)}</strong>${warnings.length ? `<ul>${warnings.map(w => `<li>${esc(w)}</li>`).join('')}</ul>` : ''}</div></div>${good ? `<div class="summary-grid"><div class="summary-card"><span>Largest closing error</span><strong>${fmt(maxError)} <small>kg</small></strong><p>Across ${balanced.length} observable process units</p></div><div class="summary-card"><span>Weighted adjustment</span><strong>${fmt(results.objective)}</strong><p>Sum of squared corrections / variances</p></div><div class="summary-card"><span>Inferred streams</span><strong>${inferred}<small> / ${model.streams.filter(s => !s.measured).length}</small></strong><p>${unknown ? `${unknown} unresolved stream${unknown === 1 ? '' : 's'}` : 'Unique estimates where observable'}</p></div></div><div class="table-heading"><h2>Stream results</h2><span class="helper">All values normalized to kg per batch</span></div><div class="table-wrap"><table class="data-table"><thead><tr><th>Stream / material</th><th>Measured</th><th>Reconciled</th><th>Adjustment</th><th>Estimate uncertainty (1σ)</th><th>Status</th></tr></thead><tbody>${results.streams.map(s => {const original = model.streams.find(v => v.id === s.id); return `<tr><td><button class="stream-name-button" data-result-stream="${esc(s.id)}">${esc(original?.name || s.id)}</button><small>${esc(original?.material)}</small></td><td class="mono">${fmt(s.raw)}</td><td class="mono result-number">${fmt(s.value)}</td><td class="mono">${s.correction !== null && s.correction !== undefined && s.correction > 0 ? '+' : ''}${fmt(s.correction)}</td><td class="mono">${fmt(s.uncertainty)}${s.atBound ? '<small>At physical bound</small>' : ''}</td><td><span class="status-pill ${s.status}">${s.status === 'unobservable' ? 'Needs measurement' : s.atBound ? 'At zero bound' : s.status === 'estimated' ? 'Inferred' : 'Reconciled'}</span></td></tr>`;}).join('')}</tbody></table></div><div class="table-heading"><h2>Unit balance checks</h2><span class="helper">Incoming mass − outgoing mass</span></div><div class="table-wrap"><table class="data-table balance-table"><thead><tr><th>Process unit</th><th>Before reconciliation</th><th>After reconciliation</th></tr></thead><tbody>${results.balances.map(b => `<tr><td>${esc(b.name)}</td><td class="mono">${fmt(b.raw)} kg</td><td class="mono">${fmt(b.reconciled)} kg</td></tr>`).join('')}</tbody></table></div><div class="result-method"><strong>How this result is calculated</strong><p>Measurements are adjusted using nonnegative, constrained weighted least squares. Every process unit conserves total mass with zero accumulation. Missing flows are reported only when uniquely determined. Uncertainty assumes independent, unbiased measurement errors and fixed conversion properties. Active bounds limit the usual Gaussian uncertainty interpretation.</p><p>A closed balance does not prove instrument accuracy. Raw values are preserved; corrections and diagnostics should be reviewed before using results for reporting.</p></div>` : '<button class="button secondary" id="results-fix-data">Review measurements</button>'}`;
-  $('#results-flowsheet').onclick = () => { switchTab('model'); editor.fit(); };
+  if ($('#results-flowsheet')) $('#results-flowsheet').onclick = () => { switchTab('model'); editor.fit(); };
   if ($('#results-fix-data')) $('#results-fix-data').onclick = () => switchTab('data');
   if ($('#export-results')) $('#export-results').onclick = exportResults;
   $$('[data-result-stream]').forEach(b => b.onclick = () => { switchTab('model'); editor.select('stream', b.dataset.resultStream); });
 }
 function download(filename, text, type) { const url = URL.createObjectURL(new Blob([text], { type })); const anchor = document.createElement('a'); anchor.href = url; anchor.download = filename; anchor.click(); setTimeout(() => URL.revokeObjectURL(url),1000); }
 function safeFilename() { return model.name.replace(/[^a-z0-9_-]+/gi,'-').slice(0,70) || 'plant-model'; }
-$('#export-button').onclick = () => { download(`${safeFilename()}.json`,JSON.stringify(model,null,2),'application/json'); toast('Model exported with stream properties and measurements.'); };
+$('#export-button').onclick = () => { flushVisibleDraft(); download(`${safeFilename()}.json`,JSON.stringify(model,null,2),'application/json'); toast('Model exported with stream properties and measurements.'); };
 $('#import-button').onclick = () => $('#import-file').click();
-$('#import-file').onchange = async event => { const file = event.target.files[0]; event.target.value = ''; if (!file) return; try { if (file.size > 2e6) throw new Error('Choose a model file smaller than 2 MB.'); const loaded = validateModel(JSON.parse(await file.text())); askReplace('Import this plant model?', () => { replaceModel(loaded); toast('Model imported.'); }); } catch (error) { toast(`Import failed: ${error.message}`); } };
+$('#import-file').onchange = async event => { const file = event.target.files[0]; event.target.value = ''; if (!file) return; try { if (file.size > 2e6) throw new Error('Choose a model file smaller than 2 MB.'); const loaded = validateEditableModel(JSON.parse(await file.text())); askReplace('Import this plant model?', () => { replaceModel(loaded); toast('Model imported.'); }); } catch (error) { toast(`Import failed: ${error.message}`); } };
 function exportResults() { const cell = value => { let text = String(value ?? ''); if (typeof value === 'string' && /^[=+\-@\t\r]/.test(text)) text = `'${text}`; return `"${text.replace(/"/g,'""')}"`; }; const rows = [['Stream','Material','Measured kg','Reconciled kg','Adjustment kg','Standard uncertainty kg','Status']]; for (const s of results.streams) { const stream = model.streams.find(v => v.id === s.id); rows.push([stream?.name,stream?.material,s.raw,s.value,s.correction,s.uncertainty,s.status]); } download(`${safeFilename()}-results.csv`,rows.map(row=>row.map(cell).join(',')).join('\r\n'),'text/csv;charset=utf-8'); }
 switchTab('model');
 requestAnimationFrame(() => editor.fit());

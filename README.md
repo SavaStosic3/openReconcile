@@ -28,8 +28,21 @@ Unmetered streams can be inferred only when the measurements and network uniquel
 - Mouse wheel zooms. Pan mode or middle-drag moves the viewport. Fit frames the current model.
 - Select a unit or stream and press Delete to remove it. Enter edits the selection. Arrow keys move focused units (Shift for larger increments). V/C/H select the canvas tools.
 - Undo/redo retain the last 100 model states. Ctrl+Z and Ctrl+Shift+Z work outside text fields.
-- The current model is autosaved in browser localStorage. This is one local working model, not a server database, team workspace, or durable backup. Private browsing, browser cleanup, and a different website origin can change its availability.
-- Export model saves a JSON file including all properties and readings. Import loads that format. Export results produces CSV with normalized masses and estimated uncertainties.
+- Models are autosaved in a local browser library with separate identities, measurements, schedules, and run histories. Existing data from the earlier single-model autosave is migrated on first load. New, Demo, and Import add models to the library and preserve existing models.
+- Open the hamburger menu and choose **Model Management** to select, open, create, or duplicate a saved model. A duplicate starts with scheduling disabled and empty run history.
+- Browser localStorage provides local persistence. Private browsing, browser cleanup, storage limits, and a different website origin can change its availability. Export files for portable backups.
+- Export model saves a JSON file including all properties and readings. Import adds a model from that format. Export results produces CSV with normalized masses and estimated uncertainties.
+
+## Scheduled runs and model history
+
+1. Open **Model Management** from the hamburger menu and select a model.
+2. Enable scheduled runs and choose a frequency in minutes, hours, or days, with a minimum interval of one minute. Save the schedule. New models start with scheduling disabled.
+3. Leave Input data source and Output destination at their defaults to use the model's saved measurements and save results in this browser. Optional sources must be defined for that model and have a registered input or output adapter. The shipped app has no external adapters or source setup interface, so it does not fetch fresh plant readings or publish to external destinations.
+4. Use **Run now** for a manual run, or keep the app open for scheduled runs. Recent runs show status and stream results. The browser retains the last 20 manual/scheduled runs per model, including a model/input snapshot and results; the management page displays the latest 10. A saved run can be viewed on the workbench while the model still matches its snapshot.
+
+Schedules execute in the browser while the app is open. Closing the tab stops execution; browser sleep and background throttling can delay it. When the app resumes or reopens, an overdue schedule executes once and advances to the next future interval rather than replaying every missed run. Frequencies are elapsed intervals: a day means 24 hours. Timestamps are stored as absolute instants and displayed in the browser's local time zone. Scheduler ticks are guarded within a tab; browsers supporting Web Locks also coordinate runs across tabs. If the same model changes in another tab, a stale workbench cannot overwrite it; export the draft and reopen the model from Model Management.
+
+There is no backend scheduler, account authentication, shared workspace, enforced role-based access control, or model version history. Local model management and saved run snapshots do not provide those planned server capabilities.
 
 ## Mathematical scope
 
@@ -61,7 +74,7 @@ Independent, unbiased errors and an accurate physical model are assumed. Very po
 npm test
 ```
 
-There are 26 tests: analytical solutions, inferred/unobservable flows, recycles and rank reduction, nonnegative bounds, zero readings, conversions and interval duration, numerical conditioning, and independent cross-validation over 80 seeded tiny networks. The independent oracle enumerates every active face and solves KKT equations separately from the production QR/network algorithm.
+There are 61 tests covering analytical solutions, inferred/unobservable flows, recycles and rank reduction, nonnegative bounds, zero readings, conversions and interval duration, numerical conditioning, and independent cross-validation over 80 seeded tiny networks. They also cover legacy migration, model/source isolation, editable drafts, schedule validation and elapsed cadence, delayed runs, run snapshots, adapter failures, bounded history, storage failure recovery, and stale-tab protection. The independent solver oracle enumerates every active face and solves KKT equations separately from the production QR/network algorithm.
 
 ## Mathematical reference
 
