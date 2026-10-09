@@ -1,12 +1,12 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { validateModel } from '../dist/model.js';
+import { validateModel } from '../public/model.js';
 import {
   MAX_RUN_HISTORY, createCatalog, migrateLegacyModel, validateCatalog,
   addModel, updateModel, duplicateModel, removeModel, setActiveModel, getModelEntry,
   registerSource, removeSource, setSchedule, validateSchedule, frequencyToMinutes,
   dueSchedules, advanceSchedule, appendRun, timeToEpoch
-} from '../dist/management-store.js';
+} from '../public/management-store.js';
 
 const START = '2026-10-09T12:00:00.000Z';
 const time = minutes => Date.parse(START) + minutes * 60_000;

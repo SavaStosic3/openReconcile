@@ -1,8 +1,8 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { createManagement } from '../dist/management.js';
-import { exampleModel } from '../dist/model.js';
-import { createCatalog, addModel, setActiveModel, registerSource, setSchedule } from '../dist/management-store.js';
+import { createManagement } from '../public/management.js';
+import { exampleModel } from '../public/model.js';
+import { createCatalog, addModel, setActiveModel, registerSource, setSchedule } from '../public/management-store.js';
 
 const CATALOG_KEY = 'openreconcile-model-library-v1';
 const START = Date.parse('2026-10-09T12:00:00.000Z');
@@ -36,6 +36,7 @@ function setup(t, { initialCatalog, failReads = false, failWrites = false, locks
       this.children = [];
       this.details = [];
       this.reviewButtons = [];
+      this.controls = [];
       this.innerHTMLWrites = 0;
     }
     setAttribute(name, value) { this[name] = value; }
@@ -50,7 +51,7 @@ function setup(t, { initialCatalog, failReads = false, failWrites = false, locks
       this.reviewButtons = [...value.matchAll(/data-review-run="([^"]+)"/g)].map(match => ({ dataset: { reviewRun: match[1] } }));
     }
     get innerHTML() { return this.html || ''; }
-    querySelectorAll(selector) { return selector === '[data-review-run]' ? this.reviewButtons : selector === 'details' ? this.details : []; }
+    querySelectorAll(selector) { return selector === '[data-review-run]' ? this.reviewButtons : selector === 'details' ? this.details : selector === 'input, select, button' ? this.controls : []; }
   }
   const node = selector => {
     if (!elements.has(selector)) elements.set(selector, new Element());
@@ -94,6 +95,37 @@ function setup(t, { initialCatalog, failReads = false, failWrites = false, locks
       return controller;
     }
   };
+}
+
+function sharedBackend(catalog) {
+  const listeners = new Set();
+  const state = {
+    catalog: clone(catalog), user: { id: 'editor-user', name: 'Editor', role: 'editor', active: true },
+    grants: Object.fromEntries(catalog.models.map(entry => [entry.id, { canView: true, canRun: true, canEdit: true, canSchedule: true, canPublish: false, canUnpublish: true, published: true, editLocked: false, unpublishLocked: false }])),
+    flush: async () => {}, selections: []
+  };
+  return {
+    state,
+    get workspace() { return { catalog: clone(state.catalog) }; },
+    get user() { return clone(state.user); },
+    permission(id) { return clone(state.grants[id] || {}); },
+    now: () => START,
+    flush: () => state.flush(),
+    select(id) { state.selections.push(id); state.catalog.activeId = id; },
+    subscribe(listener) { listeners.add(listener); return () => listeners.delete(listener); },
+    notify(reason = 'policy') { for (const listener of listeners) listener(reason); }
+  };
+}
+
+function withRun(catalog, modelId, id = 'saved-run') {
+  const next = clone(catalog), entry = next.models.find(item => item.id === modelId);
+  next.runs[modelId].push({
+    id, modelId, trigger: 'manual', status: 'ok',
+    startedAt: new Date(START).toISOString(), finishedAt: new Date(START).toISOString(),
+    modelSnapshot: clone(entry.model),
+    result: { message: 'Reconciliation completed.', streams: [{ id: 'f1', value: 99.4444444444, status: 'reconciled' }] }
+  });
+  return next;
 }
 
 test('manual reconciliation returns and applies its result when browser storage cannot be read', async t => {
@@ -210,4 +242,112 @@ test('unchanged scheduler ticks preserve expanded history details and a new run 
   await controller.run();
   assert.equal(history.innerHTMLWrites, writes + 1);
   assert.equal(history.details.length, 2);
+});
+
+test('shared saved-run review waits for pending edits before activating its model', async t => {
+  const catalog = withRun(setActiveModel(addModel(seed(), { ...exampleModel(), name: 'Model B' }, { id: 'model-b', now: START }), 'model-a'), 'model-b');
+  const env = setup(t), backend = sharedBackend(catalog), events = [], reviews = [];
+  const controller = env.create({ backend, onActivate: entry => events.push(['activate', entry.id]), onReview: run => { events.push(['review', run.modelId]); reviews.push(run); } });
+  await controller.open();
+  env.node('#management-model').onchange({ target: { value: 'model-b' } });
+  let release;
+  const pendingSave = new Promise(resolve => { release = resolve; });
+  backend.state.flush = () => pendingSave;
+  const reviewing = env.node('#management-runs').reviewButtons[0].onclick();
+  assert.equal(controller.isOpen, true);
+  assert.equal(controller.activeId, 'model-a');
+  assert.deepEqual(backend.state.selections, []);
+  assert.deepEqual(reviews, []);
+
+  release();
+  await reviewing;
+  assert.equal(controller.isOpen, false);
+  assert.equal(controller.activeId, 'model-b');
+  assert.deepEqual(events, [['activate', 'model-b'], ['review', 'model-b']]);
+  assert.equal(reviews[0].id, 'saved-run');
+  near(reviews[0].result.streams[0].value, 99.4444444444);
+  assert.equal(env.data.has(CATALOG_KEY), false, 'Shared management must not write its models into browser storage.');
+});
+
+test('shared saved-run review preserves the current workbench when saving the draft fails', async t => {
+  const catalog = withRun(setActiveModel(addModel(seed(), { ...exampleModel(), name: 'Model B' }, { id: 'model-b', now: START }), 'model-a'), 'model-b');
+  const env = setup(t), backend = sharedBackend(catalog), activated = [], reviews = [], warnings = [];
+  const controller = env.create({ backend, onActivate: entry => activated.push(entry), onReview: run => reviews.push(run), onToast: text => warnings.push(text) });
+  await controller.open();
+  env.node('#management-model').onchange({ target: { value: 'model-b' } });
+  backend.state.flush = async () => { throw new Error('This draft could not be saved. Export it before refreshing.'); };
+  await env.node('#management-runs').reviewButtons[0].onclick();
+  assert.equal(controller.isOpen, true);
+  assert.equal(controller.activeId, 'model-a');
+  assert.equal(env.node('#management-model').value, 'model-b');
+  assert.deepEqual(backend.state.selections, []);
+  assert.deepEqual(activated, []);
+  assert.deepEqual(reviews, []);
+  assert.ok(warnings.some(text => /draft could not be saved.*Export/.test(text)));
+  assert.equal(env.node('#management-runs').reviewButtons.length, 1, 'Saved results must remain available in management.');
+});
+
+test('publication controls follow server-granted publication access after permission changes', async t => {
+  const env = setup(t), backend = sharedBackend(seed());
+  const controller = env.create({ backend });
+  await controller.open();
+  const button = env.node('#model-publication-button');
+  for (const access of [
+    { role: 'viewer', published: false, canPublish: false, canUnpublish: false, hidden: true, text: 'Publish model' },
+    { role: 'operator', published: true, canPublish: false, canUnpublish: false, hidden: true, text: 'Unpublish' },
+    { role: 'editor', published: false, canPublish: true, canUnpublish: false, hidden: false, text: 'Publish model' },
+    { role: 'editor', published: true, canPublish: false, canUnpublish: true, hidden: false, text: 'Unpublish' },
+    { role: 'admin', published: true, canPublish: false, canUnpublish: false, unpublishLocked: true, hidden: true, text: 'Unpublish' }
+  ]) {
+    backend.state.user.role = access.role;
+    Object.assign(backend.state.grants['model-a'], {
+      published: access.published, canPublish: access.canPublish, canUnpublish: access.canUnpublish,
+      unpublishLocked: access.unpublishLocked || false,
+      canRun: access.role !== 'viewer', canEdit: ['editor', 'admin'].includes(access.role),
+      canSchedule: access.published && ['editor', 'admin'].includes(access.role)
+    });
+    backend.notify();
+    assert.equal(button.hidden, access.hidden, `${access.role} publication visibility`);
+    assert.equal(button.disabled, access.hidden, `${access.role} publication availability`);
+    assert.equal(button.textContent, access.text);
+    assert.equal(env.node('#model-publication-state').textContent, access.published ? 'Published' : 'Draft');
+  }
+});
+
+test('losing all shared model access clears publication, schedule, and saved-run details', async t => {
+  const scheduled = setSchedule(seed(), 'model-a', { enabled: true, intervalMinutes: 60 }, START);
+  const env = setup(t), backend = sharedBackend(withRun(scheduled, 'model-a'));
+  const controls = ['#schedule-enabled', '#schedule-interval', '#schedule-unit', '#schedule-input', '#schedule-output', '#schedule-save', '#schedule-run-now'].map(env.node);
+  env.node('#schedule-form').controls = controls;
+  const controller = env.create({ backend });
+  await controller.open();
+  assert.equal(env.node('#model-publication-button').hidden, false);
+  assert.equal(env.node('#schedule-enabled').checked, true);
+  assert.equal(env.node('#schedule-summary-frequency').textContent, 'Every 1 hour');
+  assert.equal(env.node('#management-runs').reviewButtons.length, 1);
+
+  backend.state.catalog = { version: 1, activeId: null, models: [], schedules: {}, sources: {}, runs: {} };
+  backend.state.grants = {};
+  backend.notify('refresh');
+  assert.equal(controller.activeId, null);
+  assert.equal(controller.isOpen, true);
+  assert.equal(env.node('#model-publication-button').hidden, true);
+  assert.equal(env.node('#model-publication-button').disabled, true);
+  assert.equal(env.node('#model-publication-state').textContent, 'No model selected');
+  assert.equal(env.node('#management-open-model').disabled, true);
+  assert.equal(env.node('#management-duplicate-model').disabled, true);
+  assert.ok(controls.every(control => control.disabled));
+  assert.equal(env.node('#schedule-enabled').checked, false);
+  assert.equal(env.node('#schedule-interval').value, '');
+  assert.equal(env.node('#schedule-summary-state').textContent, 'No model selected');
+  assert.equal(env.node('#schedule-summary-state').classList.contains('is-enabled'), false);
+  for (const field of ['frequency', 'input', 'output']) assert.equal(env.node(`#schedule-summary-${field}`).textContent, '—');
+  assert.equal(env.node('#schedule-next-run').textContent, 'No upcoming run');
+  assert.equal(env.node('#schedule-last-run').textContent, 'No runs yet');
+  assert.equal(env.node('#schedule-input').children[0].text, 'No model selected');
+  assert.equal(env.node('#schedule-output').children[0].text, 'No model selected');
+  assert.equal(env.node('#schedule-input-help').textContent, '');
+  assert.equal(env.node('#schedule-output-help').textContent, '');
+  assert.equal(env.node('#management-runs').reviewButtons.length, 0);
+  assert.match(env.node('#management-runs').innerHTML, /No model selected/);
 });

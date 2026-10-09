@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { reconcile } from '../dist/solver.js';
+import { reconcile } from '../public/solver.js';
 
 const node = (id, kind) => ({ id, kind, name: id, x: 0, y: 0 });
 const stream = (id, source, target, value = null, sigma = 1, extra = {}) => ({

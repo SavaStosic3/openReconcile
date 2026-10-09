@@ -16,7 +16,7 @@ const hasInput = node => node.kind !== 'inlet';
 const hasOutput = node => node.kind !== 'outlet';
 const number = value => new Intl.NumberFormat(undefined, { maximumFractionDigits: 2 }).format(value);
 
-export function createEditor({ svg, onChange = () => {}, onSelect = () => {}, onEditStream = () => {}, onEditNode = () => {}, onStatus = () => {} }) {
+export function createEditor({ svg, canEdit = () => true, onChange = () => {}, onSelect = () => {}, onEditStream = () => {}, onEditNode = () => {}, onStatus = () => {} }) {
   let model = { nodes: [], streams: [] }, results = null, selected = null, mode = 'select';
   let pendingSource = null, pointer = null, ignoreClickUntil = 0, destroyed = false, lastTap = null;
   let width = 900, height = 600, scale = 1, panX = 0, panY = 0;
@@ -51,6 +51,32 @@ export function createEditor({ svg, onChange = () => {}, onSelect = () => {}, on
   function lookupNode(id) { return model.nodes.find(node => node.id === id); }
   function port(node, type) { return { x: node.x + (type === 'out' ? halfWidth(node) : -halfWidth(node)), y: node.y }; }
   function announce(message) { onStatus(message); }
+  function editable() { return canEdit() === true; }
+  function cancelMutation() {
+    if (pointer?.type === 'node' || pointer?.type === 'connect') {
+      if (pointer.type === 'node') {
+        const node = lookupNode(pointer.nodeId);
+        if (node) { node.x = pointer.x; node.y = pointer.y; }
+      }
+      try { svg.releasePointerCapture(pointer.id); } catch {}
+      pointer = null;
+      ignoreClickUntil = Date.now() + 180;
+    }
+    clearPending();
+    if (mode === 'connect') mode = 'select';
+  }
+  function allowEdit() {
+    if (editable()) return true;
+    cancelMutation();
+    render();
+    announce('This model is read-only or locked.');
+    return false;
+  }
+  function editItem(kind, id) {
+    if (!allowEdit()) return false;
+    if (kind === 'node') onEditNode(id); else onEditStream(id);
+    return true;
+  }
   function focusItem(kind, id) {
     const key = kind === 'node' ? 'data-node-id' : 'data-stream-id';
     for (const item of svg.querySelectorAll(`[${key}][tabindex]`)) if (item.getAttribute(key) === id) { item.focus({ preventScroll: true }); break; }
@@ -64,6 +90,7 @@ export function createEditor({ svg, onChange = () => {}, onSelect = () => {}, on
   }
   function clearPending() { pendingSource = null; previewPoint = null; }
   function connect(sourceId, targetId) {
+    if (!allowEdit()) return false;
     const source = lookupNode(sourceId), target = lookupNode(targetId);
     if (!source || !target) return false;
     if (sourceId === targetId) { announce('Choose a different process unit for the destination.'); return false; }
@@ -79,6 +106,7 @@ export function createEditor({ svg, onChange = () => {}, onSelect = () => {}, on
     return true;
   }
   function beginConnection(node) {
+    if (!allowEdit()) return false;
     if (!node) { clearPending(); render(); return; }
     if (!hasOutput(node)) { announce('Choose an inflow or process unit as the source.'); return; }
     pendingSource = node.id;
@@ -91,7 +119,7 @@ export function createEditor({ svg, onChange = () => {}, onSelect = () => {}, on
     const doubleTap = lastTap?.kind === kind && lastTap.id === id && now - lastTap.time < 420;
     lastTap = { kind, id, time: now };
     selection(kind, id);
-    if (doubleTap) { lastTap = null; if (kind === 'node') onEditNode(id); else onEditStream(id); }
+    if (doubleTap) { lastTap = null; editItem(kind, id); }
   }
 
   function route(stream) {
@@ -119,7 +147,7 @@ export function createEditor({ svg, onChange = () => {}, onSelect = () => {}, on
     const active = selected?.kind === 'stream' && selected.id === stream.id;
     const output = resultFor(stream);
     const color = active ? BLUE : output?.status === 'unobservable' ? '#bc8c3f' : MUTED;
-    const group = element('g', { class: `flow-stream${active ? ' is-selected' : ''}`, 'data-stream-id': stream.id, tabindex: '0', role: 'button', 'aria-label': `${stream.name}, ${stream.measured ? 'measured' : 'unmeasured'} stream. Press Enter to edit.`, 'aria-pressed': active });
+    const group = element('g', { class: `flow-stream${active ? ' is-selected' : ''}`, 'data-stream-id': stream.id, tabindex: '0', role: 'button', 'aria-label': `${stream.name}, ${stream.measured ? 'measured' : 'unmeasured'} stream. ${editable() ? 'Press Enter to edit.' : 'Read-only.'}`, 'aria-pressed': active });
     group.append(element('title', {}, `${stream.name} · ${stream.material}\n${stream.measured ? `Measured: ${stream.value} ${stream.unit}` : 'No measurement; value may be estimated from the balance.'}`));
     group.append(element('path', { d: path.d, fill: 'none', stroke: color, 'stroke-width': active ? 3 : 2, 'stroke-linejoin': 'round', 'stroke-linecap': 'round', 'stroke-dasharray': stream.measured ? 'none' : '7 5', 'marker-end': `url(#${prefix}-${active ? 'selected' : 'arrow'})` }));
     group.append(element('path', { d: path.d, fill: 'none', stroke: 'transparent', 'stroke-width': 20, 'pointer-events': 'stroke', cursor: 'pointer', class: 'flow-stream-hit' }));
@@ -157,17 +185,17 @@ export function createEditor({ svg, onChange = () => {}, onSelect = () => {}, on
     if (type === 'in' && !hasInput(node) || type === 'out' && !hasOutput(node)) return;
     const x = type === 'out' ? halfWidth(node) : -halfWidth(node);
     const pending = pendingSource === node.id && type === 'out';
-    const wrapper = element('g', { 'data-port': type, 'data-node-id': node.id, cursor: 'crosshair', class: `flow-port flow-port-${type}` });
+    const wrapper = element('g', { 'data-port': type, 'data-node-id': node.id, cursor: editable() ? 'crosshair' : 'default', class: `flow-port flow-port-${type}` });
     wrapper.append(element('circle', { cx: x, cy: 0, r: 13, fill: 'transparent', 'pointer-events': 'all' }));
     wrapper.append(element('circle', { cx: x, cy: 0, r: pending ? 7 : 5, fill: pending ? BLUE : '#fff', stroke: pending ? BLUE : '#82a5d0', 'stroke-width': 2 }));
-    wrapper.append(element('title', {}, type === 'out' ? 'Drag from this port to connect a stream' : 'Drop a stream here'));
+    wrapper.append(element('title', {}, editable() ? type === 'out' ? 'Drag from this port to connect a stream' : 'Drop a stream here' : 'This model is read-only or locked.'));
     group.append(wrapper);
   }
   function drawNode(node, layer) {
     const active = selected?.kind === 'node' && selected.id === node.id;
     const pending = pendingSource === node.id;
-    const group = element('g', { transform: `translate(${node.x} ${node.y})`, 'data-node-id': node.id, tabindex: 0, role: 'button', 'aria-label': `${node.name}, ${NODE_TYPES[node.kind]}. Press Enter to edit.`, 'aria-pressed': active, class: `flow-node flow-node-${node.kind}${active ? ' is-selected' : ''}${pending ? ' is-connecting' : ''}`, cursor: mode === 'connect' ? 'crosshair' : 'grab' });
-    group.append(element('title', {}, `${node.name} · ${NODE_TYPES[node.kind]}\nDrag to move. Double-click to edit.`));
+    const group = element('g', { transform: `translate(${node.x} ${node.y})`, 'data-node-id': node.id, tabindex: 0, role: 'button', 'aria-label': `${node.name}, ${NODE_TYPES[node.kind]}. ${editable() ? 'Press Enter to edit.' : 'Read-only.'}`, 'aria-pressed': active, class: `flow-node flow-node-${node.kind}${active ? ' is-selected' : ''}${pending ? ' is-connecting' : ''}`, cursor: editable() ? mode === 'connect' ? 'crosshair' : 'grab' : 'pointer' });
+    group.append(element('title', {}, `${node.name} · ${NODE_TYPES[node.kind]}\n${editable() ? 'Drag to move. Double-click to edit.' : 'This model is read-only or locked.'}`));
     if (boundary(node)) {
       if (active || pending) group.append(element('rect', { x: -38, y: -38, width: 76, height: 76, rx: 18, fill: '#e9f1ff', stroke: '#a5c8ff', 'stroke-width': 1.5 }));
       group.append(element('path', { d: 'M -21 -23 L 24 0 L -21 23 Z', fill: '#ee6666', stroke: '#d74c54', 'stroke-width': 1.5, 'stroke-linejoin': 'round' }));
@@ -191,6 +219,7 @@ export function createEditor({ svg, onChange = () => {}, onSelect = () => {}, on
 
   function render() {
     if (destroyed) return;
+    if (!editable()) cancelMutation();
     const focused = document.activeElement?.closest?.('[data-node-id][tabindex], [data-stream-id][tabindex]');
     const focusedKind = focused?.hasAttribute('data-node-id') ? 'node' : 'stream';
     const focusedId = focused?.getAttribute(focusedKind === 'node' ? 'data-node-id' : 'data-stream-id');
@@ -226,6 +255,7 @@ export function createEditor({ svg, onChange = () => {}, onSelect = () => {}, on
   }
 
   function addNode(kind, location) {
+    if (!allowEdit()) return false;
     if (!NODE_TYPES[kind]) return;
     if (model.nodes.length >= 200) { announce('This model supports up to 200 units.'); return; }
     const center = location || { x: (width / 2 - panX) / scale, y: (height / 2 - panY) / scale };
@@ -242,6 +272,7 @@ export function createEditor({ svg, onChange = () => {}, onSelect = () => {}, on
     return node;
   }
   function deleteSelection() {
+    if (!allowEdit()) return false;
     if (!selected) return;
     const item = selected;
     const name = item.kind === 'node' ? lookupNode(item.id)?.name : model.streams.find(stream => stream.id === item.id)?.name;
@@ -287,12 +318,15 @@ export function createEditor({ svg, onChange = () => {}, onSelect = () => {}, on
       const node = target && lookupNode(target.getAttribute('data-node-id'));
       const portTarget = event.target.closest?.('[data-port]');
       if (portTarget?.getAttribute('data-port') === 'out' && node) {
+        if (!allowEdit()) { event.preventDefault(); selection('node', node.id); return; }
         pendingSource = node.id;
         previewPoint = port(node, 'out');
         pointer = { type: 'connect', id: event.pointerId, source: node.id, screen: screenPoint(event), moved: false };
       } else if (node && mode === 'select' && !portTarget) {
-        const point = worldPoint(event);
-        pointer = { type: 'node', id: event.pointerId, nodeId: node.id, start: point, x: node.x, y: node.y, screen: screenPoint(event), moved: false };
+        if (editable()) {
+          const point = worldPoint(event);
+          pointer = { type: 'node', id: event.pointerId, nodeId: node.id, start: point, x: node.x, y: node.y, screen: screenPoint(event), moved: false };
+        }
         selection('node', node.id);
       } else if (mode === 'select') {
         const stream = event.target.closest?.('[data-stream-id]');
@@ -302,6 +336,7 @@ export function createEditor({ svg, onChange = () => {}, onSelect = () => {}, on
     if (pointer) { event.preventDefault(); try { svg.setPointerCapture(event.pointerId); } catch {} render(); }
   });
   listen(svg, 'pointermove', event => {
+    if ((pendingSource || pointer?.type === 'node' || pointer?.type === 'connect') && !allowEdit()) return;
     if (!pointer) {
       if (pendingSource) { previewPoint = worldPoint(event); render(); }
       return;
@@ -318,6 +353,7 @@ export function createEditor({ svg, onChange = () => {}, onSelect = () => {}, on
   });
   function endPointer(event, cancel = false) {
     if (!pointer || pointer.id !== event.pointerId) return;
+    if ((pointer.type === 'node' || pointer.type === 'connect') && !allowEdit()) return;
     const interaction = pointer;
     pointer = null;
     try { svg.releasePointerCapture(event.pointerId); } catch {}
@@ -350,6 +386,7 @@ export function createEditor({ svg, onChange = () => {}, onSelect = () => {}, on
     const node = nodeTarget && lookupNode(nodeTarget.getAttribute('data-node-id'));
     const portTarget = event.target.closest?.('[data-port]');
     if (node && (mode === 'connect' || portTarget)) {
+      if (!allowEdit()) { selection('node', node.id); return; }
       if (pendingSource && pendingSource !== node.id) { if (!connect(pendingSource, node.id)) render(); }
       else beginConnection(node);
     } else if (node) selection('node', node.id);
@@ -363,12 +400,12 @@ export function createEditor({ svg, onChange = () => {}, onSelect = () => {}, on
     if (mode !== 'select') return;
     const node = event.target.closest?.('[data-node-id]');
     const stream = event.target.closest?.('[data-stream-id]');
-    if (node) { selection('node', node.getAttribute('data-node-id')); onEditNode(node.getAttribute('data-node-id')); }
-    else if (stream) { selection('stream', stream.getAttribute('data-stream-id')); onEditStream(stream.getAttribute('data-stream-id')); }
+    if (node) { selection('node', node.getAttribute('data-node-id')); editItem('node', node.getAttribute('data-node-id')); }
+    else if (stream) { selection('stream', stream.getAttribute('data-stream-id')); editItem('stream', stream.getAttribute('data-stream-id')); }
   });
   listen(svg, 'contextmenu', event => {
     const stream = event.target.closest?.('[data-stream-id]');
-    if (stream) { event.preventDefault(); selection('stream', stream.getAttribute('data-stream-id')); onEditStream(stream.getAttribute('data-stream-id')); }
+    if (stream) { event.preventDefault(); selection('stream', stream.getAttribute('data-stream-id')); editItem('stream', stream.getAttribute('data-stream-id')); }
   });
   listen(svg, 'keydown', event => {
     const item = event.target.closest?.('[data-node-id][tabindex], [data-stream-id][tabindex]');
@@ -377,17 +414,18 @@ export function createEditor({ svg, onChange = () => {}, onSelect = () => {}, on
     if (event.key === 'Enter' || event.key.toLowerCase() === 'e') {
       const kind = item?.hasAttribute('data-node-id') ? 'node' : item ? 'stream' : selected?.kind;
       const id = item?.getAttribute(kind === 'node' ? 'data-node-id' : 'data-stream-id') || selected?.id;
-      if (kind && id) { event.preventDefault(); selection(kind, id); if (kind === 'node') onEditNode(id); else onEditStream(id); }
+      if (kind && id) { event.preventDefault(); selection(kind, id); editItem(kind, id); }
     } else if (event.key === ' ') {
       if (item) { event.preventDefault(); selection(item.hasAttribute('data-node-id') ? 'node' : 'stream', item.getAttribute(item.hasAttribute('data-node-id') ? 'data-node-id' : 'data-stream-id'), true); }
     } else if (item?.hasAttribute('data-node-id') && ['ArrowLeft', 'ArrowRight', 'ArrowUp', 'ArrowDown'].includes(event.key)) {
       event.preventDefault();
+      if (!allowEdit()) return;
       const node = lookupNode(item.getAttribute('data-node-id'));
       if (node) { const step = event.shiftKey ? 50 : 10; node.x += event.key === 'ArrowLeft' ? -step : event.key === 'ArrowRight' ? step : 0; node.y += event.key === 'ArrowUp' ? -step : event.key === 'ArrowDown' ? step : 0; onChange(); render(); focusItem('node', node.id); }
     }
   });
   listen(svg, 'wheel', event => { event.preventDefault(); zoomAt(-Math.max(-100, Math.min(100, event.deltaY)) * 0.0025, screenPoint(event)); }, { passive: false });
-  listen(svg, 'dragover', event => { if (Array.from(event.dataTransfer?.types || []).includes('application/x-node-kind')) { event.preventDefault(); event.dataTransfer.dropEffect = 'copy'; } });
+  listen(svg, 'dragover', event => { if (Array.from(event.dataTransfer?.types || []).includes('application/x-node-kind')) { event.preventDefault(); event.dataTransfer.dropEffect = editable() ? 'copy' : 'none'; } });
   listen(svg, 'drop', event => {
     const kind = event.dataTransfer?.getData('application/x-node-kind');
     if (NODE_TYPES[kind]) { event.preventDefault(); addNode(kind, worldPoint(event)); }
@@ -397,9 +435,9 @@ export function createEditor({ svg, onChange = () => {}, onSelect = () => {}, on
   dimensions();
   render();
   return {
-    setModel(value) { model = value; selected = null; results = null; pointer = null; lastTap = null; clearPending(); onSelect(null); render(); },
+    setModel(value) { if (!editable()) cancelMutation(); model = value; selected = null; results = null; pointer = null; lastTap = null; clearPending(); onSelect(null); render(); },
     setResults(value) { results = value; render(); },
-    setMode(value) { if (['select', 'connect', 'pan'].includes(value)) { mode = value; clearPending(); render(); if (mode === 'connect') announce('Choose a source unit, then choose its destination.'); } },
+    setMode(value) { if (value === 'connect' && !allowEdit()) return false; if (['select', 'connect', 'pan'].includes(value)) { mode = value; clearPending(); render(); if (mode === 'connect') announce('Choose a source unit, then choose its destination.'); } },
     addNode,
     fit,
     zoom(delta) { zoomAt(delta); },

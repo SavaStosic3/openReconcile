@@ -1,31 +1,35 @@
 # Feature roadmap
 
-Current capabilities and planned enhancements for openReconcile, a standalone, open-source mass balance reconciliation tool. Browser-open scheduling and a local saved model library are implemented as described in sections 1 and 2. Remaining items describe planned behavior. Basic reconciled-value labels already exist on the visual diagram.
+Current capabilities and planned enhancements for openReconcile, a standalone, open-source mass balance reconciliation tool. Browser-triggered scheduling, authenticated shared models, and administrator/model permissions are implemented as described in sections 1 and 2. Remaining items describe planned behavior. Basic reconciled-value labels already exist on the visual diagram.
 
 ## 1. Scheduled reconciliation
 
-**Implemented in the browser:** configure each model's elapsed run frequency in minutes, hours, or days from the hamburger menu's Model Management page. Schedules start disabled. Runs use saved model measurements and store results locally by default; optional sources require defined adapters, and no external adapters are included. Manual and scheduled runs retain snapshots, results, and status for the latest 20 runs per model.
+**Implemented with browser triggering and server execution:** editors and administrators configure each published model's elapsed run frequency in minutes, hours, or days from the hamburger menu's Model Management page. New models are drafts with scheduling disabled; publishing is explicit. Runs use saved model measurements and store results in the shared D1 workspace by default. Optional sources require defined adapters, and no external adapters are included. Manual and scheduled runs retain snapshots, results, and status for the latest 20 runs per model.
 
-Execution requires an open app. Browser sleep and background throttling may delay runs. On resume or reopening, an overdue schedule executes once and skips missed intervals. Timestamps are stored as absolute instants and shown in the browser's local time zone; daily means every 24 hours. Repeated ticks are guarded within a tab, with cross-tab coordination where Web Locks are supported.
+Triggering requires an open app with an account permitted to run that model. The backend checks permissions and atomically claims due runs to prevent duplicate execution across sessions. Browser sleep and background throttling may delay runs. On resume or reopening, an overdue schedule executes once and skips missed intervals. Timestamps are stored as absolute instants and shown in the browser's local time zone; daily means every 24 hours. Unpublishing or deleting a model pauses its schedule.
 
 **Future server capabilities:**
 
-- Run without an open browser, using a backend scheduler and durable run storage.
+- Run without an open browser, using an unattended backend scheduler.
 - Configure calendar schedules, reporting windows, and explicit time zones.
 - Retrieve fresh input data through external adapters and retain model versions alongside input snapshots, results, and status.
-- Add retries and server-enforced protection against duplicate or overlapping runs.
+- Add retries, recovery for interrupted executions, and controls for long-running overlapping jobs.
 
 ## 2. Multiple models with role-based access control
 
-**Implemented locally:** create, select, open, and duplicate saved plant models with stable identities and separate schedules and run histories. New, Demo, and Import preserve existing models. Existing single-model browser data is migrated into the library. Duplicated models start with scheduling disabled and empty history. Models remain in browser localStorage; exports provide portable copies.
+**Implemented in the shared workspace:** sign in through the hosting provider, then create, select, open, and duplicate saved plant models with stable identities and separate schedules and run histories. Users, models, grants, schedules, and results are stored in D1. New, Demo, and Import preserve existing models. Duplicated models start as drafts with scheduling disabled and empty history. Earlier browser data is imported only after an explicit user action; JSON exports remain portable.
 
-**Future shared access and versioning:**
+The administrator-only **Admin** page lists users and models. Administrators assign account roles and per-model grants, enable/disable accounts, control publication, lock editing or unpublishing, and delete or restore models. Non-admin access is limited by both the account role and the model grant: viewer, operator, or editor. New users are viewers with no models assigned. Only a configured verified owner identity receives the initial administrator role; the first visitor does not receive it.
 
-- Add model organization, durable storage, version history, and restoration.
-- Add accounts and shared plant/workspaces with model permissions and roles such as administrator, editor, operator, and viewer.
-- Enforce permissions on the server for viewing, editing, running, scheduling, managing connectors, and publishing results; record significant changes and actions.
+Every API request enforces authentication and permissions. Content writes also check model revisions to reject stale edits. Editing locks apply to administrators too until unlocked; unpublishing locks independently protect publication. Only administrators can delete models, including active models. Deleted models retain their data and can be restored as drafts with scheduling paused. The last active administrator cannot be demoted or disabled.
 
-Authentication and role-based access control are not implemented in the local browser library.
+**Future organization and versioning:**
+
+- Add plant/workspace organization, browsable model versions, and restoration of a previous model version.
+- Extend the permission model to connector credentials and publishing results to external systems as those integrations are introduced.
+- Record significant administrative and model changes in an audit history.
+
+Revision checks and run snapshots are implemented; a user-facing model version history remains planned.
 
 ## 3. Tanks and storage units
 

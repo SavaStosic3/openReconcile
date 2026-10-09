@@ -1,4 +1,4 @@
-import { exampleModel } from './dist/model.js';
+import { exampleModel } from './public/model.js';
 import { mkdir, writeFile } from 'node:fs/promises';
 await mkdir(new URL('./examples/', import.meta.url), { recursive: true });
 const demo = exampleModel();

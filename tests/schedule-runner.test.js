@@ -1,8 +1,8 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { exampleModel } from '../dist/model.js';
-import { createCatalog, addModel, appendRun, registerSource, setSchedule, updateModel } from '../dist/management-store.js';
-import { executeModelRun } from '../dist/schedule-runner.js';
+import { exampleModel } from '../public/model.js';
+import { createCatalog, addModel, appendRun, registerSource, setSchedule, updateModel } from '../public/management-store.js';
+import { executeModelRun } from '../public/schedule-runner.js';
 
 const start = Date.parse('2026-10-09T12:00:00.000Z');
 const clone = value => structuredClone(value);

@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { reconcile } from '../dist/solver.js';
+import { reconcile } from '../public/solver.js';
 
 // Independent tiny-network oracle: enumerate every orthant face, solve its
 // equality-constrained quadratic stationarity equations directly, then choose

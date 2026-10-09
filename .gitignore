@@ -1,4 +1,14 @@
 node_modules/
+dist/
+.next/
+.vinext/
+.wrangler/
+.sites-runtime/
+.env
+.env.*
+!.env.example
+.dev.vars
+*.tsbuildinfo
 *.tar.gz
 *.zip
 preview*.png

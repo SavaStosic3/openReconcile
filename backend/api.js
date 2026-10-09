@@ -1,0 +1,159 @@
+import { createCatalog, defaultSchedule, validateEditableModel, setSchedule, advanceSchedule } from '../public/management-store.js';
+import { executeModelRun } from '../public/schedule-runner.js';
+import { ApiError, USER_ROLES, MODEL_LEVELS, fields, safeId, validateRevision, requireAdmin, requirePermission } from './policy.js';
+import { Repository } from './repository.js';
+
+const MAX_BODY_BYTES = 2_000_000;
+const headers = { 'Content-Type': 'application/json; charset=utf-8', 'Cache-Control': 'no-store', 'X-Content-Type-Options': 'nosniff' };
+const response = (data, status = 200) => new Response(JSON.stringify(data), { status, headers });
+const booleanFields = (body, names) => { for (const name of names) if (Object.hasOwn(body, name) && typeof body[name] !== 'boolean') throw new ApiError(400, `${name} must be true or false.`); };
+const clock = env => typeof env.NOW === 'function' ? env.NOW : Date.now;
+const validated = action => { try { return action(); } catch (error) { if (error instanceof ApiError) throw error; throw new ApiError(400, error instanceof Error ? error.message : 'Invalid model data.'); } };
+
+async function readBody(request) {
+  const url = new URL(request.url), origin = request.headers.get('Origin');
+  if (origin !== url.origin || request.headers.get('Sec-Fetch-Site') === 'cross-site') throw new ApiError(403, 'Writes must originate from this application.');
+  if (request.headers.get('Content-Type')?.split(';')[0].trim().toLowerCase() !== 'application/json') throw new ApiError(415, 'Send this request as application/json.');
+  const length = Number(request.headers.get('Content-Length'));
+  if (length > MAX_BODY_BYTES) throw new ApiError(413, 'Choose a request smaller than 2 MB.');
+  if (!request.body) throw new ApiError(400, 'A JSON request body is required.');
+  const reader = request.body.getReader(), chunks = []; let size = 0;
+  try {
+    while (true) {
+      const { done, value } = await reader.read(); if (done) break;
+      size += value.byteLength;
+      if (size > MAX_BODY_BYTES) { await reader.cancel(); throw new ApiError(413, 'Choose a request smaller than 2 MB.'); }
+      chunks.push(value);
+    }
+    const bytes = new Uint8Array(size); let offset = 0;
+    for (const chunk of chunks) { bytes.set(chunk, offset); offset += chunk.byteLength; }
+    const body = JSON.parse(new TextDecoder('utf-8', { fatal: true }).decode(bytes));
+    if (!body || typeof body !== 'object' || Array.isArray(body)) throw new Error('object required');
+    return body;
+  } catch (error) {
+    if (error instanceof ApiError) throw error;
+    throw new ApiError(400, 'Send a valid JSON object.');
+  } finally { reader.releaseLock(); }
+}
+
+function singleCatalog(model) {
+  const catalog = createCatalog(model.model, { id: model.id, now: model.updatedAt });
+  catalog.schedules[model.id] = model.schedule; catalog.sources[model.id] = model.sources;
+  return catalog;
+}
+
+function userIdentifier(value) {
+  if (typeof value !== 'string' || !value || value.length > 512 || /[\u0000-\u001f\u007f]/.test(value)) throw new ApiError(400, 'A valid user identity is required.');
+  return value;
+}
+
+function routeInfo(path) {
+  if (path === '/api/session') return { kind: 'session', methods: ['GET'] };
+  if (path === '/api/workspace') return { kind: 'workspace', methods: ['GET'] };
+  if (path === '/api/admin') return { kind: 'admin', methods: ['GET'] };
+  if (path === '/api/models') return { kind: 'create', methods: ['POST'] };
+  let match = path.match(/^\/api\/models\/([^/]+)(?:\/(schedule|runs|publication))?$/);
+  if (match) return { kind: match[2] || 'model', id: safeId(decodeURIComponent(match[1])), methods: match[2] === 'runs' ? ['POST'] : ['PATCH'] };
+  match = path.match(/^\/api\/admin\/users\/([^/]+)$/);
+  if (match) return { kind: 'user', id: userIdentifier(decodeURIComponent(match[1])), methods: ['PATCH'] };
+  match = path.match(/^\/api\/admin\/models\/([^/]+)(?:\/(permissions|restore))?$/);
+  if (match) return { kind: match[2] || 'policy', id: safeId(decodeURIComponent(match[1])), methods: match[2] === 'permissions' ? ['PUT'] : match[2] === 'restore' ? ['POST'] : ['PATCH', 'DELETE'] };
+  throw new ApiError(404, 'That API route does not exist.');
+}
+
+// identity is supplied only by the server's trusted authentication dispatch.
+// It is never read from request bodies, headers, cookies, or query parameters.
+export async function handleApi(request, env, identity) {
+  try {
+    const repo = new Repository(env.DB, { now: clock(env), ...(typeof env.UUID === 'function' ? { uuid: env.UUID } : {}) });
+    const user = await repo.authenticate(identity, env.ADMIN_EMAIL);
+    const route = routeInfo(new URL(request.url).pathname);
+    if (!route.methods.includes(request.method)) return new Response(JSON.stringify({ error: 'That method is not supported.' }), { status: 405, headers: { ...headers, Allow: route.methods.join(', ') } });
+    if (route.kind === 'session') return response({ user, signInUrl: identity.signInUrl ?? env.SIGN_IN_URL ?? null, signOutUrl: identity.signOutUrl ?? env.SIGN_OUT_URL ?? null });
+    if (route.kind === 'workspace') return response(await repo.workspace(user));
+    if (route.kind === 'admin') return response(await repo.admin(user));
+    const body = await readBody(request);
+
+    if (route.kind === 'create') {
+      fields(body, ['model'], ['model']);
+      return response(await repo.createModel(user, validated(() => validateEditableModel(body.model)), defaultSchedule()), 201);
+    }
+    if (route.kind === 'model') {
+      fields(body, ['model', 'revision'], ['model', 'revision']); validateRevision(body.revision);
+      await repo.accessibleModel(user, route.id, 'canEdit');
+      return response(await repo.updateModel(user, route.id, validated(() => validateEditableModel(body.model)), body.revision));
+    }
+    if (route.kind === 'schedule') {
+      fields(body, ['changes', 'revision'], ['changes', 'revision']); validateRevision(body.revision);
+      const { model } = await repo.accessibleModel(user, route.id, 'canSchedule');
+      const catalog = validated(() => setSchedule(singleCatalog(model), route.id, body.changes, clock(env)()));
+      return response(await repo.updateSchedule(user, route.id, catalog.schedules[route.id], body.revision));
+    }
+    if (route.kind === 'publication') {
+      fields(body, ['published', 'revision'], ['published', 'revision']); validateRevision(body.revision); booleanFields(body, ['published']);
+      const { model, permission } = await repo.accessibleModel(user, route.id);
+      if (!(permission.canPublish || permission.canUnpublish || permission.canSchedule)) throw new ApiError(403, 'Editor access is required to publish or unpublish a model.');
+      if (model.revision !== body.revision) throw new ApiError(409, 'This model changed. Refresh the workspace before saving.');
+      return response(await repo.updatePublication(user, route.id, body.published, body.revision, { ...model.schedule, enabled: false, nextRunAt: null }));
+    }
+    if (route.kind === 'runs') {
+      fields(body, ['trigger'], ['trigger']);
+      if (!['manual', 'scheduled'].includes(body.trigger)) throw new ApiError(400, 'Choose a manual or scheduled run.');
+      let { model, permission } = await repo.accessibleModel(user, route.id, 'canRun');
+      let catalog = singleCatalog(model);
+      if (body.trigger === 'scheduled') {
+        if (!model.published || !model.schedule.enabled) throw new ApiError(403, 'Only a published model with an enabled schedule can run on schedule.');
+        const now = clock(env)();
+        if (Date.parse(model.schedule.nextRunAt) > now) throw new ApiError(409, 'This schedule is not due yet.');
+        catalog = advanceSchedule(catalog, route.id, now);
+        model = await repo.claimSchedule(user, model, catalog.schedules[route.id]);
+        catalog = singleCatalog(model);
+      }
+      const { run } = await executeModelRun(catalog, route.id, { trigger: body.trigger, id: repo.uuid(), now: clock(env) });
+      await repo.appendRun(user, route.id, run);
+      const fresh = await repo.model(route.id);
+      if (!fresh) throw new ApiError(404, 'That model was deleted during the run.');
+      permission = await repo.permission(user, fresh); requirePermission(permission, 'canRun');
+      return response({ run, schedule: fresh.schedule, permission });
+    }
+
+    requireAdmin(await repo.user(user.id));
+    if (route.kind === 'user') {
+      fields(body, ['role', 'active']);
+      if (!Object.keys(body).length) throw new ApiError(400, 'Choose a role or account status to change.');
+      if (Object.hasOwn(body, 'role') && !USER_ROLES.includes(body.role)) throw new ApiError(400, 'Choose an administrator, editor, operator, or viewer role.');
+      booleanFields(body, ['active']);
+      return response(await repo.updateUser(user, route.id, body));
+    }
+    if (route.kind === 'permissions') {
+      fields(body, ['userId', 'level'], ['userId', 'level']); userIdentifier(body.userId);
+      if (!MODEL_LEVELS.includes(body.level)) throw new ApiError(400, 'Choose none, viewer, operator, or editor model access.');
+      return response(await repo.setGrant(user, route.id, body.userId, body.level));
+    }
+    if (route.kind === 'restore') {
+      fields(body, ['revision'], ['revision']); validateRevision(body.revision);
+      return response(await repo.restoreModel(user, route.id, body.revision));
+    }
+    if (route.kind === 'policy' && request.method === 'DELETE') {
+      fields(body, ['revision'], ['revision']); validateRevision(body.revision);
+      const model = await repo.model(route.id);
+      if (!model) throw new ApiError(404, 'That model does not exist.');
+      return response(await repo.deleteModel(user, route.id, body.revision, { ...model.schedule, enabled: false, nextRunAt: null }));
+    }
+    if (route.kind === 'policy') {
+      fields(body, ['published', 'editLocked', 'unpublishLocked', 'revision'], ['revision']); validateRevision(body.revision);
+      if (Object.keys(body).length < 2) throw new ApiError(400, 'Choose a model policy to change.');
+      booleanFields(body, ['published', 'editLocked', 'unpublishLocked']);
+      const model = await repo.model(route.id);
+      if (!model) throw new ApiError(404, 'That model does not exist.');
+      const { revision, ...changes } = body;
+      return response(await repo.updatePolicy(user, route.id, changes, revision, { ...model.schedule, enabled: false, nextRunAt: null }));
+    }
+    throw new ApiError(404, 'That API route does not exist.');
+  } catch (error) {
+    if (error instanceof ApiError) return response({ error: error.message }, error.status);
+    if (error instanceof URIError) return response({ error: 'The URL contains an invalid identifier.' }, 400);
+    console.error('Reconciliation API request failed.', error instanceof Error ? error.message : 'Unexpected error');
+    return response({ error: 'The request could not be completed. Please try again.' }, 500);
+  }
+}

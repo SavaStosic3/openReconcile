@@ -10,11 +10,12 @@ const esc = value => String(value ?? '').replace(/[&<>"']/g, c => ({ '&': '&amp;
 const date = value => value ? new Intl.DateTimeFormat(undefined, { dateStyle: 'medium', timeStyle: 'short' }).format(new Date(value)) : '—';
 const number = value => Number.isFinite(value) ? new Intl.NumberFormat(undefined, { maximumFractionDigits: 3 }).format(value) : '—';
 
-export function createManagement({ fallbackModel, beforeAction, onActivate, onRun, onNewModel, onReview, onToast, inputAdapters = {}, outputAdapters = {} }) {
+export function createManagement({ fallbackModel, beforeAction, onActivate, onRun, onNewModel, onReview, onToast, onAccessChange, backend = null, inputAdapters = {}, outputAdapters = {} }) {
   let catalog, selectedId, pageOpen = false, tickBusy = false, storageWarning = '', lastStored = null, renderedRuns = '';
   const running = new Set();
   const now = () => Date.now();
-  try {
+  if (backend) catalog = validateCatalog(backend.workspace.catalog);
+  else try {
     const raw = localStorage.getItem(CATALOG_KEY);
     if (raw) catalog = validateCatalog(JSON.parse(raw));
     else {
@@ -28,7 +29,7 @@ export function createManagement({ fallbackModel, beforeAction, onActivate, onRu
     storageWarning = 'Saved models could not be restored. Your original browser data is retained; export this model before clearing storage.';
   }
   selectedId = catalog.activeId;
-  let editorBaseline = JSON.stringify(getModelEntry(catalog).model);
+  let editorBaseline = JSON.stringify(catalog.activeId ? getModelEntry(catalog).model : fallbackModel);
 
   function save(next, required = false) {
     if (storageWarning) {
@@ -49,9 +50,10 @@ export function createManagement({ fallbackModel, beforeAction, onActivate, onRu
       return false;
     }
   }
-  save(catalog);
+  if (!backend) save(catalog);
 
   function pullShared() {
+    if (backend) { catalog = validateCatalog(backend.workspace.catalog); return; }
     if (storageWarning) return;
     try {
       const raw = localStorage.getItem(CATALOG_KEY);
@@ -81,6 +83,7 @@ export function createManagement({ fallbackModel, beforeAction, onActivate, onRu
     beforeAction?.();
     closeMenu();
     pageOpen = true;
+    if (backend) $('#workspace-empty').hidden = true;
     selectedId = catalog.activeId;
     document.querySelectorAll('[role="tabpanel"]').forEach(view => view.classList.add('hidden'));
     $('#workflow-nav').classList.add('hidden');
@@ -103,6 +106,14 @@ export function createManagement({ fallbackModel, beforeAction, onActivate, onRu
     $('#help-button').hidden = false;
   }
   function activate(id, flush = true) {
+    if (backend) return (async () => {
+      if (flush) beforeAction?.();
+      await backend.flush();
+      backend.select(id); pullShared(); selectedId = id;
+      leaveManagement();
+      onActivate?.(clone(id ? getModelEntry(catalog, id) : { id: null, model: fallbackModel }));
+      return true;
+    })().catch(error => { onToast?.(error.message); return false; });
     if (flush) beforeAction?.();
     pullShared();
     save(setActiveModel(catalog, id));
@@ -110,6 +121,7 @@ export function createManagement({ fallbackModel, beforeAction, onActivate, onRu
     selectedId = id;
     leaveManagement();
     onActivate?.(clone(getModelEntry(catalog, id)));
+    return true;
   }
   function sourceOptions(direction, selection) {
     const select = $(`#schedule-${direction}`);
@@ -126,7 +138,7 @@ export function createManagement({ fallbackModel, beforeAction, onActivate, onRu
     select.value = selection || '';
     $(`#schedule-${direction}-help`).textContent = sources.length
       ? 'Choose a defined source. Sources require a supported adapter to run.'
-      : direction === 'input' ? 'No external input sources defined. Uses this model’s saved readings; no new plant data is fetched.' : 'No external output destinations defined. Results are saved in this browser’s model history.';
+      : direction === 'input' ? 'No external input sources defined. Uses this model’s saved readings; no new plant data is fetched.' : backend ? 'No external output destinations defined. Results are saved in the shared model history.' : 'No external output destinations defined. Results are saved in this browser’s model history.';
   }
   function cadence(minutes) {
     if (minutes % 1440 === 0) return { value: minutes / 1440, unit: 'days' };
@@ -139,7 +151,55 @@ export function createManagement({ fallbackModel, beforeAction, onActivate, onRu
   }
   function render(form = false) {
     if (!pageOpen) return;
+    if (backend) {
+      $('#management-role-label').textContent = backend.user.role === 'admin' ? 'Administrator' : backend.user.role;
+      $('#management-new-model').disabled = !['admin', 'editor'].includes(backend.user.role);
+    }
+    if (!selectedId || !catalog.models.some(entry => entry.id === selectedId)) {
+      $('#management-model').replaceChildren(new Option('No models assigned', ''));
+      $('#management-model-count').textContent = 'No models assigned to your account';
+      $('#schedule-form').querySelectorAll('input, select, button').forEach(control => control.disabled = true);
+      $('#management-open-model').disabled = true;
+      $('#management-duplicate-model').disabled = true;
+      if (backend) {
+        $('#model-publication-button').hidden = true;
+        $('#model-publication-button').disabled = true;
+        $('#model-publication-state').textContent = 'No model selected';
+        $('#model-access-note').textContent = 'Select or create a model to manage its publication and access.';
+      }
+      $('#schedule-summary-state').textContent = 'No model selected';
+      $('#schedule-summary-state').classList.remove('is-enabled');
+      $('#schedule-summary-frequency').textContent = '—';
+      $('#schedule-summary-input').textContent = '—';
+      $('#schedule-summary-output').textContent = '—';
+      $('#schedule-enabled').checked = false;
+      $('#schedule-interval').value = '';
+      $('#schedule-input').replaceChildren(new Option('No model selected', ''));
+      $('#schedule-output').replaceChildren(new Option('No model selected', ''));
+      $('#schedule-input-help').textContent = '';
+      $('#schedule-output-help').textContent = '';
+      renderedRuns = '';
+      $('#schedule-next-run').textContent = 'No upcoming run';
+      $('#schedule-last-run').textContent = 'No runs yet';
+      $('#management-runs').innerHTML = '<div class="management-runs-empty"><h3>No model selected</h3><p>Create a model or ask an administrator for access.</p></div>';
+      return;
+    }
     const entry = getModelEntry(catalog, selectedId), schedule = catalog.schedules[selectedId];
+    if (backend) {
+      const permission = backend.permission(selectedId);
+      $('#management-role-label').textContent = backend.user.role === 'admin' ? 'Administrator' : backend.user.role;
+      $('#management-new-model').disabled = !['admin', 'editor'].includes(backend.user.role);
+      $('#management-open-model').disabled = false;
+      $('#management-duplicate-model').disabled = !['admin', 'editor'].includes(backend.user.role);
+      $('#schedule-form').querySelectorAll('input, select, button').forEach(control => control.disabled = !permission.canSchedule);
+      $('#schedule-run-now').disabled = !permission.canRun || running.has(selectedId);
+      $('#model-publication-state').textContent = permission.published ? 'Published' : 'Draft';
+      $('#model-publication-button').textContent = permission.published ? 'Unpublish' : 'Publish model';
+      $('#model-publication-button').hidden = !permission.canPublish && !permission.canUnpublish;
+      $('#model-publication-button').disabled = permission.published ? !permission.canUnpublish : !permission.canPublish;
+      $('#model-access-note').textContent = permission.editLocked ? 'Editing is locked by an administrator.' : permission.canEdit ? 'You can edit this model.' : 'Read-only model access.';
+      if (!permission.published) $('#model-access-note').textContent += ' Publish the model before enabling a schedule.';
+    }
     if (form) {
       const select = $('#management-model');
       select.replaceChildren(...catalog.models.map(item => new Option(item.model.name, item.id)));
@@ -162,7 +222,7 @@ export function createManagement({ fallbackModel, beforeAction, onActivate, onRu
     $('#schedule-timezone').textContent = `Times shown in ${Intl.DateTimeFormat().resolvedOptions().timeZone}. Daily means every 24 hours.`;
     const runs = catalog.runs[selectedId];
     $('#schedule-last-run').textContent = runs.length ? `${date(runs.at(-1).finishedAt)} · ${runs.at(-1).status}` : 'No runs yet';
-    $('#schedule-run-now').disabled = running.has(selectedId);
+    $('#schedule-run-now').disabled = running.has(selectedId) || (backend && !backend.permission(selectedId).canRun);
     const runSignature = JSON.stringify([selectedId, runs]);
     if (renderedRuns === runSignature) return;
     renderedRuns = runSignature;
@@ -170,14 +230,13 @@ export function createManagement({ fallbackModel, beforeAction, onActivate, onRu
       $('#management-runs').innerHTML = '<div class="management-runs-empty"><h3>No runs yet</h3><p>Run a reconciliation to see its status and results here.</p></div>';
     } else {
       $('#management-runs').innerHTML = `<div class="table-wrap"><table class="management-runs-table"><thead><tr><th>Run time</th><th>Trigger</th><th>Status</th><th>Result</th></tr></thead><tbody>${[...runs].reverse().slice(0, 10).map(run => `<tr><td>${esc(date(run.startedAt))}</td><td>${run.trigger === 'scheduled' ? 'Scheduled' : 'Manual'}</td><td><span class="status-pill ${run.status === 'ok' ? 'estimated' : run.status === 'failed' || run.status === 'invalid' ? 'unobservable' : ''}">${esc(run.status)}</span></td><td>${run.error ? esc(run.error) : `<span>${esc(run.result?.message || 'Completed')}</span><details><summary>Stream results</summary><ul>${(run.result?.streams || []).map(stream => `<li>${esc(run.modelSnapshot?.streams.find(item => item.id === stream.id)?.name || stream.id)}: ${number(stream.value)} kg · ${esc(stream.status)}</li>`).join('')}</ul></details><button type="button" class="text-button" data-review-run="${esc(run.id)}">View on workbench</button>`}</td></tr>`).join('')}</tbody></table></div>`;
-      $('#management-runs').querySelectorAll('[data-review-run]').forEach(button => button.onclick = () => {
+      $('#management-runs').querySelectorAll('[data-review-run]').forEach(button => button.onclick = async () => {
         const run = catalog.runs[selectedId].find(item => item.id === button.dataset.reviewRun);
         if (JSON.stringify(getModelEntry(catalog, selectedId).model) !== JSON.stringify(run.modelSnapshot)) {
           message('This model has changed since that run. The saved stream results are available above; run again for the current diagram.', true);
           return;
         }
-        activate(selectedId);
-        onReview?.(clone(run));
+        if (await activate(selectedId)) onReview?.(clone(run));
       });
     }
   }
@@ -188,6 +247,10 @@ export function createManagement({ fallbackModel, beforeAction, onActivate, onRu
     render();
     try {
       pullShared();
+      if (backend) {
+        const run = await backend.execute(id, trigger);
+        pullShared(); onRun?.(clone(run)); return run;
+      }
       const { run } = await executeModelRun(clone(catalog), id, { trigger, now, id: crypto.randomUUID(), inputAdapters, outputAdapters });
       pullShared();
       if (!save(appendRun(catalog, id, run, { limit: 20 }))) onToast?.('Run completed, but browser storage is unavailable. Export your model and results to keep them.');
@@ -208,6 +271,17 @@ export function createManagement({ fallbackModel, beforeAction, onActivate, onRu
     if (tickBusy || storageWarning) return;
     tickBusy = true;
     try {
+      if (backend) {
+        if (Date.now() - lastRefresh > 15_000) { lastRefresh = Date.now(); await backend.refresh(); }
+        pullShared();
+        for (const due of dueSchedules(catalog, backend.now())) {
+          const permission = backend.permission(due.modelId);
+          if (!permission.published || !permission.canRun || running.has(due.modelId)) continue;
+          try { await execute(due.modelId, 'scheduled'); }
+          catch (error) { if (error.status !== 409) message(error.message, true); }
+        }
+        render(); return;
+      }
       await withLock(async () => {
         // Read shared schedules/history inside the browser lock. Keep unsaved
         // editor data out of the scheduling path; app edits save synchronously.
@@ -235,13 +309,22 @@ export function createManagement({ fallbackModel, beforeAction, onActivate, onRu
   document.addEventListener('click', event => { if (!event.target.closest('.application-navigation')) closeMenu(); });
   document.addEventListener('keydown', event => { if (event.key === 'Escape' && !$('#app-menu').hidden) { event.preventDefault(); closeMenu(true); } });
   document.addEventListener('focusin', event => { if (!event.target.closest('.application-navigation')) closeMenu(); });
-  $('#menu-model-management').onclick = openManagement;
+  const open = () => backend ? (async () => { beforeAction?.(); await backend.flush(); pullShared(); openManagement(); })().catch(error => onToast?.(error.message)) : openManagement();
+  $('#menu-model-management').onclick = open;
   $('#menu-workbench').onclick = () => activate(catalog.activeId);
   $('#management-back').onclick = () => activate(catalog.activeId);
   $('#management-model').onchange = event => { selectedId = event.target.value; render(true); };
   $('#management-open-model').onclick = () => activate(selectedId);
   $('#management-new-model').onclick = () => onNewModel?.();
   $('#management-duplicate-model').onclick = () => {
+    if (backend) return (async () => {
+      beforeAction?.(); await backend.flush(); pullShared();
+      const activeId = catalog.activeId, source = clone(getModelEntry(catalog, selectedId).model);
+      source.name = `${source.name.slice(0, 153)} (copy)`;
+      const entry = await backend.create(source);
+      backend.select(activeId); pullShared(); selectedId = entry.id;
+      render(true); message('Model duplicated as a draft with scheduling disabled.');
+    })().catch(error => message(error.message, true));
     beforeAction?.();
     pullShared();
     const activeId = catalog.activeId, copyId = crypto.randomUUID();
@@ -250,12 +333,16 @@ export function createManagement({ fallbackModel, beforeAction, onActivate, onRu
     render(true);
     message('Model duplicated. Its schedule starts disabled.');
   };
-  $('#schedule-form').onsubmit = event => {
+  $('#schedule-form').onsubmit = async event => {
     event.preventDefault();
     try {
       beforeAction?.();
       pullShared();
       const intervalMinutes = frequencyToMinutes(Number($('#schedule-interval').value), $('#schedule-unit').value);
+      if (backend) {
+        await backend.schedule(selectedId, { enabled: $('#schedule-enabled').checked, intervalMinutes, inputSourceId: $('#schedule-input').value || null, outputSourceId: $('#schedule-output').value || null });
+        pullShared(); render(true); message('Schedule saved to the workspace. It runs while this app is open.'); return;
+      }
       save(setSchedule(catalog, selectedId, { enabled: $('#schedule-enabled').checked, intervalMinutes, inputSourceId: $('#schedule-input').value || null, outputSourceId: $('#schedule-output').value || null }, now()), true);
       render(true);
       message('Schedule saved. It runs while this app is open.');
@@ -266,6 +353,22 @@ export function createManagement({ fallbackModel, beforeAction, onActivate, onRu
     try { beforeAction?.(); const run = await withLock(() => execute(targetId)); if (selectedId === targetId) message(run.error || run.result?.message || 'Run completed.', run.status === 'failed' || run.status === 'invalid'); }
     catch (error) { message(error.message, true); }
   };
+  if (backend) $('#model-publication-button').onclick = async () => {
+    const targetId = selectedId;
+    try { beforeAction?.(); await backend.publication(targetId, !backend.permission(targetId).published); pullShared(); render(true); }
+    catch (error) { message(error.message, true); }
+  };
+  let lastRefresh = Date.now();
+  const unsubscribe = backend?.subscribe(reason => {
+    const previous = catalog.activeId ? catalog.models.find(entry => entry.id === catalog.activeId) : null;
+    pullShared();
+    if (!catalog.models.some(entry => entry.id === selectedId)) selectedId = catalog.activeId;
+    if (reason === 'refresh') {
+      const current = catalog.activeId ? getModelEntry(catalog) : { id: null, model: fallbackModel };
+      if (previous?.id !== current.id || JSON.stringify(previous?.model) !== JSON.stringify(current.model)) onActivate?.(clone(current));
+    }
+    onAccessChange?.(reason); render();
+  });
   const timer = setInterval(tick, 1000);
   const resume = () => { if (!document.hidden) tick(); };
   document.addEventListener('visibilitychange', resume);
@@ -276,8 +379,9 @@ export function createManagement({ fallbackModel, beforeAction, onActivate, onRu
   return {
     get activeId() { return catalog.activeId; },
     get isOpen() { return pageOpen; },
-    current: () => clone(getModelEntry(catalog)),
+    current: () => clone(catalog.activeId ? getModelEntry(catalog) : { id: null, model: fallbackModel }),
     saveCurrent(value) {
+      if (backend) return catalog.activeId ? backend.queueSave(catalog.activeId, value) : Promise.resolve(false);
       pullShared();
       if (JSON.stringify(getModelEntry(catalog).model) !== editorBaseline) {
         onToast?.('This model changed in another tab. Export your draft, then reopen the model from Model Management.');
@@ -288,12 +392,15 @@ export function createManagement({ fallbackModel, beforeAction, onActivate, onRu
       if (pageOpen) render();
       return saved;
     },
-    create(value) { beforeAction?.(); pullShared(); save(addModel(catalog, value, { id: crypto.randomUUID(), now: now() })); activate(catalog.activeId, false); },
-    latest(id = catalog.activeId) { const entry = getModelEntry(catalog, id); return clone([...catalog.runs[id]].reverse().find(run => run.result && JSON.stringify(run.modelSnapshot) === JSON.stringify(entry.model)) || null); },
+    create(value) {
+      if (backend) return (async () => { beforeAction?.(); const entry = await backend.create(value); pullShared(); return activate(entry.id, false); })().catch(error => onToast?.(error.message));
+      beforeAction?.(); pullShared(); save(addModel(catalog, value, { id: crypto.randomUUID(), now: now() })); activate(catalog.activeId, false);
+    },
+    latest(id = catalog.activeId) { if (!id) return null; const entry = getModelEntry(catalog, id); return clone([...catalog.runs[id]].reverse().find(run => run.result && JSON.stringify(run.modelSnapshot) === JSON.stringify(entry.model)) || null); },
     run(id = catalog.activeId) { return withLock(() => execute(id)); },
     leave: leaveManagement,
-    open: openManagement,
+    open,
     tick,
-    destroy() { clearInterval(timer); document.removeEventListener('visibilitychange', resume); window.removeEventListener('pageshow', resume); }
+    destroy() { unsubscribe?.(); clearInterval(timer); document.removeEventListener('visibilitychange', resume); window.removeEventListener('pageshow', resume); }
   };
 }
