@@ -2,6 +2,8 @@
 
 openReconcile is a standalone, MIT-licensed browser-based workbench for building a physical process flowsheet, entering hourly/daily measurements, and reconciling total mass. Its MassFlow interface pairs a visual process editor with a constrained weighted least-squares solver.
 
+See the [feature roadmap](ROADMAP.md) for planned capabilities and enhancements.
+
 ## Run locally
 
 Requires Node.js 22 or later. No npm packages or installation are needed.
