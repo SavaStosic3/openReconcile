@@ -95,6 +95,7 @@ function fixture(t, { legacyModel = null } = {}) {
     }
   }
   sqlite.exec(readFileSync(new URL('../drizzle/0001_published_snapshots.sql', import.meta.url), 'utf8'));
+  sqlite.exec(readFileSync(new URL('../drizzle/0003_kind_tempest.sql', import.meta.url), 'utf8'));
   let batchTail = Promise.resolve();
   const DB = {
     prepare(sql) {

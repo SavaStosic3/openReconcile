@@ -15,6 +15,7 @@ npm run build
 npx wrangler d1 execute DB --local --config dist/server/wrangler.json --persist-to .wrangler/state --file ./drizzle/0000_complete_random.sql
 npx wrangler d1 execute DB --local --config dist/server/wrangler.json --persist-to .wrangler/state --file ./drizzle/0001_published_snapshots.sql
 npx wrangler d1 execute DB --local --config dist/server/wrangler.json --persist-to .wrangler/state --file ./drizzle/0002_elite_layla_miller.sql
+npx wrangler d1 execute DB --local --config dist/server/wrangler.json --persist-to .wrangler/state --file ./drizzle/0003_kind_tempest.sql
 npm run dev
 ```
 
@@ -59,6 +60,20 @@ Unmetered streams can be inferred only when the measurements and network uniquel
 - The backend checks permissions and model revisions before saving. A stale edit is rejected rather than overwriting someone else's changes; export your unsaved draft, then refresh the workspace. Revision checks support concurrent editing and are not a browsable model version history.
 - Earlier browser data is retained locally and is not uploaded automatically. **Import browser models** asks before importing the last single-model autosave into the shared workspace. Use JSON export/import for additional models from the previous browser library. Export files also provide portable backups.
 - Export model saves a JSON file including all properties and readings. Import adds a model from that format. Export results produces CSV with normalized masses and estimated uncertainties.
+
+## Audit history
+
+Open **Audit history** from the hamburger menu to search recorded changes by model, user, change type, date range, or text. Expand a record to inspect before-and-after values, the acting account, timestamp, and model revision where applicable. History uses server timestamps; date filters use UTC boundaries. **Load earlier changes** retrieves earlier matching records without changing the search.
+
+The backend records saved measurement and virtual-meter settings, data mappings, model structure/properties, schedules, connector configuration, publications, model protection, deletion/restoration, account roles/status, and model permissions. A change and its audit records commit together in the same database transaction. Rejected writes and unchanged values produce no change record. Large edits are split into bounded records so their known field changes remain available. Records contain selected fields, not complete model snapshots, connection credentials, passwords, or session tokens. Personal browser preferences such as hidden-line visibility are not shared model changes and are not recorded.
+
+Administrators see workspace-wide history, including account changes and deleted models. Other users see only history for models they can currently view. Removing model access or disabling an account also removes access to that history. The API provides no interface for editing individual audit records.
+
+Administrators configure audit retention on this page. The default is **365 days**; choose **1–3,650 days** or **Keep indefinitely**. Shortening retention requires confirmation. Records outside the configured window are excluded immediately and physically removed in bounded batches as the application is used; increasing retention cannot restore pruned records. Audit records start when this feature is installed. Existing changes cannot be reconstructed retrospectively. Include the audit event, reading-change, and retention-setting tables in database backups.
+
+**Recorded physical readings** shows up to the latest 500 saved reading changes for a selected model and meter within the chosen date range. The timestamp represents when the model reading was changed, and values use the meter's original configured units. Clearing/removing a physical meter or changing its units/metric breaks the plotted series. Virtual cached values and SQL inputs fetched into detached run snapshots do not create saved-reading points. These trends describe model input changes, rather than a continuous historian sampling stream.
+
+Reconciliation history remains limited to **20 runs per model**. This feature does not extend result storage or copy reconciliation outputs into audit history; existing output connectors remain the destination for a plant's long-term results.
 
 ## Data mapping
 

@@ -18,7 +18,7 @@ function cookies(response) {
 function fixture(t, { bootstrap = true, origin = 'https://balance.test' } = {}) {
   const sqlite = new DatabaseSync(':memory:');
   sqlite.exec('PRAGMA foreign_keys=ON');
-  for (const file of ['0000_complete_random.sql', '0001_published_snapshots.sql', '0002_elite_layla_miller.sql']) sqlite.exec(readFileSync(new URL(`../drizzle/${file}`, import.meta.url), 'utf8'));
+  for (const file of ['0000_complete_random.sql', '0001_published_snapshots.sql', '0002_elite_layla_miller.sql', '0003_kind_tempest.sql']) sqlite.exec(readFileSync(new URL(`../drizzle/${file}`, import.meta.url), 'utf8'));
   let tail = Promise.resolve(), now = Date.parse('2026-10-10T12:00:00.000Z');
   const DB = {
     prepare(sql) {

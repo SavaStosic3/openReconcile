@@ -3,6 +3,22 @@ import { setupLogin, setupSignOut, signInReturnUrl } from './login.js';
 const clone = value => structuredClone(value);
 const $ = selector => document.querySelector(selector);
 
+export function auditQuery(filters = {}) {
+  const query = new URLSearchParams();
+  for (const name of ['modelId', 'actorId', 'category', 'q', 'cursor', 'itemId']) if (filters[name]) query.set(name, String(filters[name]));
+  for (const name of ['from', 'to']) {
+    if (!filters[name]) continue;
+    const value = String(filters[name]), day = /^\d{4}-\d{2}-\d{2}$/.test(value);
+    const date = new Date(day ? `${value}T00:00:00.000Z` : value);
+    if (!Number.isFinite(date.getTime()) || (day && date.toISOString().slice(0, 10) !== value)) throw new Error('Enter a valid UTC date range.');
+    if (day && name === 'to') date.setUTCDate(date.getUTCDate() + 1);
+    query.set(name, date.toISOString());
+  }
+  if (query.has('from') && query.has('to') && query.get('from') >= query.get('to')) throw new Error('The end date must be on or after the start date.');
+  if (filters.limit) query.set('limit', String(filters.limit));
+  return query.toString();
+}
+
 export async function api(path, method = 'GET', body) {
   const response = await fetch(path, { method, credentials: 'same-origin', cache: 'no-store',
     headers: body === undefined ? {} : { 'Content-Type': 'application/json' },
@@ -185,6 +201,15 @@ export async function connectWorkspace(onError) {
     flush() { return enqueue(drain); },
     refresh({ discardDrafts: discard = false } = {}) {
       return enqueue(async () => { if (discard) discardDrafts(); else await drain(); return sync(); });
+    },
+    audit(filters = {}) {
+      return enqueue(async () => { await drain(); await sync(); return request(`/api/audit?${auditQuery(filters)}`); });
+    },
+    auditTrends(filters = {}) {
+      return enqueue(async () => { await drain(); await sync(); return request(`/api/audit/trends?${auditQuery(filters)}`); });
+    },
+    auditSettings(changes) {
+      return enqueue(async () => { await drain(); await sync(); return request('/api/audit/settings', 'PATCH', changes); });
     },
     create(model) {
       return enqueue(async () => {

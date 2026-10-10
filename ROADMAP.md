@@ -1,6 +1,6 @@
 # Feature roadmap
 
-Current capabilities and planned enhancements for openReconcile, a standalone, open-source mass balance reconciliation tool. Browser-triggered scheduling, completed reporting periods, SQL input quality controls, authenticated shared models, administrator/model permissions, data mapping, SQL input/output through a server gateway, virtual meters, line visibility/crossing bridges, published results, and the initial process-unit symbol library are implemented as described below. Other items describe planned behavior.
+Current capabilities and planned enhancements for openReconcile, a standalone, open-source mass balance reconciliation tool. Browser-triggered scheduling, completed reporting periods, SQL input quality controls, authenticated shared models, administrator/model permissions, data mapping, SQL input/output through a server gateway, virtual meters, line visibility/crossing bridges, published results, audit history, and the initial process-unit symbol library are implemented as described below. Other items describe planned behavior.
 
 ## 1. Scheduled reconciliation
 
@@ -14,13 +14,13 @@ Triggering requires an open app with an account permitted to run that model. The
 
 - Run without an open browser, using an unattended backend scheduler.
 - Add calendar-based trigger scheduling; configured reporting calendars and time zones are already implemented.
-- Add automatic late-data detection/backfill and long-term historical retention; manual historical reruns are already implemented.
+- Add automatic late-data detection/backfill; manual historical reruns are already implemented. Application run history remains capped at 20 per model; use output destinations for long-term reconciliation results.
 - Add further external input adapters and quality controls beyond the current SQL policies.
 - Add retries, recovery for interrupted executions, and controls for long-running overlapping jobs.
 
 ## 2. Multiple models with role-based access control
 
-**Implemented in the shared workspace:** sign in through the hosting provider, then create, select, open, and duplicate saved plant models with stable identities and separate schedules and run histories. Users, models, grants, schedules, and results are stored in D1. New model, Load template, and Import preserve existing models. Duplicated models start as drafts with scheduling disabled and empty history. Earlier browser data is imported only after an explicit user action; JSON exports remain portable.
+**Implemented in the shared workspace:** sign in with a username/password account or through the hosting provider, then create, select, open, and duplicate saved plant models with stable identities and separate schedules and run histories. Users, models, grants, schedules, and results are stored in D1. New model, Load template, and Import preserve existing models. Duplicated models start as drafts with scheduling disabled and empty history. Earlier browser data is imported only after an explicit user action; JSON exports remain portable.
 
 The administrator-only **Admin** page lists users and models. Administrators assign account roles and per-model grants, enable/disable accounts, control publication, lock editing or unpublishing, and delete or restore models. Non-admin access is limited by both the account role and the model grant: viewer, operator, or editor. New users are viewers with no models assigned. Only a configured verified owner identity receives the initial administrator role; the first visitor does not receive it.
 
@@ -30,7 +30,6 @@ Every API request enforces authentication and permissions. Content writes also c
 
 - Add plant/workspace organization, browsable model versions, and restoration of a previous model version.
 - Extend the current administrator-only SQL configuration and model-run permissions with dedicated connector grants and broader publishing controls as those integrations grow.
-- Record significant administrative and model changes in an audit history.
 
 Revision checks, run snapshots, and separate working drafts and published snapshots are implemented. Publishing promotes the saved draft to a numbered publication; manual published runs and schedules use that copy while edits remain separate. A user-facing history for browsing or restoring every model version remains planned.
 
@@ -114,7 +113,7 @@ Further enhancements:
 
 - Extend the existing reconciled-value labels and unit totals with selectable overlays for measured/reconciled values, corrections, uncertainty, and result status.
 - Identify physical measurements, virtual meters, inferred flows, unresolved values, and bounds or quality warnings.
-- Extend completed-period and saved-run selection with long-term interval search, comparison, trends, and richer diagram inspection.
+- Extend completed-period and saved-run selection with comparisons and richer diagram inspection within the latest 20 runs. Use output destinations for long-term result trends; saved-reading change trends are available in Audit history.
 - Keep dense diagrams legible and indicate when results are stale after a model or data change.
 
 ## 12. Process-unit symbols
@@ -126,3 +125,9 @@ Each internal unit has consistent left input and right output ports; each accept
 Symbols are diagram labels: all internal units retain the existing total-mass conservation equation without accumulation or equipment-specific physics. Additional materials leaving a filter or cyclone must be modeled as explicit streams. Tanks and their inventory/accumulation behavior remain part of the planned tank/storage feature.
 
 **Future symbol capabilities:** expand the library and add additional port arrangements where they improve diagram readability.
+
+## 13. Audit history and recorded reading trends
+
+**Implemented:** server-recorded before/after changes for measurements, mappings, model properties, schedules, connector configuration, permissions, publications, model protection, deletion/restoration, and audit retention settings. Change records commit atomically with successful writes and retain the acting account, timestamp, and relevant model revision. Large changes are split into bounded records; credentials, session tokens, full models, and reconciliation results are excluded.
+
+**Audit history** provides model/user/type/date/text filters, historical pagination, and physical-meter reading-change trends. Administrators can retain audit records for 1–3,650 days or indefinitely; the default is 365 days. Other users see only history for currently accessible models. Retention applies independently of the fixed latest-20-run history. Long-term reconciled results belong in configured output destinations. Recording begins with installation, without reconstructing earlier changes. Reading trends describe saved input changes, including gaps and unit changes, rather than continuous historian sampling.

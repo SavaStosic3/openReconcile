@@ -42,3 +42,23 @@ export const modelRuns = sqliteTable('model_runs', {
   id: text('id').primaryKey(), modelId: text('model_id').notNull().references(() => models.id),
   runJson: text('run_json').notNull(), startedAt: text('started_at').notNull(), createdBy: text('created_by').notNull().references(() => users.id)
 }, table => [index('model_runs_model_time_idx').on(table.modelId, table.startedAt)]);
+
+export const auditSettings = sqliteTable('audit_settings', {
+  id: integer('id').primaryKey(), retentionDays: integer('retention_days').notNull().default(365),
+  revision: integer('revision').notNull().default(1), updatedAt: text('updated_at'),
+  updatedById: text('updated_by_id'), updatedByName: text('updated_by_name')
+});
+
+export const auditEvents = sqliteTable('audit_events', {
+  id: text('id').primaryKey(), occurredAt: text('occurred_at').notNull(), actorId: text('actor_id').notNull(), actorName: text('actor_name').notNull(),
+  modelId: text('model_id'), modelName: text('model_name'), category: text('category').notNull(), action: text('action').notNull(), summary: text('summary').notNull(),
+  targetId: text('target_id'), targetName: text('target_name'), changesJson: text('changes_json').notNull(),
+  revisionBefore: integer('revision_before'), revisionAfter: integer('revision_after'), truncated: integer('truncated', { mode: 'boolean' }).notNull().default(false)
+}, table => [index('audit_events_time_idx').on(table.occurredAt, table.id), index('audit_events_model_time_idx').on(table.modelId, table.occurredAt, table.id), index('audit_events_actor_time_idx').on(table.actorId, table.occurredAt, table.id)]);
+
+export const auditReadings = sqliteTable('audit_readings', {
+  id: text('id').primaryKey(), eventId: text('event_id').notNull().references(() => auditEvents.id, { onDelete: 'cascade' }),
+  modelId: text('model_id').notNull(), itemId: text('item_id').notNull(), itemName: text('item_name').notNull(),
+  beforeJson: text('before_json').notNull(), afterJson: text('after_json').notNull(), unit: text('unit'), previousUnit: text('previous_unit'),
+  metric: text('metric'), previousMetric: text('previous_metric'), meterType: text('meter_type').notNull()
+}, table => [index('audit_readings_model_item_idx').on(table.modelId, table.itemId, table.eventId)]);

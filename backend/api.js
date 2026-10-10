@@ -1,4 +1,4 @@
-import { createCatalog, defaultSchedule, validateEditableModel, setSchedule, advanceSchedule } from '../public/management-store.js';
+import { createCatalog, defaultSchedule, validateEditableModel, setSchedule, advanceSchedule, timeToEpoch } from '../public/management-store.js';
 import { executeModelRun } from '../public/schedule-runner.js';
 import { ApiError, USER_ROLES, MODEL_LEVELS, fields, safeId, validateRevision, requireAdmin, requirePermission } from './policy.js';
 import { Repository } from './repository.js';
@@ -54,6 +54,9 @@ function routeInfo(path) {
   if (path === '/api/session') return { kind: 'session', methods: ['GET'] };
   if (path === '/api/workspace') return { kind: 'workspace', methods: ['GET'] };
   if (path === '/api/admin') return { kind: 'admin', methods: ['GET'] };
+  if (path === '/api/audit') return { kind: 'audit', methods: ['GET'] };
+  if (path === '/api/audit/trends') return { kind: 'auditTrends', methods: ['GET'] };
+  if (path === '/api/audit/settings') return { kind: 'auditSettings', methods: ['GET','PATCH'] };
   if (path === '/api/sql/connections') return { kind: 'sqlConnections', methods: ['GET'] };
   if (path === '/api/models') return { kind: 'create', methods: ['POST'] };
   let sourceMatch = path.match(/^\/api\/models\/([^/]+)\/sources(?:\/(test|preview))?$/);
@@ -67,6 +70,38 @@ function routeInfo(path) {
   throw new ApiError(404, 'That API route does not exist.');
 }
 
+const AUDIT_CATEGORIES = ['measurement','mapping','model','schedule','connector','publication','permission','retention'];
+function auditFilters(url, trends = false) {
+  const allowed = trends ? ['modelId','itemId','from','to'] : ['modelId','actorId','category','q','from','to','cursor','limit'];
+  for (const key of url.searchParams.keys()) if (!allowed.includes(key) || url.searchParams.getAll(key).length !== 1) throw new ApiError(400,'History filters contain unsupported or repeated fields.');
+  const result = {};
+  for (const key of allowed) if (url.searchParams.has(key)) {
+    const value = url.searchParams.get(key);
+    if (!value) throw new ApiError(400,'History filters cannot be empty.');
+    if (key === 'modelId') result[key] = safeId(value);
+    else if (key === 'actorId') result[key] = userIdentifier(value);
+    else if (key === 'itemId') {
+      if (value.length > 65536 || /[\u0000-\u001f\u007f]/.test(value)) throw new ApiError(400,'Choose a valid meter identifier.');
+      result[key] = value;
+    } else if (key === 'category') { if (!AUDIT_CATEGORIES.includes(value)) throw new ApiError(400,'Choose an available history category.'); result[key] = value; }
+    else if (key === 'q') { if (value.length > 200 || /[\u0000-\u001f\u007f]/.test(value)) throw new ApiError(400,'Search history using at most 200 characters.'); result[key] = value.trim(); }
+    else if (key === 'from' || key === 'to') result[key] = validated(() => new Date(timeToEpoch(value,'History timestamp')).toISOString());
+    else if (key === 'limit') { if (!/^[1-9][0-9]{0,2}$/.test(value) || Number(value) > 100) throw new ApiError(400,'Choose a history page size from 1 to 100.'); result.limit = Number(value); }
+    else if (key === 'cursor') {
+      try {
+        if (value.length > 512 || !/^[A-Za-z0-9+/]+=*$/.test(value)) throw new Error();
+        const cursor = JSON.parse(atob(value)); fields(cursor,['occurredAt','id'],['occurredAt','id']);
+        cursor.id = safeId(cursor.id);
+        if (new Date(timeToEpoch(cursor.occurredAt)).toISOString() !== cursor.occurredAt) throw new Error();
+        result.cursor = cursor;
+      } catch { throw new ApiError(400,'Choose a valid history cursor.'); }
+    }
+  }
+  if (trends && !result.modelId) throw new ApiError(400,'Choose a model for measurement trends.');
+  if (result.from && result.to && result.from >= result.to) throw new ApiError(400,'History start must be before its end.');
+  return trends ? result : { ...result, limit: result.limit ?? 50 };
+}
+
 // identity is supplied only by the server's trusted authentication dispatch.
 // It is never read from request bodies, headers, cookies, or query parameters.
 export async function handleApi(request, env, identity) {
@@ -78,6 +113,9 @@ export async function handleApi(request, env, identity) {
     if (route.kind === 'session') return response({ user, signInUrl: identity.signInUrl ?? env.SIGN_IN_URL ?? null, signOutUrl: identity.signOutUrl ?? env.SIGN_OUT_URL ?? null });
     if (route.kind === 'workspace') return response(await repo.workspace(user));
     if (route.kind === 'admin') return response(await repo.admin(user));
+    if (route.kind === 'audit') { await repo.pruneAudit(); return response(await repo.audit(user,auditFilters(new URL(request.url)))); }
+    if (route.kind === 'auditTrends') { await repo.pruneAudit(); return response(await repo.auditTrends(user,auditFilters(new URL(request.url),true))); }
+    if (route.kind === 'auditSettings' && request.method === 'GET') return response({ settings: await repo.auditSettings(user) });
     if (route.kind === 'sqlConnections') {
       requireAdmin(await repo.user(user.id));
       const data = await sqlConnections(env);
@@ -85,6 +123,14 @@ export async function handleApi(request, env, identity) {
       return response(data);
     }
     const body = await readBody(request);
+    // Reconciliation results retain the existing twenty-run policy and never
+    // enter audit history. Only configuration/account mutations prune audits.
+    if (!['runs','sourceTest','sourcePreview'].includes(route.kind)) await repo.pruneAudit();
+    if (route.kind === 'auditSettings') {
+      fields(body,['retentionDays','revision'],['retentionDays','revision']); validateRevision(body.revision);
+      if (!Number.isInteger(body.retentionDays) || body.retentionDays < 0 || body.retentionDays > 3650) throw new ApiError(400,'Choose audit retention from 1 to 3650 days, or 0 to keep history indefinitely.');
+      return response(await repo.updateAuditSettings(user,body.retentionDays,body.revision));
+    }
 
     if (['sources', 'sourceTest', 'sourcePreview'].includes(route.kind)) {
       requireAdmin(await repo.user(user.id));
