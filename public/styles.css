@@ -141,15 +141,15 @@ h3 { font-size: 14px; line-height: 1.4; font-weight: 650; }
 .lines-menu-panel { position: absolute; z-index: 30; right: 0; top: calc(100% + 10px); width: min(350px, calc(100vw - 32px)); background: var(--surface); border: 1px solid var(--line); border-radius: 8px; padding: 16px; box-shadow: 0 12px 36px #243a5420; text-align: left; }
 .lines-menu-heading { display: flex; justify-content: space-between; align-items: center; gap: 12px; margin-bottom: 12px; font-size: 13px; }
 .show-hidden-option { display: flex; align-items: flex-start; gap: 9px; padding: 11px; border: 1px solid #d4e5dd; border-radius: 5px; background: #f4f9f6; font-size: 12px; cursor: pointer; }
-.show-hidden-option input, .line-visibility-row input { accent-color: var(--teal); margin-top: 2px; flex-shrink: 0; }
+.show-hidden-option input { accent-color: var(--teal); margin-top: 2px; flex-shrink: 0; }
 .show-hidden-option small { display: block; margin-top: 4px; color: var(--muted); font-size: 10px; line-height: 1.5; }
 .line-visibility-list { max-height: min(340px, 40vh); overflow: auto; border-block: 1px solid var(--line); }
-.line-visibility-row { display: flex; align-items: flex-start; gap: 9px; padding: 10px 2px; border-bottom: 1px solid #edf0ed; cursor: pointer; font-size: 11px; }
+.line-visibility-row { display: flex; align-items: center; gap: 12px; padding: 10px 2px; border-bottom: 1px solid #edf0ed; font-size: 11px; }
 .line-visibility-row:last-child { border-bottom: 0; }
-.line-visibility-row > span:nth-child(2) { flex: 1; min-width: 0; overflow-wrap: anywhere; }
+.line-visibility-row > span { flex: 1; min-width: 0; overflow-wrap: anywhere; }
+.line-visibility-row > button { flex-shrink: 0; }
 .line-visibility-row strong { display: block; font-size: 11px; }
 .line-visibility-row small { display: block; margin-top: 3px; color: var(--muted); font-size: 10px; }
-.line-visibility-state { color: var(--muted); font-size: 10px; padding-top: 2px; }
 .line-menu-note { color: var(--muted); font-size: 10px; line-height: 1.6; margin: 12px 0 0; }
 .line-menu-empty { padding: 10px 0; }
 .lines-menu-panel { overflow: auto; overscroll-behavior: contain; }

@@ -73,7 +73,7 @@ Revision checks, run snapshots, and separate working drafts and published snapsh
 
 ## 9. Hide flow lines
 
-- Implemented: hide individual streams in the inspector or right-click actions. The **Lines** menu restores individual lines or all lines and provides a **Show hidden lines** toggle for temporary reveal.
+- Implemented: hide individual streams in the inspector or right-click actions. The **Hidden lines** menu lists only hidden streams, with a **Restore** button for each. **Restore all** and **Show hidden lines** provide full restoration and temporary reveal.
 - Hidden streams remain in the model, measurements, reconciliation, and exports. Visibility never changes the mass balance or published version.
 - Hidden counts and individual visibility are shown in the menu. Preferences are personal per account/model in the current browser, across editor and published views; shared visibility presets and groups remain future work.
 

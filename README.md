@@ -61,7 +61,7 @@ Equipment symbols describe the process diagram. Every internal unit uses the sam
 
 ## Line visibility and crossings
 
-Select a flow line and choose **Hide line** in its inspector, or right-click it and choose **Hide line**. Open **Lines** in the canvas toolbar to restore individual streams, **Restore all**, or toggle **Show hidden lines** for a temporary reveal. Revealed hidden lines appear lighter. The menu shows the hidden-line count and each stream's endpoints.
+Select a flow line and choose **Hide line** in its inspector, or right-click it and choose **Hide line**. Open **Hidden lines** in the canvas toolbar to see only hidden streams and choose **Restore** beside a stream, **Restore all**, or toggle **Show hidden lines** for a temporary reveal. Revealed hidden lines appear lighter. The menu shows the hidden-line count and each stream's endpoints.
 
 Visibility is a personal browser preference per account and model, shared between its editor and published view. It does not edit the model, invalidate results, change publication versions, or remove streams from measurements, reconciliation, and JSON exports. It remains available to read-only viewers. Preferences are retained in this browser; they are not shared with other users or devices.
 
@@ -131,6 +131,8 @@ Independent, unbiased errors and an accurate physical model are assumed. Very po
 - The local test suite and browser checks do not establish accuracy on an actual plant's meters, density conventions, or reporting data. Validate the model and uncertainty configuration against known company cases before adopting it for reporting.
 
 ## Verification
+
+Use the [release checklist](RELEASE_CHECKLIST.md) to record deployment, data protection, access, and browser checks for each release.
 
 ```powershell
 npm test

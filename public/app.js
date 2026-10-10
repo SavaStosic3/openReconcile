@@ -115,7 +115,8 @@ function syncLineVisibility() {
   renderLineMenu();
 }
 function renderLineMenu() {
-  const focusedId = document.activeElement?.dataset?.lineVisibility;
+  const focusedId = document.activeElement?.dataset?.restoreLine;
+  const previousButtons = $$('[data-restore-line]'), focusedIndex = previousButtons.findIndex(button => button.dataset.restoreLine === focusedId);
   const { hiddenIds, showHidden } = lineVisibility.snapshot(), hidden = new Set(hiddenIds);
   const count = model.streams.filter(stream => hidden.has(stream.id)).length;
   $('#line-hidden-count').textContent = count ? `${count} hidden` : '';
@@ -123,16 +124,20 @@ function renderLineMenu() {
   $('#show-hidden-lines').checked = showHidden;
   $('#show-hidden-lines').disabled = !count;
   $('#restore-all-lines').disabled = !count;
-  $('#line-visibility-status').textContent = count ? `${count} hidden line${count === 1 ? '' : 's'}${showHidden ? ' currently revealed' : ''}.` : 'All lines are visible.';
-  $('#line-visibility-list').innerHTML = model.streams.map(stream => {
+  $('#line-visibility-status').textContent = count ? `${count} hidden line${count === 1 ? '' : 's'}${showHidden ? ' currently revealed' : ''}.` : 'No lines are hidden.';
+  $('#line-visibility-list').innerHTML = model.streams.filter(stream => hidden.has(stream.id)).map(stream => {
     const source = model.nodes.find(node => node.id === stream.source), target = model.nodes.find(node => node.id === stream.target);
-    return `<label class="line-visibility-row"><input type="checkbox" data-line-visibility="${esc(stream.id)}" aria-label="Show ${esc(stream.name)}" ${hidden.has(stream.id) ? '' : 'checked'}><span><strong>${esc(stream.name)}</strong><small>${esc(source?.name)} → ${esc(target?.name)}</small></span><span class="line-visibility-state">${hidden.has(stream.id) ? 'Hidden' : 'Visible'}</span></label>`;
-  }).join('') || '<p class="helper line-menu-empty">No flow lines in this model yet.</p>';
-  $$('[data-line-visibility]').forEach(input => input.onchange = () => {
-    input.checked ? lineVisibility.show(input.dataset.lineVisibility) : lineVisibility.hide(input.dataset.lineVisibility);
+    return `<div class="line-visibility-row"><span><strong>${esc(stream.name)}</strong><small>${esc(source?.name)} → ${esc(target?.name)}</small></span><button type="button" class="button secondary compact" data-restore-line="${esc(stream.id)}" aria-label="Restore ${esc(stream.name)}">Restore</button></div>`;
+  }).join('') || '<p class="helper line-menu-empty">Hidden lines will appear here when you hide a stream.</p>';
+  $$('[data-restore-line]').forEach(button => button.onclick = () => {
+    lineVisibility.show(button.dataset.restoreLine);
     applyLineVisibility();
   });
-  if (focusedId && $('#lines-menu').open) $$('[data-line-visibility]').find(input => input.dataset.lineVisibility === focusedId)?.focus({ preventScroll: true });
+  if (focusedId && $('#lines-menu').open) {
+    const buttons = $$('[data-restore-line]');
+    const next = buttons.find(button => button.dataset.restoreLine === focusedId) || buttons[Math.min(Math.max(0, focusedIndex), buttons.length - 1)] || $('#lines-menu > summary');
+    next.focus({ preventScroll: true });
+  }
 }
 function applyLineVisibility() {
   editor.setLineVisibility(lineVisibility.snapshot()); renderLineMenu(); renderInspector();
@@ -141,7 +146,7 @@ function hideLine(id) {
   const stream = model.streams.find(item => item.id === id); if (!stream) return;
   lineVisibility.hide(id); lineVisibility.setShowHidden(false);
   editor.select('stream', ''); applyLineVisibility();
-  toast(`${stream.name} hidden. Open Lines to show it again. It still participates in reconciliation.`);
+  toast(`${stream.name} hidden. Open Hidden lines to restore it. It still participates in reconciliation.`);
 }
 function openStreamActions(id) {
   if (canEdit()) { openStream(id); return; }
@@ -241,8 +246,8 @@ const editor = createEditor({
 editor.setPresentation(viewMode === 'published' ? 'published' : 'editing');
 editor.setModel(model); refreshChrome(); renderInspector();
 $('#show-hidden-lines').onchange = event => { lineVisibility.setShowHidden(event.target.checked); applyLineVisibility(); };
-$('#restore-all-lines').onclick = () => { lineVisibility.showAll(); applyLineVisibility(); toast('All flow lines restored.'); };
-document.addEventListener('click', event => { if (!$('#lines-menu').contains(event.target)) $('#lines-menu').open = false; });
+$('#restore-all-lines').onclick = () => { lineVisibility.showAll(); applyLineVisibility(); $('#lines-menu > summary').focus({ preventScroll: true }); toast('All flow lines restored.'); };
+document.addEventListener('click', event => { if (!event.composedPath().includes($('#lines-menu'))) $('#lines-menu').open = false; });
 $('#lines-menu').addEventListener('keydown', event => { if (event.key === 'Escape') { event.preventDefault(); event.stopPropagation(); $('#lines-menu').open = false; $('#lines-menu > summary').focus(); } });
 function positionLineMenu() {
   if (!$('#lines-menu').open) return;
