@@ -20,6 +20,8 @@ export function signInReturnUrl(href, showSignIn = false) {
 export function setupLogin({ document = globalThis.document, location = globalThis.location, request } = {}) {
   const externalSignIn = document.querySelector('#signin-link');
   if (externalSignIn) externalSignIn.hidden = !supportsChatgptSignIn(document);
+  const externalDivider = document.querySelector('.auth-divider');
+  if (externalDivider) externalDivider.hidden = !supportsChatgptSignIn(document);
   const form = document.querySelector('#login-form');
   // Older embedded pages can show the authentication screen before updating
   // their markup. They must still be able to use the existing SSO entry point.
