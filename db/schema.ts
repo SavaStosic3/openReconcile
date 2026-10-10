@@ -1,4 +1,4 @@
-import { sqliteTable, text, integer, primaryKey, index } from 'drizzle-orm/sqlite-core';
+import { sqliteTable, text, integer, primaryKey, index, uniqueIndex } from 'drizzle-orm/sqlite-core';
 
 export const users = sqliteTable('users', {
   id: text('id').primaryKey(), email: text('email').notNull(), name: text('name').notNull(),
@@ -6,6 +6,20 @@ export const users = sqliteTable('users', {
   active: integer('active', { mode: 'boolean' }).notNull().default(true),
   createdAt: text('created_at').notNull(), updatedAt: text('updated_at').notNull()
 });
+
+export const localCredentials = sqliteTable('local_credentials', {
+  username: text('username').primaryKey(), userId: text('user_id').notNull().references(() => users.id),
+  passwordHash: text('password_hash').notNull(), createdAt: text('created_at').notNull()
+}, table => [uniqueIndex('local_credentials_user_idx').on(table.userId)]);
+
+export const localSessions = sqliteTable('local_sessions', {
+  tokenHash: text('token_hash').primaryKey(), userId: text('user_id').notNull().references(() => users.id),
+  userUpdatedAt: text('user_updated_at').notNull(), createdAt: integer('created_at').notNull(), expiresAt: integer('expires_at').notNull()
+}, table => [index('local_sessions_user_idx').on(table.userId), index('local_sessions_expiry_idx').on(table.expiresAt)]);
+
+export const localLoginLimits = sqliteTable('local_login_limits', {
+  key: text('key').primaryKey(), attempts: integer('attempts').notNull(), windowStart: integer('window_start').notNull()
+}, table => [index('local_login_limits_time_idx').on(table.windowStart)]);
 
 export const models = sqliteTable('models', {
   id: text('id').primaryKey(), name: text('name').notNull(), modelJson: text('model_json').notNull(),

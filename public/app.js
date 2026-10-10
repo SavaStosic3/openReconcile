@@ -103,7 +103,7 @@ function refreshChrome() {
   $('#account-chip').hidden = false;
   $('#account-name').textContent = backend.user.name || backend.user.email;
   $('#account-role').textContent = backend.user.role === 'admin' ? 'Administrator' : backend.user.role;
-  $('#account-email').textContent = backend.user.email;
+  $('#account-email').textContent = backend.user.email || backend.user.name;
   $('#management-role-label').textContent = backend.user.role === 'admin' ? 'Administrator' : backend.user.role;
   if (!exists) $('#save-state').textContent = 'No model selected';
   else $('#save-state').textContent = backend.hasFailedSave ? 'Not saved · export your draft' : backend.hasPending ? 'Saving to workspace…' : 'Saved to workspace';

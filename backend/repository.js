@@ -18,6 +18,10 @@ const parse = row => row && ({
 });
 const userRow = row => row && ({ id: row.id, email: row.email, name: row.name, role: row.role, active: Boolean(row.active), createdAt: row.created_at });
 
+// This marker is created only by the server's local-session resolver. Local
+// accounts already exist in D1 and must never enter the SSO upsert/bootstrap.
+export const localAccountIdentity = Symbol('local account identity');
+
 // Each write repeats authorization in SQL. A role/grant revoked after a read
 // cannot authorize an in-flight mutation; revisions independently guard edits.
 function accessClause(action, userId) {
@@ -45,6 +49,11 @@ export class Repository {
   stamp() { return new Date(this.now()).toISOString(); }
 
   async authenticate(identity, adminEmail) {
+    if (identity?.[localAccountIdentity] === true) {
+      const user = await this.user(identity.id);
+      if (!user?.active) throw new ApiError(401, 'Sign in to access this workspace.');
+      return user;
+    }
     if (!identity || typeof identity.id !== 'string' || !identity.id || identity.id.length > 512 || typeof identity.email !== 'string' || !identity.email || identity.email.length > 320) throw new ApiError(401, 'Sign in to access this workspace.');
     const email = identity.email.trim(), name = String(identity.name || email).slice(0, 160), stamp = this.stamp();
     const role = typeof adminEmail === 'string' && adminEmail.trim() && email.toLowerCase() === adminEmail.trim().toLowerCase() ? 'admin' : 'viewer';

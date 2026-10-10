@@ -654,6 +654,14 @@ h3 { font-size: 14px; line-height: 1.4; font-weight: 650; }
 .auth-card > p:not(.eyebrow) { margin-bottom: 23px; color: var(--muted); font-size: 12px; line-height: 1.7; }
 .auth-card > .button { width: 100%; min-height: 42px; margin-top: 6px; }
 .auth-card > .text-button { display: block; margin: 12px auto 0; }
+.login-form { display: flex; flex-direction: column; gap: 16px; }
+.login-form .field { margin: 0; font-size: 12px; }
+.login-form input { min-height: 42px; font-size: 14px; }
+.login-form > .button { min-height: 42px; margin-top: 2px; }
+.login-form .form-error { margin: 0; font-size: 12px; }
+.login-status { min-height: 16px; margin: -5px 0 0; color: var(--muted); font-size: 11px; }
+.auth-divider { display: flex; align-items: center; gap: 13px; margin: 13px 0 17px; color: var(--muted); font-size: 11px; }
+.auth-divider::before, .auth-divider::after { content: ''; flex: 1; height: 1px; background: var(--line); }
 .auth-card .auth-footnote { margin-top: 30px; margin-bottom: 0 !important; padding-top: 19px; border-top: 1px solid var(--line); font-size: 10px !important; }
 .workspace-empty { display: grid; place-items: center; flex: 1; min-height: 400px; padding: 60px 24px; }
 .workspace-empty-card { max-width: 530px; text-align: center; }

@@ -1,3 +1,5 @@
+import { setupLogin, setupSignOut, signInReturnUrl } from './login.js';
+
 const clone = value => structuredClone(value);
 const $ = selector => document.querySelector(selector);
 
@@ -16,7 +18,10 @@ function showAuth(message, title = 'Sign in to MassFlow') {
   $('#workspace-main').hidden = true;
   $('#auth-title').textContent = title;
   $('#auth-message').textContent = message;
-  $('#auth-retry').onclick = () => location.reload();
+  $('#auth-retry').onclick = () => {
+    if (new URL(location.href || '/', 'https://workspace.invalid').searchParams.get('signin') === '1') location.replace(signInReturnUrl(location.href));
+    else location.reload();
+  };
   for (const dialog of document.querySelectorAll?.('dialog[open]') || []) dialog.close();
   const menu = $('#app-menu'), menuButton = $('#menu-button'), adminButton = $('#menu-admin');
   if (menu) menu.hidden = true;
@@ -25,15 +30,21 @@ function showAuth(message, title = 'Sign in to MassFlow') {
 }
 
 export async function connectWorkspace(onError) {
+  setupLogin({ request: api });
+  if (new URL(location.href || '/', 'https://workspace.invalid').searchParams.get('signin') === '1') {
+    showAuth('Sign in with your workspace username and password, or use your ChatGPT account.');
+    return new Promise(() => {});
+  }
   let session, state;
   try {
     session = await api('/api/session');
     state = await api('/api/workspace');
   } catch (error) {
-    showAuth(error.status === 401 ? 'Sign in with ChatGPT to access the models assigned to your account.' : error.message, error.status === 403 ? 'Account access is unavailable' : 'Sign in to MassFlow');
+    showAuth(error.status === 401 ? 'Sign in to access the models assigned to your account.' : error.message, error.status === 403 ? 'Account access is unavailable' : 'Sign in to MassFlow');
     // Sign-in is a normal top-level navigation; this document resumes on reload.
     return new Promise(() => {});
   }
+  setupSignOut(session, { request: api });
   const preference = `openreconcile-active-model-${session.user.id}`;
   try { const preferred = localStorage.getItem(preference); if (state.catalog.models.some(entry => entry.id === preferred)) state.catalog.activeId = preferred; } catch {}
   document.body.classList.remove('is-auth');

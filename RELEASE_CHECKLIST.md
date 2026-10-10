@@ -20,6 +20,18 @@ Record: GitHub commit, Sites source commit, artifact/version ID, deployment URL,
 - [ ] Confirm an authorized database backup/export and a tested restoration procedure are available for the release. Model JSON export alone does not back up users, grants, schedules, or run history.
 - [ ] Record the previous deployed version and a rollback/recovery plan compatible with the new database schema. Confirm who can execute it.
 - [ ] Check signed-out API denial and real sign-in through the trusted Sites authentication dispatch. Keep local simulated identities and administrator secrets out of the deployed client.
+
+## Username/password sign-in
+
+Local evidence on 2026-10-10: **316 tests passed**, including 16 backend authentication and six login-controller tests. Type checking and the production build passed. An independent scoped authentication review found no remaining actionable defects. Migration `0002` applied successfully to the existing local database without replacing models. The sign-in form was checked at desktop and 390px widths with no horizontal overflow. Hosted sign-in and account provisioning are verified separately after deployment.
+
+- [ ] Apply migration `0002` to an existing-data copy. Verify models, publication snapshots, grants, schedules, runs, and existing ChatGPT accounts are preserved.
+- [ ] Configure the initial username, salted password hash, and server-only pepper through runtime configuration. Keep plaintext passwords, hashes, pepper, session cookies, and database state out of Git, browser storage, client bundles, logs, and release notes.
+- [ ] Verify successful sign-in, generic wrong-password/unknown/disabled-account errors, case-insensitive usernames, bounded requests, same-origin JSON enforcement, and atomic per-username/per-IP rate limits.
+- [ ] Check Secure/HttpOnly/SameSite cookies, hashed session-token storage, eight-hour expiry, stale/duplicate/invalid cookie denial, revocation on sign-out, and invalidation after account changes. Invalid password sessions must not fall back to a different ChatGPT identity.
+- [ ] Verify bootstrap does not reset, promote, or re-enable existing accounts. Check backend model permissions for password accounts and that changing roles or disabling a user takes effect without trusting client controls.
+- [ ] Open `?signin=1`, sign in, and verify the retained model/view opens under the intended account. Check keyboard access, accessible error/status messages, password clearing, and narrow layouts.
+- [ ] Check real hosted username/password sign-in without ChatGPT authentication, administrator model access, sign-out denial, and explicit ChatGPT sign-in for an existing account. Record live checks separately from local simulated identities and automated tests.
 - [ ] Exercise administrator, editor, operator, viewer, disabled-account, and no-model-grant access. Confirm backend enforcement, editing/unpublishing locks, and administrator-only deletion/restoration.
 
 ## Reconciliation and model workflow

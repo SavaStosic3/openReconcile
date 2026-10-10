@@ -40,7 +40,18 @@
     <div class="tab-actions"><button class="text-button" id="new-button">New model</button><button class="text-button" id="demo-button">Load template</button><span class="divider"></span><button class="text-button" id="import-button">Import</button><button class="text-button" id="export-button">Export model ↓</button><input type="file" id="import-file" accept="application/json,.json" hidden></div>
   </nav>
   <section id="auth-screen" class="auth-screen" aria-labelledby="auth-title">
-    <div class="auth-card"><span class="auth-mark" aria-hidden="true">M</span><p class="eyebrow">WORKSPACE ACCESS</p><h1 id="auth-title">Sign in to MassFlow</h1><p id="auth-message">Use your account to open the models assigned to you. Your administrator manages model access and permissions.</p><a id="signin-link" class="button primary" href="/signin-with-chatgpt?return_to=%2F" target="_top">Sign in with ChatGPT <span aria-hidden="true">↗</span></a><button type="button" id="auth-retry" class="text-button">Check sign-in status</button><p class="auth-footnote">Your workspace permissions determine access to models and actions.</p></div>
+    <div class="auth-card">
+      <span class="auth-mark" aria-hidden="true">M</span><p class="eyebrow">WORKSPACE ACCESS</p><h1 id="auth-title">Sign in to MassFlow</h1><p id="auth-message">Use your account to open the models assigned to you. Your administrator manages model access and permissions.</p>
+      <form id="login-form" class="login-form">
+        <label class="field" for="login-username">Username<input id="login-username" name="username" autocomplete="username" autocapitalize="none" spellcheck="false" maxlength="80" required></label>
+        <label class="field" for="login-password">Password<input id="login-password" type="password" name="password" autocomplete="current-password" maxlength="1024" required></label>
+        <p id="login-error" class="form-error" role="alert" hidden></p>
+        <button id="login-submit" type="submit" class="button primary">Sign in</button>
+        <p id="login-status" class="login-status" role="status" aria-live="polite"></p>
+      </form>
+      <div class="auth-divider"><span>or</span></div>
+      <a id="signin-link" class="button secondary" href="/api/auth/chatgpt" target="_top">Sign in with ChatGPT <span aria-hidden="true">↗</span></a><button type="button" id="auth-retry" class="text-button">Check sign-in status</button><p class="auth-footnote">Your workspace permissions determine access to models and actions.</p>
+    </div>
   </section>
   <button type="button" id="auth-export-draft" class="button secondary auth-recovery" hidden>Export unsaved draft</button>
   <main id="workspace-main" class="workspace" hidden>
