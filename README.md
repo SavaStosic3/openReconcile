@@ -105,7 +105,7 @@ Read the [mathematical scope and assumptions](docs/user-guide.md#mathematical-sc
 | [Internal-server installation](docs/self-hosting.md) | Docker, HTTPS, account provisioning, SQL configuration, backups, restore, upgrades, and installation checks. |
 | [Using openReconcile](docs/user-guide.md) | Modeling, readings, inventories, virtual meters, publications, permissions, reporting periods, quality rules, and audit history. |
 | [SQL gateway](connectors/sql-gateway/README.md) | Driver setup, connection configuration, input/output schemas, boundary snapshots, and quality policies. |
-| [PI Web API](docs/pi-web-api.md) | Private server profiles, historian tag mappings, PI quality, boundary reads, and result delivery. |
+| [PI Web API](docs/pi-web-api.md) | Admin connection setup, encrypted credentials, tag mappings, PI quality, boundary reads, and result delivery. |
 | [Filtration reference](examples/showcase-model.md) · [model JSON](examples/showcase-model.json) | A recycle network with physical, virtual, and inferred flows, plus an independent analytical solution. |
 | [Storage reference](examples/storage-showcase-model.md) · [model JSON](examples/storage-showcase-model.json) | Three accumulating tanks with independently calculated fitted inventories and transfers. |
 | [Storage mathematics](docs/storage-mathematics.md) | Conservation, conversions, covariance, uncertainty, and assumptions. |
@@ -117,7 +117,7 @@ Read the [mathematical scope and assumptions](docs/user-guide.md#mathematical-sc
 - **Total mass reconciliation.** Equipment symbols do not calculate pump curves, thermodynamics, component balances, or energy balances. Storage conversion assumptions are documented in the mathematics guide.
 - **Unattended scheduling for internal installations.** The standalone server runs schedules while the app service is running. The retained ChatGPT testing site continues to use browser-triggered schedules. Missed periods are not replayed automatically. Uncertain connector delivery from a manual or scheduled run pauses that model's automatic schedule until you review the destination and explicitly enable it again.
 - **20 retained runs per model.** Use output connectors for long-term reconciliation results; audit retention is configured separately.
-- **SQL requires a separate gateway.** CSV result export and JSON model import are available. PI Web API uses server-owned connection profiles and separate output bindings. CSV connection-structure import and dedicated SAP/ODBC connectors remain on the roadmap.
+- **SQL requires a separate gateway.** CSV result export and JSON model import are available. Configure PI under **Data connectors → PI connection settings**, with encrypted server credentials and separate output bindings. CSV connection-structure import and dedicated SAP/ODBC connectors remain on the roadmap.
 - **One internal app instance with local SQLite storage.** High availability and multiple replicas are outside the supplied Docker deployment. Models are limited to 200 nodes and 500 streams.
 
 The reference models and automated checks provide reproducible verification. Validate your actual topology, readings, units, uncertainties, and source data against known company cases before using results for reporting.

@@ -74,8 +74,8 @@ function connection(env, source) {
   return profile;
 }
 
-// Metadata contains aliases and units only. Neither the authenticated browser
-// nor saved run history receives PI paths, endpoints or account credentials.
+// Model-source metadata contains aliases and units only. The separate admin
+// setup endpoint exposes paths/endpoints, but never passwords or tokens.
 export function piConnections(env) {
   const connections = profiles(env);
   return { configured: connections.length > 0, connections: connections.map(({ id, name, inputs, outputs }) => ({ id, name, canRead: inputs.length > 0, canWrite: outputs.length > 0, inputs: inputs.map(({ sourceName, unit }) => ({ sourceName, unit })), outputs: outputs.map(({ sourceName, metric, unit }) => ({ sourceName, metric, unit })) })) };
@@ -306,6 +306,7 @@ export function piAdapters(env) {
       const audit = () => context.recordOutputAudit({ source, window: { ...context.window }, written, skipped, events: events.map(({ binding, point, ...event }) => event) });
       audit();
       for (const event of events) {
+        await env.PI_CONFIGURATION_CHECK?.(source);
         await context.authorizeOutput();
         await requestPi(env, profile, `streams/${event.point.webId}/value`, { updateOption: 'Replace', bufferOption: 'DoNotBuffer' }, { Timestamp: event.timestamp, Value: event.value, Good: true, Questionable: false });
         event.confirmed = true; written++; audit();

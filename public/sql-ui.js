@@ -2,6 +2,7 @@ import { validateSqlSource, SQL_AGGREGATIONS, SQL_OUTPUT_COLUMNS } from './sql-s
 import { validatePiSource } from './pi-sources.js';
 import { validateInputQuality } from './input-quality.js';
 import { createPeriodSelector, qualityAuditHtml } from './reporting-ui.js';
+import { createPiConnectionSettings } from './pi-configuration-ui.js';
 
 const $ = selector => document.querySelector(selector);
 const esc = value => String(value ?? '').replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
@@ -13,6 +14,7 @@ export function createSqlConnectors({ backend, beforeOpen, onBack, onMapping, on
   const form = $('#sql-source-form');
   let pageOpen = false, selectedId = null, editingId = null, connections = [], configured = false, busy = false, generation = 0, removingId = null, connectorType = 'sql';
   const metadata = new Map();
+  const piSettings = createPiConnectionSettings({ backend, onSaved: async () => { connectorType = 'pi'; editingId = null; metadata.clear(); await refresh(); } });
   const idleWaiters = [];
   function finish() { busy = false; idleWaiters.splice(0).forEach(resolve => resolve()); if (pageOpen) renderAccess(); }
   const authorized = () => backend.user.active !== false && backend.user.role === 'admin';
@@ -50,7 +52,7 @@ export function createSqlConnectors({ backend, beforeOpen, onBack, onMapping, on
     const direction = form.elements.direction.value, prior = form.elements.connectionId.value;
     const available = connections.filter(connection => direction === 'input' ? connection.canRead : connection.canWrite);
     const choices = available.map(connection => new Option(`${connection.name} · ${connectorType === 'pi' ? 'PI Web API' : dialectName(connection.dialect)}`, connection.id));
-    if (!choices.length) choices.push(new Option(configured ? 'No allowed connections for this direction' : connectorType === 'pi' ? 'Configure PI Web API on the app server' : 'Set up the SQL gateway first', ''));
+    if (!choices.length) choices.push(new Option(configured ? 'No allowed connections for this direction' : connectorType === 'pi' ? 'Add a connection in PI connection settings' : 'Set up the SQL gateway first', ''));
     form.elements.connectionId.replaceChildren(...choices);
     if (available.some(connection => connection.id === prior)) form.elements.connectionId.value = prior;
     $('#sql-input-fields').hidden = direction !== 'input';
@@ -181,7 +183,7 @@ export function createSqlConnectors({ backend, beforeOpen, onBack, onMapping, on
     document.body.classList.add('is-sql');
     onChange?.(); $('#sql-heading').focus(); await refresh();
   }
-  function leave() { if (!pageOpen) return; pageOpen = false; generation++; $('#view-sql').classList.add('hidden'); document.body.classList.remove('is-sql'); }
+  function leave() { if (!pageOpen) return; pageOpen = false; generation++; piSettings.leave(); $('#view-sql').classList.add('hidden'); document.body.classList.remove('is-sql'); }
 
   form.elements.aggregation.replaceChildren(...SQL_AGGREGATIONS.map(value => new Option({ latest: 'Latest reading', sum: 'Sum of interval totals', average: 'Arithmetic average', timeWeightedAverage: 'Time-weighted flow average', totalizerDelta: 'Totalizer difference' }[value], value)));
   $('#sql-output-columns').textContent = SQL_OUTPUT_COLUMNS.join(', ');

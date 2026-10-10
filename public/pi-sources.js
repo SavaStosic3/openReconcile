@@ -9,13 +9,14 @@ const safeId = value => typeof value === 'string' && /^[A-Za-z0-9][A-Za-z0-9._:-
 // belong exclusively to the server-owned connection profiles.
 export function validatePiSource(source) {
   if (!source || typeof source !== 'object' || Array.isArray(source) || ![Object.prototype, null].includes(Object.getPrototypeOf(source))) throw new Error('Choose a PI Web API source configuration.');
-  const base = ['id', 'name', 'type', 'direction', 'connectionId'];
+  const base = ['id', 'name', 'type', 'direction', 'connectionId', ...(Object.hasOwn(source, 'connectionRevision') ? ['connectionRevision'] : [])];
   const keys = source.direction === 'input' ? [...base, 'aggregation', ...(Object.hasOwn(source, 'quality') ? ['quality'] : [])] : base;
   if (Object.keys(source).length !== keys.length || Object.keys(source).some(key => !keys.includes(key)) || keys.some(key => !Object.hasOwn(source, key))) throw new Error('The PI source contains missing or unsupported fields.');
   if (!safeId(source.id) || !safeId(source.connectionId)) throw new Error('Choose a safe source and connection identifier of at most 128 characters.');
   if (source.type !== 'pi' || !['input', 'output'].includes(source.direction)) throw new Error('Choose an input or output PI source.');
   if (typeof source.name !== 'string' || source.name !== source.name.trim() || !source.name || source.name.length > 160 || /[\u0000-\u001f\u007f]/.test(source.name)) throw new Error('Enter a source name of at most 160 characters.');
   const result = Object.fromEntries(keys.map(key => [key, source[key]]));
+  if (Object.hasOwn(source, 'connectionRevision') && (!Number.isSafeInteger(source.connectionRevision) || source.connectionRevision < 1)) throw new Error('Choose a valid PI connection revision.');
   if (source.direction === 'input') {
     if (!PI_INPUT_AGGREGATIONS.includes(source.aggregation)) throw new Error('Choose a supported PI input aggregation.');
     if (Object.hasOwn(source, 'quality') && (!source.quality || typeof source.quality !== 'object' || Array.isArray(source.quality) || ![Object.prototype, null].includes(Object.getPrototypeOf(source.quality)))) throw new Error('Choose valid PI input data-quality settings.');

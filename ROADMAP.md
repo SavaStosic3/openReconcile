@@ -43,6 +43,8 @@ Known scope: geometry is fixed; inventory conversion is first order and uses com
 
 ## 4. Input data connectors
 
+**PI connection setup:** administrators can configure endpoints, credentials and input/output tags in **Data connectors → PI connection settings**. Credentials are encrypted on the server and never returned to the browser. Read-only testing checks metadata/units; revision changes pause selected schedules and stop stale in-progress delivery. Private file-managed connections remain supported.
+
 **Implemented mapping foundation:** the hamburger menu's **Data Mapping** page lists items in the selected model with their current **Model Name** and an optional **Source Name** for an external tag, column, or field. Source Name is also editable from a unit or stream's settings, including unmetered streams. Mappings attach to stable item IDs, survive renaming, saving, duplication, and JSON import/export, and follow existing draft editing permissions and locks. Published mappings remain read-only until draft changes are published.
 
 **Implemented SQL input:** an administrator can configure and inspect per-model SQL sources through **Data connectors**, test a server connection, and preview data without changing readings. Connection IDs refer to a separately deployed Node.js gateway using `mssql` for SQL Server, `pg` for PostgreSQL, or `mysql2` for MySQL. Database credentials remain in the gateway's server environment; the Workers app calls that gateway over authenticated HTTP.

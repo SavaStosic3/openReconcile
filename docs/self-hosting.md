@@ -113,10 +113,10 @@ All durable application data lives in `/data`:
 | File or directory | Purpose |
 | --- | --- |
 | `app.sqlite` and live SQLite journal files | Users, password hashes, sessions, models, grants, publications, schedules, recent runs, and audit history |
-| `server-secrets.json` | Generated password pepper; keep private and back up with the database |
+| `server-secrets.json` | Authentication and PI connection encryption secret; keep private and back up with the database |
 | `backups/` | Consistent backup directories created by the maintenance command |
 
-The pepper is generated for the installation and retained across container replacement. Losing it prevents verification of existing passwords. A database-only copy is therefore insufficient. Model JSON exports are useful for portability but are not a complete workspace backup.
+The pepper is retained across container replacement. Losing it prevents password verification and decryption of saved PI settings. Restore it with the matching database; do not rotate this secret independently. Model JSON exports are useful for portability but are not a complete workspace backup.
 
 Create a consistent backup while the application is running:
 
@@ -177,7 +177,7 @@ Confirm sign-in, model permissions, a known example's calculations, and configur
 
 ## PI Web API connectors
 
-The app server can read physical PI meters and exact tank inventories and write selected reconciled values to existing output points. Follow the [PI Web API installation and mapping guide](pi-web-api.md) to mount a private connection file, choose HTTPS Basic authentication or a Bearer-authenticated company proxy, and configure input/output allowlists. PI is unconfigured by default. Credentials and physical tag paths stay on the server; the UI exposes only mapping aliases and units.
+The app can read physical PI meters and exact tank inventories and write reconciled values to existing points. Open **Data connectors → PI connection settings** as an administrator to enter endpoint, credentials and mappings. Saved profiles are encrypted in the database; passwords/tokens are never returned to the browser. Private server files remain an optional read-only configuration method. Follow the [PI Web API guide](pi-web-api.md) for supported authentication, units, certificate trust and server reachability. PI is unconfigured by default.
 
 Connection tests and input previews do not write to PI. Test a known reporting period against the company's PI server, including quality flags, units, boundary timestamps, and a dedicated output point, before enabling automatic exports. The repository's PI tests use controlled HTTP fixtures and do not prove a connection to a plant historian.
 

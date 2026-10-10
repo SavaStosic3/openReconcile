@@ -66,6 +66,6 @@ jobs:
       - name: Build the internal-server image
         run: docker compose build --pull
       - name: Verify PI connector contracts in the packaged image
-        run: docker compose run --rm --no-deps -v "${PWD}/tests:/app/tests:ro" app node --test --test-isolation=none tests/pi-connectors.test.js tests/pi-api.test.js tests/pi-config.test.js
+        run: docker compose run --rm --no-deps -v "${PWD}/tests:/app/tests:ro" app node --test --test-isolation=none tests/pi-connectors.test.js tests/pi-api.test.js tests/pi-config.test.js tests/pi-configuration.test.js
       - name: Exercise login, unattended reconciliation, restart safety, and persistent storage
         run: node scripts/docker-smoke.mjs

@@ -18,7 +18,19 @@ openReconcile connects to an existing AVEVA PI Web API service from the applicat
 
 The connector uses ordinary PI Web API REST endpoints and requires the capabilities listed above. Consult the installed service's `/piwebapi/help` reference and test the installed PI Web API version before enabling a plant schedule. No live PI system is available in this project's automated tests; those tests use strict HTTP fixtures and analytical reconciliation examples.
 
-## 1. Configure private server connections
+## 1. Configure a connection in the application
+
+Sign in as an administrator and open **☰ → Data connectors → PI connection settings → + Add PI connection**. Enter a name, HTTPS PI Web API endpoint, and Basic service account or company-proxy bearer token. Add input mappings with **Source Name**, PI point or AF path, and exact unit. Add output mappings with Source Name, result metric, existing destination point path, and exact unit. **Test connection** verifies numeric metadata and units without writing results. Then **Save connection**.
+
+This screen is available on internal installations and the hosted site. The endpoint must be reachable from the application server. An internal Docker server can reach the plant network; the hosted cloud service needs an accessible HTTPS endpoint or company-approved proxy. It cannot reach a plant-only private address automatically.
+
+UI-managed profiles are encrypted in the database using AES-GCM with a key derived from the installation's `LOCAL_AUTH_PEPPER`. Passwords/tokens are never returned to the browser. Administrators can see endpoint, username and mapping paths in connection settings. Ordinary connection metadata, model exports, run records and audit history contain no credentials or private paths. Leave the credential blank when editing to retain it; endpoint, account or authentication-method changes require re-entry.
+
+Saving changes takes effect without restarting. It advances affected source revisions, invalidates earlier input-result matching and pauses schedules selecting those sources. Runs recheck the connection before reading/writing; changes prevent subsequent writes. Review and explicitly re-enable affected schedules. Remove all sources referencing a connection before deleting it, including sources in archived models.
+
+Back up the database and matching server secret together. The standalone backup includes both. Losing or replacing the pepper makes saved settings unreadable; restore the matching pair rather than independently rotating this secret. Hosted installations must retain the existing runtime secret across deployments.
+
+### Optional server-managed file
 
 Create a private JSON file, for example `deploy/pi-connections.json`. Do not commit populated connection files or credentials. The file must be a JSON array no larger than 1 MB. Only the server reads it.
 
@@ -52,7 +64,7 @@ Replace these example paths with existing plant assets. Every physical meter and
 
 Each input alias must identify a distinct physical sensor. Duplicate PI paths are compared without case sensitivity, and resolved point identities are checked before reading. AF attributes must expose a verifiable underlying point identity so that an AF alias and a point alias cannot count one sensor as two independent meters. Represent dependent measurements as virtual meters.
 
-Each output binding must have a unique point path and a unique Source Name/metric pair. Output points must be separate from configured raw input points. Resolved output identities are also checked before writing. Empty `inputs` or `outputs` arrays disable that direction for the connection. Connection configuration and credentials cannot be changed from the browser.
+Each output binding must have a unique point path and a unique Source Name/metric pair. Output points must be separate from configured raw input points. Resolved output identities are checked before writing. Empty `inputs` or `outputs` arrays disable that direction. File-managed profiles appear read-only in the browser; edit the file and restart to change them. UI profiles cannot replace a file-managed connection ID.
 
 For a company proxy that accepts bearer authentication, replace the `auth` object with:
 
@@ -62,7 +74,9 @@ For a company proxy that accepts bearer authentication, replace the `auth` objec
 
 Bearer authentication is a proxy contract, rather than a claim that every PI Web API installation accepts bearer tokens. Configure the proxy's PI identity and read/write authorization according to company policy. The connector does not mint or renew tokens.
 
-## 2. Mount the file and trust the certificate
+## 2. Trust the certificate; optionally mount a file
+
+UI-managed connections require no connection-file mount. Use the normal Compose installation. The override below is only needed for file-managed connections.
 
 For Docker, add to the repository-root `.env`:
 
@@ -96,7 +110,7 @@ Ensure the account can read this certificate file. Do not set `NODE_TLS_REJECT_U
 ## 3. Map and select the sources
 
 1. Sign in as an administrator and open **Data connectors** from the hamburger menu.
-2. Select a model, choose **PI Web API**, and add an input or output source using an available connection. The page shows approved aliases, metrics, and units; it does not show the endpoint or credentials.
+2. Select a model, choose **PI Web API**, and add an input or output source using an available connection. The source form shows aliases, metrics and units. Endpoint and path settings are restricted to the separate administrator connection screen.
 3. In **Data mapping**, or the stream/tank settings, set **Source Name** to the input alias for each physical meter and inventory boundary. Unit output mappings select the alias shared by that unit's output metric bindings.
 4. Test the connection and preview input for a completed period. Connection testing resolves numeric metadata and units without writing output; it does not prove write permission by creating a test event.
 5. Select the PI input/output sources in **Model Management**. These selections also apply to manual runs. Publish and save the schedule to authorize unattended execution on a standalone installation.

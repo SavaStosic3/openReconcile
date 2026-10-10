@@ -69,6 +69,11 @@ export const auditSettings = sqliteTable('audit_settings', {
   updatedById: text('updated_by_id'), updatedByName: text('updated_by_name')
 });
 
+export const piConfiguration = sqliteTable('pi_configuration', {
+  id: integer('id').primaryKey(), encryptedJson: text('encrypted_json').notNull(), revision: integer('revision').notNull(),
+  mutationId: text('mutation_id').notNull(), updatedAt: text('updated_at').notNull()
+});
+
 export const auditEvents = sqliteTable('audit_events', {
   id: text('id').primaryKey(), occurredAt: text('occurred_at').notNull(), actorId: text('actor_id').notNull(), actorName: text('actor_name').notNull(),
   modelId: text('model_id'), modelName: text('model_name'), category: text('category').notNull(), action: text('action').notNull(), summary: text('summary').notNull(),

@@ -41,6 +41,10 @@ Open `/?signin=1` to show the login form even when this browser already has a Ch
 
 Password storage uses PBKDF2-SHA256 with a random salt, 100,000 iterations, and a post-hash HMAC-SHA256 pepper kept outside D1. The work factor fits the hosted Workers runtime limit and is below the [OWASP PBKDF2 recommendation](https://cheatsheetseries.owasp.org/cheatsheets/Password_Storage_Cheat_Sheet.html). Deployment on another backend should review that platform's password hashing options and increase the work factor or adopt Argon2id. Login attempts have per-username and per-edge-IP limits. Keep the pepper out of source, logs, database exports, and client responses; changing or losing it requires reissuing password credentials.
 
+## PI connection storage
+
+UI-managed PI settings require migration `0005` and the retained `LOCAL_AUTH_PEPPER`. The encrypted row uses a domain-separated HKDF-SHA256 key and AES-GCM with a random IV and revision-bound authenticated data. Preserve the matching database and runtime secret across hosted deployments and restoration; do not regenerate it when updating code. No populated PI connection or credential is shipped.
+
 ## Verification
 
 Use Node.js 24 for the full test suite, including the standalone server's built-in SQLite and backup APIs. The Docker image and container workflow also use Node.js 24.

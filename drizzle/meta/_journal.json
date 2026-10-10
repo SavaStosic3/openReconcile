@@ -36,6 +36,13 @@
       "when": 1791664800000,
       "tag": "0004_unattended_schedules",
       "breakpoints": true
+    },
+    {
+      "idx": 5,
+      "version": "6",
+      "when": 1791668849079,
+      "tag": "0005_high_triton",
+      "breakpoints": true
     }
   ]
 }

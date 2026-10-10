@@ -288,7 +288,7 @@ export class Repository {
     const saved = await this.model(id);
     return { schedule: saved.schedule, permission: await this.permission(user, saved) };
   }
-  async updateSources(user, id, sources, schedule, revision) {
+  async updateSources(user, id, sources, schedule, revision, piRegistryRevision) {
     // Admin and editing lock checks are repeated in the atomic write. A source
     // change increments the same revision as diagrams, schedules, and policies.
     const guard = adminClause(user.id);
@@ -299,10 +299,12 @@ export class Repository {
     const sourceChanges = sourceAuditChanges(before?.sources ?? [], sources);
     const events = sourceChanges.length ? [auditEvent('connector','updated','Updated model data sources.',sourceChanges)] : [];
     if (different(before?.schedule, schedule)) events.push(auditEvent('schedule','updated','Adjusted schedule after a data-source change.',Object.keys(schedule).filter(key => different(before?.schedule[key], schedule[key])).map(key => detail(key,before?.schedule[key] ?? null,schedule[key]))));
-    const statement = this.statement(`UPDATE models SET sources_json=?,schedule_json=?,revision=revision+1,updated_at=? WHERE id=? AND revision=? AND deleted_at IS NULL AND edit_locked=0 AND ${guard.sql}`, [JSON.stringify(sources), JSON.stringify(schedule), this.stamp(), id, revision, ...guard.values]);
+    const registryGuard = piRegistryRevision === undefined ? '' : ' AND COALESCE((SELECT revision FROM pi_configuration WHERE id=1),0)=?';
+    const statement = this.statement(`UPDATE models SET sources_json=?,schedule_json=?,revision=revision+1,updated_at=? WHERE id=? AND revision=? AND deleted_at IS NULL AND edit_locked=0 AND ${guard.sql}${registryGuard}`, [JSON.stringify(sources), JSON.stringify(schedule), this.stamp(), id, revision, ...guard.values, ...(piRegistryRevision === undefined ? [] : [piRegistryRevision])]);
     const result = await this.auditedWrite(statement, user, before, events, { revisionBefore: revision, revisionAfter: revision + 1 });
     if (!changed(result)) {
       requireAdmin(await this.user(user.id));
+      if (piRegistryRevision !== undefined && Number((await this.first('SELECT revision FROM pi_configuration WHERE id=1'))?.revision ?? 0) !== piRegistryRevision) throw new ApiError(409, 'PI connections changed. Refresh before saving model sources.');
       await this.rejectWrite(user, id, revision, 'canEdit');
     }
     const saved = await this.model(id);

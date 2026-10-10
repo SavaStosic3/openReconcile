@@ -7,6 +7,7 @@ import { piConnections, testPiSource, readPiInput } from './pi-connectors.js';
 import { validateDataSource, connectorAdapters } from './connectors.js';
 import { resolveReportingPeriod } from '../public/reporting-periods.js';
 import { schedulingStatus, executeStandaloneManualRun } from './scheduled-runs.js';
+import { getPiConfiguration, savePiConfiguration, testPiConfiguration, piRuntime } from './pi-configuration.js';
 
 const MAX_BODY_BYTES = 2_000_000;
 const headers = { 'Content-Type': 'application/json; charset=utf-8', 'Cache-Control': 'no-store', 'X-Content-Type-Options': 'nosniff' };
@@ -61,6 +62,10 @@ function routeInfo(path) {
   if (path === '/api/audit/settings') return { kind: 'auditSettings', methods: ['GET','PATCH'] };
   if (path === '/api/sql/connections') return { kind: 'sqlConnections', methods: ['GET'] };
   if (path === '/api/pi/connections') return { kind: 'piConnections', methods: ['GET'] };
+  if (path === '/api/admin/pi/connections') return { kind: 'piConfiguration', methods: ['GET'] };
+  if (path === '/api/admin/pi/connections/test') return { kind: 'piConfigurationTest', methods: ['POST'] };
+  const piMatch = path.match(/^\/api\/admin\/pi\/connections\/([^/]+)$/);
+  if (piMatch) return { kind: 'piConfigurationSave', id: safeId(decodeURIComponent(piMatch[1])), methods: ['PUT', 'DELETE'] };
   if (path === '/api/models') return { kind: 'create', methods: ['POST'] };
   let sourceMatch = path.match(/^\/api\/models\/([^/]+)\/sources(?:\/(test|preview))?$/);
   if (sourceMatch) return { kind: sourceMatch[2] === 'test' ? 'sourceTest' : sourceMatch[2] === 'preview' ? 'sourcePreview' : 'sources', id: safeId(decodeURIComponent(sourceMatch[1])), methods: [sourceMatch[2] ? 'POST' : 'PUT'] };
@@ -123,13 +128,21 @@ export async function handleApi(request, env, identity) {
     if (route.kind === 'audit') { await repo.pruneAudit(); return response(await repo.audit(user,auditFilters(new URL(request.url)))); }
     if (route.kind === 'auditTrends') { await repo.pruneAudit(); return response(await repo.auditTrends(user,auditFilters(new URL(request.url),true))); }
     if (route.kind === 'auditSettings' && request.method === 'GET') return response({ settings: await repo.auditSettings(user) });
+    if (route.kind === 'piConfiguration') {
+      requireAdmin(await repo.user(user.id));
+      const data = await getPiConfiguration(env);
+      requireAdmin(await repo.user(user.id));
+      return response(data);
+    }
     if (['sqlConnections', 'piConnections'].includes(route.kind)) {
       requireAdmin(await repo.user(user.id));
-      const data = await (route.kind === 'piConnections' ? piConnections(env) : sqlConnections(env));
+      const data = await (route.kind === 'piConnections' ? piConnections(await piRuntime(env)) : sqlConnections(env));
       requireAdmin(await repo.user(user.id));
       return response(data);
     }
     const body = await readBody(request);
+    if (route.kind === 'piConfigurationTest') return response(await testPiConfiguration(env, repo, user, body));
+    if (route.kind === 'piConfigurationSave') return response(await savePiConfiguration(env, repo, user, route.id, body, request.method === 'DELETE'));
     // Reconciliation results retain the existing twenty-run policy and never
     // enter audit history. Only configuration/account mutations prune audits.
     if (!['runs','sourceTest','sourcePreview'].includes(route.kind)) await repo.pruneAudit();
@@ -155,12 +168,19 @@ export async function handleApi(request, env, identity) {
         }));
         const preserved = model.sources.filter(source => source.type !== connectorType);
         const sources = [...preserved, ...submitted];
+        let piRegistryRevision;
         if (sources.length > 20 || new Set(sources.map(source => source.id)).size !== sources.length) throw new ApiError(400, 'Choose at most 20 sources with distinct identifiers per model.');
         // Connection names/capabilities are server-owned, not supplied by the browser.
         if (submitted.length) {
-          const metadata = await (connectorType === 'pi' ? piConnections(env) : sqlConnections(env));
+          const runtime = connectorType === 'pi' ? await piRuntime(env) : env;
+          if (connectorType === 'pi') piRegistryRevision = runtime.PI_REGISTRY_REVISION;
+          const metadata = await (connectorType === 'pi' ? piConnections(runtime) : sqlConnections(env));
           if (!metadata.configured) throw new ApiError(503, connectorType === 'pi' ? 'PI Web API is not configured. Ask an administrator to configure its server connections.' : 'SQL is not configured. Ask an administrator to connect the SQL gateway.');
           if (submitted.some(source => !metadata.connections.some(connection => connection.id === source.connectionId && connection[source.direction === 'input' ? 'canRead' : 'canWrite']))) throw new ApiError(400, 'Choose an available connection with permission for this source direction.');
+          if (connectorType === 'pi') for (const source of submitted) {
+            if (runtime.PI_CONNECTION_VERSIONS[source.connectionId] !== undefined) source.connectionRevision = runtime.PI_CONNECTION_VERSIONS[source.connectionId];
+            else delete source.connectionRevision;
+          }
         }
         const schedule = { ...model.schedule }; let schedulePaused = false;
         for (const direction of ['input', 'output']) {
@@ -170,12 +190,14 @@ export async function handleApi(request, env, identity) {
           if (selected !== null && JSON.stringify(model.sources.find(source => source.id === selected)) !== JSON.stringify(sources.find(source => source.id === selected))) schedulePaused = true;
         }
         if (schedulePaused) { schedule.enabled = false; schedule.nextRunAt = null; }
-        return response({ ...await repo.updateSources(user, route.id, sources, schedule, body.revision), schedulePaused });
+        return response({ ...await repo.updateSources(user, route.id, sources, schedule, body.revision, piRegistryRevision), schedulePaused });
       }
       fields(body, ['source', 'revision', ...(route.kind === 'sourcePreview' ? ['target', 'period'] : [])], ['source', 'revision']);
       const source = validated(() => validateDataSource(body.source));
+      const runtime = source.type === 'pi' ? await piRuntime(env) : env;
+      if (source.type === 'pi' && runtime.PI_CONNECTION_VERSIONS[source.connectionId] !== undefined) source.connectionRevision = runtime.PI_CONNECTION_VERSIONS[source.connectionId];
       let data;
-      if (route.kind === 'sourceTest') data = await (source.type === 'pi' ? testPiSource(env, source, model.model) : testSqlSource(env, source));
+      if (route.kind === 'sourceTest') data = await (source.type === 'pi' ? testPiSource(runtime, source, model.model) : testSqlSource(env, source));
       else {
         const target = body.target ?? 'draft';
         if (!['draft', 'published'].includes(target)) throw new ApiError(400, 'Choose the draft or published model for this preview.');
@@ -183,8 +205,9 @@ export async function handleApi(request, env, identity) {
         const snapshot = target === 'published' ? model.publishedModel : model.model;
         if (source.direction !== 'input') throw new ApiError(400, 'Only input sources have a readings preview.');
         const reportingPeriod = validated(() => resolveReportingPeriod(model.schedule.reporting, snapshot, clock(env)(), body.period ?? null));
-        data = { ...await (source.type === 'pi' ? readPiInput(env, source, snapshot, { start: reportingPeriod.start, end: reportingPeriod.end }) : readSqlInput(env, source, snapshot, { start: reportingPeriod.start, end: reportingPeriod.end })), reportingPeriod };
+        data = { ...await (source.type === 'pi' ? readPiInput(runtime, source, snapshot, { start: reportingPeriod.start, end: reportingPeriod.end }) : readSqlInput(env, source, snapshot, { start: reportingPeriod.start, end: reportingPeriod.end })), reportingPeriod };
       }
+      if (source.type === 'pi') await runtime.PI_CONFIGURATION_CHECK(source);
       requireAdmin(await repo.user(user.id));
       const fresh = await repo.accessibleModel(user, route.id, 'canEdit');
       if (fresh.model.revision !== body.revision) throw new ApiError(409, 'This model changed. Refresh the workspace before continuing.');

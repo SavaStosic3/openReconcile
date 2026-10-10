@@ -901,6 +901,39 @@ h3 { font-size: 14px; line-height: 1.4; font-weight: 650; }
 /* Source-to-diagram mapping foundation */
 /* SQL connector administration */
 .sql-view { width: min(1280px, 100%); margin: 0 auto; padding: 32px 28px 50px; }
+.pi-connection-settings { margin-top: 18px; padding: 24px; border: 1px solid var(--line); border-radius: 8px; background: var(--surface); }
+.pi-connection-card { display: flex; justify-content: space-between; align-items: center; gap: 18px; padding: 18px 0; border-top: 1px solid var(--line); overflow-wrap: anywhere; }
+.pi-connection-card h3 { margin: 0 0 7px; font-size: 15px; }
+.pi-connection-card p, .pi-connection-card small, .pi-connection-empty p { color: var(--muted); font-size: 12px; line-height: 1.65; margin: 4px 0; }
+.pi-connection-card button { flex-shrink: 0; }
+.pi-connection-empty { padding: 18px 0; }
+.pi-settings-dialog { width: min(980px, calc(100vw - 32px)); max-height: calc(100dvh - 32px); margin: auto; padding: 0; border: 1px solid var(--line); border-radius: 12px; color: var(--ink); background: var(--surface); overflow: hidden; box-shadow: 0 24px 80px #152e3940; }
+.pi-settings-dialog::backdrop { background: #17323b70; }
+.pi-settings-dialog[open] { display: flex; flex-direction: column; }
+.pi-dialog-header { display: flex; justify-content: space-between; align-items: center; gap: 20px; padding: 24px 28px; border-bottom: 1px solid var(--line); }
+.pi-dialog-header h2 { margin: 5px 0 0; font-size: 23px; }
+.pi-settings-dialog form { min-height: 0; display: flex; flex-direction: column; }
+.pi-dialog-body { padding: 26px 28px; overflow-y: auto; }
+.pi-settings-dialog .field input, .pi-settings-dialog .field select { width: 100%; min-width: 0; }
+.pi-settings-dialog fieldset { margin: 6px 0 24px; padding: 20px; border: 1px solid var(--line); border-radius: 8px; }
+.pi-settings-dialog legend { font-size: 13px; padding: 0 7px; font-weight: 600; }
+.pi-mapping-section { margin-top: 24px; }
+.pi-mapping-section h3 { margin: 0 0 7px; font-size: 16px; }
+.pi-mapping-section .helper { max-width: 540px; margin: 0; line-height: 1.6; }
+.pi-binding-row { display: grid; grid-template-columns: 1fr 1.5fr; gap: 0 16px; margin-top: 14px; padding: 18px; background: var(--bg); border: 1px solid var(--line); border-radius: 7px; }
+.pi-binding-row .field { min-width: 0; margin-bottom: 12px; }
+.pi-binding-row .pi-remove-binding { justify-self: end; align-self: center; }
+.pi-dialog-footer { display: flex; justify-content: space-between; gap: 12px; padding: 18px 28px; border-top: 1px solid var(--line); background: var(--surface); flex-shrink: 0; }
+.pi-dialog-footer > div { display: flex; gap: 10px; }
+#pi-configuration-message { font-size: 13px; line-height: 1.6; min-height: 1em; }
+#pi-configuration-message.is-error { color: var(--danger); }
+@media (max-width: 620px) {
+  .pi-dialog-header, .pi-dialog-body { padding: 18px; }
+  .pi-settings-dialog .sql-field-row, .pi-binding-row { grid-template-columns: 1fr; }
+  .pi-dialog-footer { flex-wrap: wrap; padding: 14px 18px; }
+  .pi-dialog-footer > div { margin-left: auto; }
+  .pi-connection-card { align-items: start; flex-direction: column; }
+}
 .is-sql .top-actions, .is-sql .model-view-switch, .is-sql .model-page-banner { display: none; }
 .sql-gateway-banner { display: flex; justify-content: space-between; align-items: center; gap: 15px; padding: 18px 22px; background: var(--surface); border: 1px solid var(--line); border-radius: 8px; }
 .sql-gateway-banner strong { font-size: 14px; }
