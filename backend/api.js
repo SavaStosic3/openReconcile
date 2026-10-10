@@ -2,6 +2,8 @@ import { createCatalog, defaultSchedule, validateEditableModel, setSchedule, adv
 import { executeModelRun } from '../public/schedule-runner.js';
 import { ApiError, USER_ROLES, MODEL_LEVELS, fields, safeId, validateRevision, requireAdmin, requirePermission } from './policy.js';
 import { Repository } from './repository.js';
+import { validateSqlSource } from '../public/sql-sources.js';
+import { sqlConnections, testSqlSource, readSqlInput, sqlBatchWindow, sqlAdapters } from './sql-connectors.js';
 
 const MAX_BODY_BYTES = 2_000_000;
 const headers = { 'Content-Type': 'application/json; charset=utf-8', 'Cache-Control': 'no-store', 'X-Content-Type-Options': 'nosniff' };
@@ -51,7 +53,10 @@ function routeInfo(path) {
   if (path === '/api/session') return { kind: 'session', methods: ['GET'] };
   if (path === '/api/workspace') return { kind: 'workspace', methods: ['GET'] };
   if (path === '/api/admin') return { kind: 'admin', methods: ['GET'] };
+  if (path === '/api/sql/connections') return { kind: 'sqlConnections', methods: ['GET'] };
   if (path === '/api/models') return { kind: 'create', methods: ['POST'] };
+  let sourceMatch = path.match(/^\/api\/models\/([^/]+)\/sources(?:\/(test|preview))?$/);
+  if (sourceMatch) return { kind: sourceMatch[2] === 'test' ? 'sourceTest' : sourceMatch[2] === 'preview' ? 'sourcePreview' : 'sources', id: safeId(decodeURIComponent(sourceMatch[1])), methods: [sourceMatch[2] ? 'POST' : 'PUT'] };
   let match = path.match(/^\/api\/models\/([^/]+)(?:\/(schedule|runs|publication))?$/);
   if (match) return { kind: match[2] || 'model', id: safeId(decodeURIComponent(match[1])), methods: match[2] === 'runs' ? ['POST'] : ['PATCH'] };
   match = path.match(/^\/api\/admin\/users\/([^/]+)$/);
@@ -72,7 +77,59 @@ export async function handleApi(request, env, identity) {
     if (route.kind === 'session') return response({ user, signInUrl: identity.signInUrl ?? env.SIGN_IN_URL ?? null, signOutUrl: identity.signOutUrl ?? env.SIGN_OUT_URL ?? null });
     if (route.kind === 'workspace') return response(await repo.workspace(user));
     if (route.kind === 'admin') return response(await repo.admin(user));
+    if (route.kind === 'sqlConnections') {
+      requireAdmin(await repo.user(user.id));
+      const data = await sqlConnections(env);
+      requireAdmin(await repo.user(user.id));
+      return response(data);
+    }
     const body = await readBody(request);
+
+    if (['sources', 'sourceTest', 'sourcePreview'].includes(route.kind)) {
+      requireAdmin(await repo.user(user.id));
+      const { model } = await repo.accessibleModel(user, route.id, 'canEdit');
+      validateRevision(body.revision);
+      if (model.revision !== body.revision) throw new ApiError(409, 'This model changed. Refresh the workspace before saving.');
+      if (route.kind === 'sources') {
+        fields(body, ['sources', 'revision'], ['sources', 'revision']);
+        if (!Array.isArray(body.sources) || body.sources.length > 20) throw new ApiError(400, 'Choose at most 20 SQL sources per model.');
+        const sql = validated(() => body.sources.map(validateSqlSource));
+        const legacy = model.sources.filter(source => source.type !== 'sql');
+        const sources = [...legacy, ...sql];
+        if (sources.length > 20 || new Set(sources.map(source => source.id)).size !== sources.length) throw new ApiError(400, 'Choose at most 20 sources with distinct identifiers per model.');
+        // Connection names/capabilities are server-owned, not supplied by the browser.
+        if (sql.length) {
+          const metadata = await sqlConnections(env);
+          if (!metadata.configured) throw new ApiError(503, 'SQL is not configured. Ask an administrator to connect the SQL gateway.');
+          if (sql.some(source => !metadata.connections.some(connection => connection.id === source.connectionId && connection[source.direction === 'input' ? 'canRead' : 'canWrite']))) throw new ApiError(400, 'Choose an available connection with permission for this source direction.');
+        }
+        const schedule = { ...model.schedule }; let schedulePaused = false;
+        for (const direction of ['input', 'output']) {
+          const key = `${direction}SourceId`, selected = schedule[key];
+          if (selected !== null && !sources.some(source => source.id === selected && [direction, 'both'].includes(source.direction))) { schedule[key] = null; schedulePaused = true; }
+          // Changing a selected source also requires deliberate schedule re-enabling.
+          if (selected !== null && JSON.stringify(model.sources.find(source => source.id === selected)) !== JSON.stringify(sources.find(source => source.id === selected))) schedulePaused = true;
+        }
+        if (schedulePaused) { schedule.enabled = false; schedule.nextRunAt = null; }
+        return response({ ...await repo.updateSources(user, route.id, sources, schedule, body.revision), schedulePaused });
+      }
+      fields(body, ['source', 'revision', ...(route.kind === 'sourcePreview' ? ['target'] : [])], ['source', 'revision']);
+      const source = validated(() => validateSqlSource(body.source));
+      let data;
+      if (route.kind === 'sourceTest') data = await testSqlSource(env, source);
+      else {
+        const target = body.target ?? 'draft';
+        if (!['draft', 'published'].includes(target)) throw new ApiError(400, 'Choose the draft or published model for this preview.');
+        if (target === 'published' && (!model.published || !model.publishedModel)) throw new ApiError(403, 'Publish this model before previewing its published SQL inputs.');
+        const snapshot = target === 'published' ? model.publishedModel : model.model;
+        if (source.direction !== 'input') throw new ApiError(400, 'Only input sources have a readings preview.');
+        data = await readSqlInput(env, source, snapshot, validated(() => sqlBatchWindow(snapshot, new Date(clock(env)()).toISOString())));
+      }
+      requireAdmin(await repo.user(user.id));
+      const fresh = await repo.accessibleModel(user, route.id, 'canEdit');
+      if (fresh.model.revision !== body.revision) throw new ApiError(409, 'This model changed. Refresh the workspace before continuing.');
+      return response(data);
+    }
 
     if (route.kind === 'create') {
       fields(body, ['model'], ['model']);
@@ -113,8 +170,8 @@ export async function handleApi(request, env, identity) {
         model = await repo.claimSchedule(user, model, catalog.schedules[route.id]);
         catalog = singleCatalog(model, target);
       }
-      const { run } = await executeModelRun(catalog, route.id, { trigger: body.trigger, id: repo.uuid(), now: clock(env) });
-      run.target = target; run.publishedVersion = target === 'published' ? model.publishedVersion : null;
+      const { run } = await executeModelRun(catalog, route.id, { trigger: body.trigger, id: repo.uuid(), now: clock(env), target, publishedVersion: target === 'published' ? model.publishedVersion : null,
+        ...sqlAdapters(env), beforeOutput: async () => { await repo.accessibleModel(user, route.id, 'canRun'); } });
       await repo.appendRun(user, route.id, run);
       const fresh = await repo.model(route.id);
       if (!fresh) throw new ApiError(404, 'That model was deleted during the run.');

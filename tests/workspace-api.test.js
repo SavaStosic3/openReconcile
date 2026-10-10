@@ -227,3 +227,73 @@ test('session403 after connection uses disabled-account handling rather than exp
   assert.equal(workspace.user.role, null); assert.equal(workspace.workspace.catalog.activeId, null);
   assert.equal(f.node('#auth-title').textContent, 'Account access is unavailable');
 });
+
+const sqlInput = { id: 'sql-in', name: 'Plant SQL', type: 'sql', direction: 'input', connectionId: 'plant', table: 'readings', tagColumn: 'tag', valueColumn: 'value', timestampColumn: 'observed_at', aggregation: 'latest' };
+
+for (const operation of ['sources', 'sqlTest', 'sqlPreview']) {
+  test(`${operation} waits for an in-flight draft save and sends the latest revision`, async t => {
+    const f = setup(t, { role: 'admin' }), workspace = await f.connect(), gate = deferred();
+    f.handle(call => {
+      if (call.path === '/api/models/model-1' && call.method === 'PATCH') return gate.promise;
+      if (call.path.includes('/sources')) {
+        assert.equal(call.body.revision, 2);
+        return reply(operation === 'sources' ? { sources: clone(call.body.sources), schedule: clone(f.server.catalog.schedules['model-1']), entry: clone(f.server.catalog.models[0]), permission: { ...clone(f.server.permissions['model-1']), revision: 3 } } : operation === 'sqlTest' ? { ok: true } : { readings: [{ itemId: 'f1', sourceName: 'FEED', value: 120, unit: 'kg', timestamp: f.server.serverTime }], window: { start: '2026-10-09T19:00:00.000Z', end: '2026-10-09T20:00:00.000Z' } });
+      }
+      return null;
+    });
+    const draft = exampleModel(); draft.name = 'Newest queued draft'; draft.streams[0].value = 110;
+    const saved = workspace.queueSave('model-1', draft), flushed = workspace.flush();
+    await until(() => f.calls.length === 1);
+    const pending = operation === 'sources' ? workspace.sources('model-1', [sqlInput]) : operation === 'sqlTest' ? workspace.sqlTest('model-1', sqlInput) : workspace.sqlPreview('model-1', sqlInput, 'published');
+    await Promise.resolve(); assert.equal(f.calls.length, 1);
+    f.server.catalog.models[0].model = clone(draft); f.server.permissions['model-1'].revision = 2;
+    gate.resolve(reply({ entry: clone(f.server.catalog.models[0]), permission: clone(f.server.permissions['model-1']) }));
+    await flushed; assert.equal(await saved, true); await pending;
+    assert.equal(f.calls[1].method, operation === 'sources' ? 'PUT' : 'POST');
+    assert.equal(f.calls[1].path, `/api/models/model-1/sources${operation === 'sqlTest' ? '/test' : operation === 'sqlPreview' ? '/preview' : ''}`);
+    assert.equal(f.calls[1].body.revision, 2);
+    if (operation === 'sqlPreview') assert.equal(f.calls[1].body.target, 'published');
+    assert.equal(workspace.workspace.catalog.models[0].model.streams[0].value, 110);
+  });
+}
+
+test('source save installs returned registry, schedule, permission and entry before later schedule and run actions', async t => {
+  const f = setup(t, { role: 'admin' }), workspace = await f.connect();
+  const updatedAt = '2026-10-09T20:01:00.000Z';
+  f.handle(call => {
+    if (call.path !== '/api/models/model-1/sources') return null;
+    assert.equal(call.body.revision, 1);
+    f.server.catalog.sources['model-1'] = clone(call.body.sources);
+    f.server.catalog.schedules['model-1'] = { enabled: false, intervalMinutes: 120, inputSourceId: 'sql-in', outputSourceId: null, nextRunAt: null };
+    f.server.catalog.models[0].updatedAt = updatedAt;
+    f.server.permissions['model-1'] = { ...f.server.permissions['model-1'], revision: 2, canPublish: true };
+    return reply({ sources: clone(f.server.catalog.sources['model-1']), schedule: clone(f.server.catalog.schedules['model-1']), entry: clone(f.server.catalog.models[0]), permission: clone(f.server.permissions['model-1']), schedulePaused: true });
+  });
+  const result = await workspace.sources('model-1', [sqlInput]);
+  assert.equal(result.schedulePaused, true);
+  assert.deepEqual(workspace.workspace.catalog.sources['model-1'], [sqlInput]);
+  assert.equal(workspace.workspace.catalog.schedules['model-1'].inputSourceId, 'sql-in');
+  assert.equal(workspace.workspace.catalog.schedules['model-1'].intervalMinutes, 120);
+  assert.equal(workspace.workspace.catalog.models[0].updatedAt, updatedAt);
+  assert.equal(workspace.permission('model-1').revision, 2); assert.equal(workspace.permission('model-1').canPublish, true);
+  await workspace.schedule('model-1', { enabled: true, nextRunAt: '2026-10-09T22:01:00.000Z' });
+  assert.equal(f.calls[1].body.revision, 2); assert.equal(workspace.permission('model-1').revision, 3);
+  await workspace.execute('model-1', 'manual', { target: 'draft' });
+  assert.deepEqual(f.calls.map(call => call.path), ['/api/models/model-1/sources', '/api/models/model-1/schedule', '/api/models/model-1/runs']);
+  assert.equal(workspace.workspace.catalog.schedules['model-1'].inputSourceId, 'sql-in');
+  assert.equal(workspace.workspace.catalog.schedules['model-1'].enabled, true);
+  assert.deepEqual(workspace.workspace.catalog.sources['model-1'], [sqlInput]);
+  assert.equal(workspace.workspace.catalog.models[0].updatedAt, updatedAt);
+});
+
+test('SQL tests and previews return detached data without importing readings or mutating the saved catalog', async t => {
+  const f = setup(t, { role: 'admin' }), workspace = await f.connect(), before = clone(workspace.workspace);
+  const preview = { readings: [{ itemId: 'f1', modelName: 'F-01', sourceName: 'FEED', value: 999, unit: 'kg', timestamp: f.server.serverTime }], window: { start: '2026-10-09T19:00:00.000Z', end: '2026-10-09T20:00:00.000Z' } };
+  f.handle(call => call.path.endsWith('/sources/test') ? reply({ ok: true }) : call.path.endsWith('/sources/preview') ? reply(preview) : null);
+  assert.deepEqual(await workspace.sqlTest('model-1', sqlInput), { ok: true });
+  const returned = await workspace.sqlPreview('model-1', sqlInput, 'draft');
+  assert.equal(returned.readings[0].value, 999); returned.readings[0].value = 5;
+  assert.deepEqual(workspace.workspace, before); assert.equal(workspace.workspace.catalog.models[0].model.streams[0].value, 100);
+  assert.equal(f.calls[0].body.revision, 1); assert.equal(f.calls[1].body.revision, 1);
+  assert.deepEqual(f.calls.map(call => call.method), ['POST', 'POST']);
+});

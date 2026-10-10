@@ -8,9 +8,10 @@ import { UNIT_SYMBOLS, appendUnitSymbol } from './unit-symbols.js';
 import { getPublishedUnitSummary } from './published-results.js';
 import { createLineVisibility } from './line-visibility.js';
 import { getMeterName, isVirtualMeter, evaluateMeterReadings, evaluateMeterDetails } from './virtual-meters.js';
-import { sameRunInputs } from './schedule-runner.js';
+import { sameRunInputs, runMatchesModelInputs, runMatchesInputSource } from './schedule-runner.js';
 import { getModelItemName, getDataMapping, validateDataMapping } from './data-mapping.js';
 import { createDataMapping } from './mapping-ui.js';
+import { createSqlConnectors } from './sql-ui.js';
 
 const $ = (s, root = document) => root.querySelector(s);
 const $$ = (s, root = document) => [...root.querySelectorAll(s)];
@@ -40,13 +41,13 @@ function buildPalette() {
   $('#node-form').elements.kind.innerHTML = Object.entries(UNIT_SYMBOLS).map(([kind, symbol]) => `<option value="${kind}">${esc(symbol.label)}</option>`).join('');
 }
 buildPalette();
-let model = emptyModel(), results = null, selection = null, activeTab = 'model', mode = 'select', editingStream = null, editingNode = null, confirmAction = null, toastTimer, admin = null, mappingPage = null, runningWorkbench = false, viewMode = 'editing', activeRun = null;
+let model = emptyModel(), results = null, selection = null, activeTab = 'model', mode = 'select', editingStream = null, editingNode = null, confirmAction = null, toastTimer, admin = null, mappingPage = null, sqlPage = null, runningWorkbench = false, viewMode = 'editing', activeRun = null;
 const modelSessions = new Map();
 const backend = await connectWorkspace(toast);
 const lineVisibility = createLineVisibility();
 const initialPage = new URL(location.href);
 if (backend.workspace.catalog.models.some(entry => entry.id === initialPage.searchParams.get('model'))) backend.select(initialPage.searchParams.get('model'));
-const management = createManagement({ backend, fallbackModel: model, beforeAction: () => { admin?.leave(); flushVisibleDraft(); }, onActivate: activateManagedModel, onRun: acceptManagedRun, onNewModel: () => replaceModel(emptyModel()), onToast: toast, onAccessChange: reason => { if (viewMode === 'published' && ['refresh', 'publication', 'run'].includes(reason)) refreshPublishedModel(); refreshChrome(); }, onReview: record => { acceptManagedRun(record); switchTab('results'); } });
+const management = createManagement({ backend, fallbackModel: model, beforeAction: () => { admin?.leave(); sqlPage?.leave(); flushVisibleDraft(); }, onActivate: activateManagedModel, onRun: acceptManagedRun, onNewModel: () => replaceModel(emptyModel()), onToast: toast, onAccessChange: reason => { if (viewMode === 'published' && ['refresh', 'publication', 'run', 'sources', 'schedule'].includes(reason)) refreshPublishedModel(); if (activeRun && !runMatchesInputSource(activeRun, backend.workspace.catalog.sources[editingModelId] || [], backend.workspace.catalog.schedules[editingModelId])) { activeRun = null; results = null; editor.setResults(null); if (activeTab === 'results') renderResults(); } refreshChrome(); }, onReview: record => { acceptManagedRun(record); switchTab('results'); } });
 viewMode = initialPage.searchParams.get('view') === 'editing' ? 'editing' : initialPage.searchParams.get('view') === 'published' || backend.permission(management.activeId).published ? 'published' : 'editing';
 model = clone(viewMode === 'published' ? backend.permission(management.activeId).published && management.current().publishedModel || emptyModel() : management.current().model);
 let editingModelId = management.activeId;
@@ -73,6 +74,7 @@ function commit() {
 }
 function refreshChrome() {
   if (admin?.isOpen && backend.user.role !== 'admin') { admin.leave(); switchTab('model'); }
+  if (sqlPage?.isOpen && backend.user.role !== 'admin') { sqlPage.leave(); switchTab('model'); }
   if (document.activeElement !== $('#model-name')) $('#model-name').value = model.name;
   const count = model.streams.filter(s => s.measured).length;
   $('#meter-count').textContent = count;
@@ -80,7 +82,7 @@ function refreshChrome() {
   $('#canvas-empty').classList.toggle('hidden', model.nodes.length > 0);
   const permission = backend.permission(editingModelId), editable = canEdit(), exists = Boolean(editingModelId);
   $('#undo-button').disabled = !editable || historyIndex === 0; $('#redo-button').disabled = !editable || historyIndex >= history.length - 1;
-  $('#model-name').disabled = !editable || management.isOpen || Boolean(admin?.isOpen);
+  $('#model-name').disabled = !editable || management.isOpen || Boolean(admin?.isOpen) || Boolean(sqlPage?.isOpen);
   const available = viewMode !== 'published' || hasPublishedModel();
   $('#run-button').disabled = !permission.canRun || !available || runningWorkbench; $('#data-run-button').disabled = !permission.canRun || runningWorkbench;
   if (!runningWorkbench) $('#run-button').innerHTML = `<span aria-hidden="true">▶</span> ${viewMode === 'published' ? 'Run reconciliation' : 'Test draft reconciliation'}`;
@@ -92,6 +94,7 @@ function refreshChrome() {
   $('#export-button').disabled = !permission.canView;
   $('#auth-export-draft').hidden = backend.user.active !== false || !backend.failedDraft();
   $('#menu-admin').hidden = backend.user.role !== 'admin';
+  $('#menu-sql').hidden = backend.user.role !== 'admin';
   $('#account-chip').hidden = false;
   $('#account-name').textContent = backend.user.name || backend.user.email;
   $('#account-role').textContent = backend.user.role === 'admin' ? 'Administrator' : backend.user.role;
@@ -99,12 +102,12 @@ function refreshChrome() {
   $('#management-role-label').textContent = backend.user.role === 'admin' ? 'Administrator' : backend.user.role;
   if (!exists) $('#save-state').textContent = 'No model selected';
   else $('#save-state').textContent = backend.hasFailedSave ? 'Not saved · export your draft' : backend.hasPending ? 'Saving to workspace…' : 'Saved to workspace';
-  $('#workspace-empty').hidden = exists || management.isOpen || Boolean(admin?.isOpen);
-  $('#workspace-empty').classList.toggle('hidden', exists || management.isOpen || Boolean(admin?.isOpen));
+  $('#workspace-empty').hidden = exists || management.isOpen || Boolean(admin?.isOpen) || Boolean(sqlPage?.isOpen);
+  $('#workspace-empty').classList.toggle('hidden', $('#workspace-empty').hidden);
   $('#workspace-empty-message').textContent = canCreate() ? 'Create a model, load the demo, or import a model from a file or your previous browser workspace.' : 'Ask your administrator to give you access to a model. Assigned models will appear here.';
   $('#empty-new-model').hidden = !canCreate(); $('#empty-import-legacy').hidden = !canCreate();
   $$('.tab').forEach(button => button.disabled = !exists);
-  if ((!exists || !available) && !management.isOpen && !admin?.isOpen) $$('[role="tabpanel"]').forEach(view => view.classList.add('hidden'));
+  if ((!exists || !available) && !management.isOpen && !admin?.isOpen && !sqlPage?.isOpen) $$('[role="tabpanel"]').forEach(view => view.classList.add('hidden'));
   if (viewMode === 'published') $('#canvas-status').textContent = 'Published diagram · mass values in kg per batch. Select a unit or stream to inspect its results.';
   else if (exists && permission.editLocked) $('#canvas-status').textContent = 'Editing is locked by an administrator. You can still review and run this model if permitted.';
   else if (exists && !editable) $('#canvas-status').textContent = 'Read-only model. Your assigned permissions control editing and reconciliation.';
@@ -175,7 +178,7 @@ function runResult(record) {
   return record.result || { status: 'invalid', message: record.error || 'This run could not be completed.', streams: [], balances: [], warnings: [], objective: null, degreesOfFreedom: 0 };
 }
 function refreshPageChrome() {
-  const published = viewMode === 'published', pageOpen = !management.isOpen && !admin?.isOpen;
+  const published = viewMode === 'published', pageOpen = !management.isOpen && !admin?.isOpen && !sqlPage?.isOpen;
   const entry = currentEntry(), permission = backend.permission(editingModelId), available = hasPublishedModel();
   document.body.classList.toggle('is-published', published);
   $('#model-view-switch').hidden = !pageOpen;
@@ -267,7 +270,8 @@ function positionLineMenu() {
 }
 $('#lines-menu').addEventListener('toggle', positionLineMenu);
 window.addEventListener('resize', positionLineMenu);
-admin = createAdmin({ api: backend.api, getUser: () => backend.user, beforeOpen: async () => { flushVisibleDraft(); await backend.flush(); management.leave(); }, onChange: () => backend.refresh(), onBack: () => switchTab('model'), onToast: toast });
+admin = createAdmin({ api: backend.api, getUser: () => backend.user, beforeOpen: async () => { sqlPage?.leave(); flushVisibleDraft(); await backend.flush(); management.leave(); }, onChange: () => backend.refresh(), onBack: () => switchTab('model'), onToast: toast });
+sqlPage = createSqlConnectors({ backend, beforeOpen: async () => { flushVisibleDraft(); await backend.flush(); management.leave(); admin?.leave(); }, onBack: () => switchTab('model'), onMapping: async id => { if (id) await management.activate(id, { view: 'editing' }); switchTab('mapping'); }, onManagement: async id => { if (id) await management.activate(id, { view: 'editing' }); management.open(); }, onChange: refreshChrome, onToast: toast });
 $('#empty-new-model').onclick = () => replaceModel(emptyModel());
 $('#menu-refresh-workspace').onclick = () => askReplace('Reload workspace and discard unsaved changes?', async () => {
   try { await backend.refresh({ discardDrafts: true }); activateManagedModel(management.current()); toast('Workspace refreshed.'); }
@@ -287,6 +291,7 @@ function switchTab(name) {
   if (activeTab === 'mapping' && name !== 'mapping') mappingPage?.flush();
   if (viewMode === 'published' && name === 'data') name = 'model';
   admin?.leave();
+  sqlPage?.leave();
   management.leave();
   activeTab = name;
   for (const button of $$('.tab')) { const active = button.dataset.tab === name; button.classList.toggle('active', active); button.setAttribute('aria-selected', String(active)); button.tabIndex = active ? 0 : -1; }
@@ -317,7 +322,7 @@ function travel(delta) {
 $('#undo-button').onclick = () => travel(-1); $('#redo-button').onclick = () => travel(1);
 document.addEventListener('keydown', event => {
   if (event.target.closest('input,textarea,select,details,[contenteditable="true"]') || $('dialog[open]')) return;
-  if (management.isOpen || admin?.isOpen) return;
+  if (management.isOpen || admin?.isOpen || sqlPage?.isOpen) return;
   if ((event.ctrlKey || event.metaKey) && event.key.toLowerCase() === 'z') { event.preventDefault(); travel(event.shiftKey ? 1 : -1); return; }
   if (event.ctrlKey || event.metaKey || event.altKey || activeTab !== 'model') return;
   if (event.key.toLowerCase() === 'v') setMode('select'); if (event.key.toLowerCase() === 'c') setMode('connect'); if (event.key.toLowerCase() === 'h') setMode('pan');
@@ -359,7 +364,7 @@ function activateManagedModel(entry, options = {}) {
   window.history.replaceState({}, '', url);
 }
 function acceptManagedRun(record) {
-  if (record.modelId !== editingModelId || record.target !== (viewMode === 'published' ? 'published' : 'draft') || !sameRunInputs(record.modelSnapshot, model)) return;
+  if (record.modelId !== editingModelId || record.target !== (viewMode === 'published' ? 'published' : 'draft') || !runMatchesModelInputs(record, model) || !runMatchesInputSource(record, backend.workspace.catalog.sources[editingModelId] || [], backend.workspace.catalog.schedules[editingModelId])) return;
   if (viewMode === 'published' && record.publishedVersion !== currentEntry()?.publishedVersion) return;
   activeRun = record; results = runResult(record); editor.setResults(results); refreshChrome(); renderInspector();
   if (activeTab === 'results' && !management.isOpen) renderResults();
@@ -393,8 +398,10 @@ function renderInspector() {
     }
   } else if (stream) {
     const source = model.nodes.find(n => n.id === stream.source), target = model.nodes.find(n => n.id === stream.target); const rec = results?.streams.find(s => s.id === stream.id);
-    const virtual = isVirtualMeter(stream), reading = virtual ? evaluateMeterReadings(model).get(stream.id) : null;
-    $('#inspector').innerHTML = `<p class="eyebrow">SELECTED STREAM</p><h2>${esc(stream.name)}</h2><p class="connection-mini">${esc(source?.name)}<br><span>↓</span><br>${esc(target?.name)}</p><span class="pill">${virtual ? 'Ⓥ Virtual meter' : stream.measured ? 'Ⓜ Measured' : 'Unmetered'}</span><dl class="properties-list"><dt>Material</dt><dd>${esc(stream.material)}</dd><dt>Phase</dt><dd>${esc(stream.phase)}</dd><dt>Density</dt><dd>${fmt(Number(stream.density))} kg/m³</dd>${stream.measured ? `<dt>Meter</dt><dd>${esc(getMeterName(stream))}</dd>` : ''}${virtual ? `<dt>Formula</dt><dd>${esc(stream.formula || 'Not entered')}</dd>` : ''}<dt>Reading</dt><dd>${virtual ? reading?.error ? esc(reading.error) : `${fmt(reading?.value)} ${esc(stream.unit)}` : stream.measured ? `${stream.value === '' ? 'Not entered' : esc(stream.value)} ${esc(stream.unit)}` : 'To be inferred'}</dd>${rec ? `<dt>Reconciled</dt><dd>${fmt(rec.value)} kg</dd>` : ''}</dl><button class="button secondary full-width" id="inspect-edit-stream">Edit stream & meter</button><button class="text-button danger" id="inspect-delete">Delete selection</button>`;
+    const runModel = activeRun?.sql?.input && runMatchesModelInputs(activeRun, model) ? activeRun.modelSnapshot : model;
+    const usedStream = runModel.streams.find(item => item.id === stream.id) || stream;
+    const virtual = isVirtualMeter(stream), reading = virtual ? evaluateMeterReadings(runModel).get(stream.id) : null;
+    $('#inspector').innerHTML = `<p class="eyebrow">SELECTED STREAM</p><h2>${esc(stream.name)}</h2><p class="connection-mini">${esc(source?.name)}<br><span>↓</span><br>${esc(target?.name)}</p><span class="pill">${virtual ? 'Ⓥ Virtual meter' : stream.measured ? 'Ⓜ Measured' : 'Unmetered'}</span><dl class="properties-list"><dt>Material</dt><dd>${esc(stream.material)}</dd><dt>Phase</dt><dd>${esc(stream.phase)}</dd><dt>Density</dt><dd>${fmt(Number(stream.density))} kg/m³</dd>${stream.measured ? `<dt>Meter</dt><dd>${esc(getMeterName(stream))}</dd>` : ''}${virtual ? `<dt>Formula</dt><dd>${esc(stream.formula || 'Not entered')}</dd>` : ''}<dt>${runModel !== model ? 'Reading used (SQL)' : 'Reading'}</dt><dd>${virtual ? reading?.error ? esc(reading.error) : `${fmt(reading?.value)} ${esc(stream.unit)}` : stream.measured ? `${usedStream.value === '' ? 'Not entered' : esc(usedStream.value)} ${esc(stream.unit)}` : 'To be inferred'}</dd>${rec ? `<dt>Reconciled</dt><dd>${fmt(rec.value)} kg</dd>` : ''}</dl><button class="button secondary full-width" id="inspect-edit-stream">Edit stream & meter</button><button class="text-button danger" id="inspect-delete">Delete selection</button>`;
     $('#inspect-edit-stream').onclick = () => openStream(stream.id);
     const hide = document.createElement('button'); hide.type = 'button'; hide.className = 'button secondary full-width'; hide.id = 'inspect-line-visibility';
     const hidden = lineVisibility.snapshot().hiddenIds.includes(stream.id);
@@ -583,7 +590,7 @@ async function run() {
   runningWorkbench = true; $('#run-button').disabled = true; $('#data-run-button').disabled = true; $('#run-button').textContent = 'Reconciling…';
   try {
     const record = await management.run(targetId, { target });
-    if (editingModelId === targetId && (viewMode === 'published' ? 'published' : 'draft') === target && sameRunInputs(model, snapshot) && sameRunInputs(record.modelSnapshot, snapshot) && (target !== 'published' || record.publishedVersion === version)) {
+    if (editingModelId === targetId && (viewMode === 'published' ? 'published' : 'draft') === target && sameRunInputs(model, snapshot) && runMatchesModelInputs(record, snapshot) && runMatchesInputSource(record, backend.workspace.catalog.sources[targetId] || [], backend.workspace.catalog.schedules[targetId]) && (target !== 'published' || record.publishedVersion === version)) {
       activeRun = record; results = runResult(record);
       editor.setResults(results); switchTab(target === 'published' ? 'model' : 'results'); renderInspector(); editor.fit();
     }
@@ -598,6 +605,12 @@ function renderResults() {
   const balanced = results.balances.filter(b => b.reconciled !== null && Number.isFinite(b.reconciled)); const maxError = balanced.length ? Math.max(...balanced.map(b => Math.abs(b.reconciled))) : null;
   const heading = results.status === 'ok' ? 'Your mass balance is reconciled.' : results.status === 'underdetermined' ? 'Some flows need more information.' : results.status === 'warning' ? 'Balanced, with items to review.' : 'Check your model and inputs.';
   $('#view-results').innerHTML = `<div class="view-header"><div><p class="eyebrow">STEP 03 / RECONCILIATION</p><h1>${esc(heading)}</h1><p class="muted">${esc(model.name)} · ${fmt(Number(model.periodHours))}-hour batch · total mass in kg</p></div><div class="top-actions"><button class="button secondary" id="results-flowsheet">View on flowsheet</button>${good ? '<button class="button secondary" id="export-results">Export results ↓</button>' : ''}</div></div><div class="result-banner ${severe ? 'error' : results.status === 'ok' ? 'success' : 'warning'}"><span class="banner-icon">${severe ? '!' : results.status === 'ok' ? '✓' : '!'}</span><div><strong>${esc(results.message)}</strong>${warnings.length ? `<ul>${warnings.map(w => `<li>${esc(w)}</li>`).join('')}</ul>` : ''}</div></div>${good ? `<div class="summary-grid"><div class="summary-card"><span>Largest closing error</span><strong>${fmt(maxError)} <small>kg</small></strong><p>Across ${balanced.length} observable process units</p></div><div class="summary-card"><span>Weighted adjustment</span><strong>${fmt(results.objective)}</strong><p>Squared residuals weighted by uncertainty</p></div><div class="summary-card"><span>Inferred streams</span><strong>${inferred}<small> / ${model.streams.filter(s => !s.measured).length}</small></strong><p>${unknown ? `${unknown} unresolved stream${unknown === 1 ? '' : 's'}` : 'Unique estimates where observable'}</p></div></div><div class="table-heading"><h2>Stream results</h2><span class="helper">All values normalized to kg per batch</span></div><div class="table-wrap"><table class="data-table"><thead><tr><th>Stream / material</th><th>Input mass</th><th>Reconciled</th><th>Adjustment</th><th>Estimate uncertainty (1σ)</th><th>Status</th></tr></thead><tbody>${results.streams.map(s => {const original = model.streams.find(v => v.id === s.id); return `<tr><td><button class="stream-name-button" data-result-stream="${esc(s.id)}">${esc(original?.name || s.id)}</button><small>${esc(original?.material)}</small></td><td class="mono">${fmt(s.raw)}</td><td class="mono result-number">${fmt(s.value)}</td><td class="mono">${s.correction !== null && s.correction !== undefined && s.correction > 0 ? '+' : ''}${fmt(s.correction)}</td><td class="mono">${fmt(s.uncertainty)}${s.atBound ? '<small>At physical bound</small>' : ''}</td><td><span class="status-pill ${s.status}">${s.status === 'unobservable' ? 'Needs measurement' : s.atBound ? 'At zero bound' : s.status === 'estimated' ? 'Inferred' : 'Reconciled'}</span></td></tr>`;}).join('')}</tbody></table></div><div class="table-heading"><h2>Unit balance checks</h2><span class="helper">Incoming mass − outgoing mass</span></div><div class="table-wrap"><table class="data-table balance-table"><thead><tr><th>Process unit</th><th>Before reconciliation</th><th>After reconciliation</th></tr></thead><tbody>${results.balances.map(b => `<tr><td>${esc(b.name)}</td><td class="mono">${fmt(b.raw)} kg</td><td class="mono">${fmt(b.reconciled)} kg</td></tr>`).join('')}</tbody></table></div><div class="result-method"><strong>How this result is calculated</strong><p>Measurements are adjusted using nonnegative, constrained generalized least squares. Every process unit conserves total mass with zero accumulation. Missing flows are reported only when uniquely determined. Physical reading errors and each virtual meter's calculation error are assumed independent and unbiased. Shared meter references use first-order covariance propagation; conversion properties stay fixed. Active bounds limit the usual Gaussian uncertainty interpretation.</p><p>A closed balance does not prove instrument accuracy. Raw values are preserved; corrections and diagnostics should be reviewed before using results for reporting.</p></div>` : '<button class="button secondary" id="results-fix-data">Review measurements</button>'}`;
+  if (activeRun?.sql || activeRun?.error && activeRun?.result) {
+    const audit = document.createElement('div'); audit.className = 'sql-run-audit' + (activeRun.error ? ' is-error' : '');
+    const input = activeRun.sql?.input, output = activeRun.sql?.output;
+    audit.innerHTML = `<strong>Run data and delivery</strong>${activeRun.error ? `<p>${esc(activeRun.error)}</p>` : ''}${input ? `<p>Input: ${esc(input.source.name)} · ${input.readings.length} physical readings · ${esc(input.window.start)} to ${esc(input.window.end)} (UTC). Saved model readings are unchanged.</p>` : ''}${output ? `<p>Output: ${esc(output.source.name)} · ${output.written} rows acknowledged${output.skipped ? ` · ${output.skipped} unresolved mapped items omitted` : ''}.</p>` : ''}`;
+    $('#view-results .view-header')?.after(audit);
+  }
   if ($('#results-flowsheet')) $('#results-flowsheet').onclick = () => { switchTab('model'); editor.fit(); };
   if ($('#results-fix-data')) $('#results-fix-data').onclick = () => switchTab('data');
   if ($('#export-results')) $('#export-results').onclick = exportResults;

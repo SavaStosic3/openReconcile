@@ -1,0 +1,64 @@
+# openReconcile SQL gateway
+
+The gateway connects the hosted app to SQL Server, PostgreSQL, and MySQL through the standard Node drivers [`mssql`](https://github.com/tediousjs/node-mssql), [`pg`](https://node-postgres.com/), and [`mysql2`](https://sidorares.github.io/node-mysql2/docs). It runs beside the plant network or on a server that can reach the database. The hosted app calls its HTTP API; database passwords stay on the gateway server, never in model JSON or browser storage.
+
+## Setup
+
+1. Install Node.js 22.13 or later. In this directory, run `npm ci`.
+2. Have a database administrator create a read source table and/or the result table. Example DDL is in `schema/postgres.sql`, `schema/sqlserver.sql`, and `schema/mysql.sql`; adapt the table names before executing it. The gateway performs no DDL.
+3. Provision a least-privilege database account: `SELECT` on the allowlisted input tables; `SELECT` (for schema tests) and `INSERT` on the allowlisted result tables. MySQL output tables must use a transactional engine such as InnoDB.
+4. Set `SQL_GATEWAY_TOKEN` to a randomly generated secret of 32–512 non-whitespace characters. Set `SQL_CONNECTIONS_JSON` to a JSON array matching `connections.example.json`, using real values from your secret manager. Do not commit the resulting credentials. `schema` is optional informational metadata; SQL table names are exact allowlist entries, never implicitly prefixed.
+5. Run `npm start`. Defaults: `SQL_GATEWAY_HOST=127.0.0.1`, `SQL_GATEWAY_PORT=4180`.
+6. Put an HTTPS reverse proxy in front of the gateway with a valid certificate, restricted network access, and a 2 MiB request limit. Configure the hosted app server's `SQL_GATEWAY_URL` and `SQL_GATEWAY_TOKEN` secrets. The token must match this gateway. The hosted app does not call plaintext production HTTP URLs.
+7. An app administrator can discover the available connections and create input/output sources, then use the model's existing **Source Name** mappings. Test a source before selecting it for a run or schedule.
+
+Each connection has `id`, `name`, `dialect` (`sqlserver`, `postgres`, or `mysql`), `host`, optional `port`, `database`, `user`, `password`, `readableTables`, and `writableTables`. Connection IDs start with an alphanumeric character and contain only letters, digits, `_`, and `-`; `constructor`, `prototype`, and `__proto__` are reserved. IDs are unique. Names are at most 160 characters. A gateway allows at most 32 connections and 100 tables per direction.
+
+Table allowlists contain exact one- or two-part identifiers such as `dbo.mass_readings` or `public.reconciliation_results`. Names consist only of letters, digits, and underscores, beginning with a letter or underscore, with at most 64 characters per part. Select separate read-only and write-only connections when different database accounts are needed. An empty allowlist disables that direction.
+
+TLS encryption and server certificate validation are enabled by default for all three drivers. For a private CA, set `tls: { "ca": "-----BEGIN CERTIFICATE-----\n..." }` in the connection's secret configuration. Generic TLS-disable/trust-certificate settings are rejected. `allowInsecureLocalDevelopment: true` is available only when the database host is exactly `localhost`, `127.0.0.1`, or `::1`, for a disposable local database; omit it for deployment. SQL Server uses TCP SQL authentication through the default Tedious driver; Windows integrated authentication is outside this initial connector.
+
+## Input data
+
+Input sources configure a table, tag column, numeric value column, timestamp column, and aggregation: `latest`, `sum`, or `average`. All three column names must be distinct. Existing model **Source Name** values identify the tags; model names remain presentation labels. The source reading is interpreted in the mapped physical meter's configured unit and rate interval. Convert or reshape upstream data before it enters the table if its units differ. Virtual meters calculate after physical readings have been loaded.
+
+Windows are ISO timestamps with an explicit timezone and use `[start, end)`: the start is included, the end excluded. A window must be nonempty and at most 366 days. Timestamp-without-timezone SQL Server/MySQL columns represent UTC; the drivers send and read UTC dates. PostgreSQL examples use `timestamptz`.
+
+The gateway reads at most 10,001 ordered rows and rejects a batch exceeding 10,000 rows; use a smaller window or aggregate upstream. Each request supports at most 500 distinct tags of at most 200 characters. `latest` selects the newest timestamp per tag; different values tied at that timestamp fail. `sum` adds samples; `average` takes their arithmetic mean, without time weighting or integration. Both report the latest contributing timestamp. Missing tags, null/bool/blank/non-numeric/negative values, nonfinite results, invalid timestamps, and out-of-window rows fail the entire input request. Decimal and scientific-notation strings are accepted. The gateway does not silently substitute zero or partial data.
+
+## Output data
+
+Output is an append-only transaction with one row for each observable mapped stream and two rows (incoming/outgoing mass) for each observable mapped process unit. All mass fields are kilograms. The canonical result table requires these columns:
+
+| Column | Meaning |
+| --- | --- |
+| `run_id`, `model_id`, `model_name` | Run and model provenance |
+| `published_version` | Publication number, or null for a draft run |
+| `item_id`, `item_type` | Stable item ID; `stream` or `unit` |
+| `source_name` | Model item’s mapped external name |
+| `metric` | `mass` for streams; `incoming_mass` or `outgoing_mass` for units |
+| `value_kg` | Reconciled mass |
+| `raw_kg`, `correction_kg`, `uncertainty_kg` | Available source mass, adjustment, and 1σ uncertainty; otherwise null |
+| `status` | `measured` or `estimated` for streams; `reconciled` for units |
+| `batch_start`, `batch_end`, `finished_at` | UTC batch and completion timestamps |
+
+The request must contain 1–900 rows from one consistent model run. Unobservable values are not fabricated or exported. A unique key on `(run_id, item_type, item_id, metric)` prevents duplicate insertion of the same result. Statements are parameterized, sequential, and enclosed in a database transaction. A statement failure triggers rollback. Communication failure during/after `COMMIT` can leave a committed result without an acknowledgement; the app records output failure separately from the successful reconciliation. Before any manual replay, inspect destination rows by `run_id`. There is no automatic output retry, upsert, update, or delete endpoint.
+
+The **Test connection** operation performs `SELECT ... WHERE 1 = 0` against input columns or the complete output schema. It proves connectivity and column accessibility, without inserting dummy results. It cannot prove INSERT permissions, output constraints, transactional engine behavior, or future availability; validate those with a real approved batch before operational use.
+
+## HTTP contract
+
+Every endpoint requires `Authorization: Bearer <SQL_GATEWAY_TOKEN>`. POST bodies use `Content-Type: application/json`. There is no CORS access; browsers use the authenticated app backend. Error responses are `{ "error": { "code": "...", "message": "..." } }`, with safe validation messages or a generic database error. Database server messages, queries, and credentials are not returned.
+
+- `GET /connections` → `{ connections: [{ id, name, dialect, canRead, canWrite }] }`; no host/user/password.
+- `POST /test` with `{ connectionId, direction, table, tagColumn?, valueColumn?, timestampColumn? }` → `{ ok: true }`. `direction` is `input` or `output`; input requires all three columns.
+- `POST /read` with `{ connectionId, table, tagColumn, valueColumn, timestampColumn, tags, start, end, aggregation }` → `{ readings: [{ sourceName, value, timestamp }], window: { start, end } }`.
+- `POST /write` with `{ connectionId, table, rows: [canonicalResultRow] }` → `{ written: number }`.
+
+Only generated SQL is supported. Table/column identifiers use the bounded grammar and exact table allowlists; all tags, dates, and result values are driver parameters. Requests are bounded by 2 MiB, a 20-second deadline, and eight concurrent operations; database statements have 10-second timeouts, and pools have at most four connections per configuration. Timed-out operations remain in the concurrency count until driver cancellation/rollback finishes. Driver sessions are discarded on abort where supported. Use reverse-proxy and database-side connection/query limits as additional operational controls.
+
+## Verification
+
+`npm test` covers generated SQL/parameter binding for all dialects, validation and aggregation, TLS defaults, HTTP authentication/limits/sanitization, cancellation, and transaction rollback through injected drivers. These are contract tests, not evidence of a connection to a plant database. Run `npm ci` and a source test against each intended database, then an approved batch plus destination-row inspection, before enabling scheduled production export.
+
+Pinned versions were checked against the official npm registry on 2026-10-10: `mssql` 12.7.4, `pg` 8.23.1, and `mysql2` 3.24.5. The current SQL Server dependency tree reports [GHSA-hp3w-g68c-fv3c](https://github.com/advisories/GHSA-hp3w-g68c-fv3c) for transitive `sprintf-js` 1.1.3 (no patched release available at that check). Its vulnerable input is an attacker-controlled format string; the installed Tedious call sites use fixed format strings, and this gateway exposes no format-string input. The advisory remains an operational dependency-review item; the lockfile is not claimed audit-clean. Avoid driver debugging that logs connection payloads, and update/re-audit when upstream publishes a fix.

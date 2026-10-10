@@ -9,6 +9,27 @@ import { exampleModel, emptyModel, newStream } from '../public/model.js';
 import { reconcile } from '../public/solver.js';
 import { setItemDataMapping } from '../public/data-mapping.js';
 
+const sqlInput = { id: 'sql-in', name: 'Plant SQL input', type: 'sql', direction: 'input', connectionId: 'plant', table: 'readings', tagColumn: 'tag', valueColumn: 'value', timestampColumn: 'observed_at', aggregation: 'latest' };
+const sqlOutput = { id: 'sql-out', name: 'Plant SQL output', type: 'sql', direction: 'output', connectionId: 'results', table: 'reconciled_results' };
+function configureGateway(f, handler) {
+  const calls = [];
+  Object.assign(f.env, { SQL_GATEWAY_URL: 'https://gateway.test', SQL_GATEWAY_TOKEN: 's'.repeat(40), SQL_GATEWAY_FETCH: async (url, options) => {
+    const endpoint = new URL(url).pathname.slice(1), body = options.body ? JSON.parse(options.body) : undefined;
+    calls.push({ endpoint, body });
+    const data = handler ? await handler(endpoint, body) : endpoint === 'connections' ? { connections: [{ id: 'plant', name: 'Plant', dialect: 'postgres', canRead: true, canWrite: false }, { id: 'results', name: 'Results', dialect: 'sqlserver', canRead: false, canWrite: true }] } : endpoint === 'test' ? { ok: true } : endpoint === 'read' ? { readings: body.tags.map(sourceName => ({ sourceName, value: { f1: 120, f3: 70, f4: 45 }[sourceName], timestamp: '2026-10-09T19:30:00.000Z' })), window: { start: body.start, end: body.end } } : { written: body.rows.length };
+    return new Response(JSON.stringify(data));
+  } });
+  return calls;
+}
+async function mappedSqlModel(f, withOutput = true) {
+  const created = await f.create(), model = exampleModel();
+  for (const stream of model.streams) stream.dataMapping = { sourceName: stream.id };
+  Object.assign(model.streams[1], { measured: true, meterType: 'virtual', formula: '[F-01]', value: 9999, uncertainty: 1, uncertaintyType: 'absolute' });
+  let result = await f.request(`/api/models/${created.entry.id}`, 'PATCH', { model, revision: 1 }); assert.equal(result.status, 200);
+  result = await f.request(`/api/models/${created.entry.id}/sources`, 'PUT', { sources: [sqlInput, ...(withOutput ? [sqlOutput] : [])], revision: 2 }); assert.equal(result.status, 200, JSON.stringify(result.body));
+  return { id: created.entry.id, model, revision: result.body.permission.revision };
+}
+
 // Execute the production SQL against SQLite, matching D1's prepared/batch API.
 // Authorization tests therefore exercise WHERE guards rather than mocked calls.
 function fixture(t, { legacyModel = null } = {}) {
@@ -63,6 +84,80 @@ function fixture(t, { legacyModel = null } = {}) {
   t.after(() => sqlite.close());
   return { sqlite, env, admin, viewer, request, create, register, assign, role, advance(ms) { time += ms; } };
 }
+
+test('SQL connections and source persistence require administrators, editable models, strict configuration, and current revisions', async t => {
+  const f = fixture(t), calls = configureGateway(f), created = await f.create(); await f.register(); await f.role('editor'); await f.assign(created.entry.id, 'editor');
+  assert.equal((await f.request('/api/sql/connections', 'GET', undefined, f.viewer)).status, 403);
+  assert.equal((await f.request(`/api/models/${created.entry.id}/sources`, 'PUT', { sources: [sqlInput], revision: 1 }, f.viewer)).status, 403);
+  const metadata = await f.request('/api/sql/connections'); assert.equal(metadata.status, 200); assert.equal(metadata.body.connections.length, 2); assert.ok(!JSON.stringify(metadata.body).includes('s'.repeat(40)));
+  for (const source of [{ ...sqlInput, password: 'secret' }, { ...sqlInput, table: 'readings;drop' }, { ...sqlInput, connectionId: 'unknown' }, { ...sqlInput, connectionId: 'results' }]) assert.equal((await f.request(`/api/models/${created.entry.id}/sources`, 'PUT', { sources: [source], revision: 1 })).status, 400);
+  assert.equal((await f.request(`/api/models/${created.entry.id}/sources`, 'PUT', { sources: [sqlInput, sqlInput], revision: 1 })).status, 400);
+  const saved = await f.request(`/api/models/${created.entry.id}/sources`, 'PUT', { sources: [sqlInput, sqlOutput], revision: 1 }); assert.equal(saved.status, 200); assert.equal(saved.body.permission.revision, 2);
+  assert.equal((await f.request(`/api/models/${created.entry.id}/sources`, 'PUT', { sources: [], revision: 1 })).status, 409);
+  assert.equal((await f.request(`/api/admin/models/${created.entry.id}`, 'PATCH', { editLocked: true, revision: 2 })).status, 200);
+  assert.equal((await f.request(`/api/models/${created.entry.id}/sources`, 'PUT', { sources: [], revision: 3 })).status, 403);
+  assert.equal((await f.request(`/api/models/${created.entry.id}/sources/test`, 'POST', { source: sqlInput, revision: 3 })).status, 403);
+  assert.ok(calls.some(call => call.endpoint === 'connections'));
+});
+
+test('SQL source mutations preserve legacy adapters, pause changed scheduled sources, and enforce admin at the SQL boundary', async t => {
+  const f = fixture(t); configureGateway(f); const created = await f.create();
+  const legacy = { id: 'legacy', name: 'Existing adapter', type: 'custom', direction: 'both' };
+  f.sqlite.prepare('UPDATE models SET sources_json=? WHERE id=?').run(JSON.stringify([legacy]), created.entry.id);
+  let saved = await f.request(`/api/models/${created.entry.id}/sources`, 'PUT', { sources: [sqlInput], revision: 1 }); assert.deepEqual(saved.body.sources[0], legacy);
+  let publication = await f.request(`/api/models/${created.entry.id}/publication`, 'PATCH', { published: true, revision: 2 }); assert.equal(publication.status, 200);
+  let schedule = await f.request(`/api/models/${created.entry.id}/schedule`, 'PATCH', { changes: { enabled: true, inputSourceId: sqlInput.id }, revision: 3 }); assert.equal(schedule.status, 200);
+  saved = await f.request(`/api/models/${created.entry.id}/sources`, 'PUT', { sources: [], revision: 4 }); assert.equal(saved.status, 200); assert.equal(saved.body.schedulePaused, true); assert.equal(saved.body.schedule.inputSourceId, null); assert.equal(saved.body.schedule.enabled, false); assert.deepEqual(saved.body.sources, [legacy]);
+  const repo = new Repository(f.env.DB, { now: f.env.NOW }); const admin = await repo.user(f.admin.id);
+  f.sqlite.prepare("UPDATE users SET role='viewer' WHERE id=?").run(f.admin.id);
+  await assert.rejects(repo.updateSources(admin, created.entry.id, [sqlInput], saved.body.schedule, 5), error => error.status === 403);
+  assert.deepEqual((await repo.model(created.entry.id)).sources, [legacy]);
+});
+
+test('SQL source preview and test are read-only, permission checked, and report mapping/response errors safely', async t => {
+  const f = fixture(t), calls = configureGateway(f), created = await mappedSqlModel(f);
+  const before = f.sqlite.prepare('SELECT model_json,sources_json FROM models WHERE id=?').get(created.id);
+  const preview = await f.request(`/api/models/${created.id}/sources/preview`, 'POST', { source: sqlInput, revision: 3, target: 'draft' }); assert.equal(preview.status, 200, JSON.stringify(preview.body)); assert.equal(preview.body.readings.length, 3); assert.equal(preview.body.readings[0].value, 120); assert.ok(!preview.body.readings.some(reading => reading.itemId === 'f2'));
+  const checked = await f.request(`/api/models/${created.id}/sources/test`, 'POST', { source: sqlOutput, revision: 3 }); assert.deepEqual(checked.body, { ok: true });
+  assert.deepEqual(f.sqlite.prepare('SELECT model_json,sources_json FROM models WHERE id=?').get(created.id), before); assert.ok(!calls.some(call => call.endpoint === 'write'));
+  assert.equal((await f.request(`/api/models/${created.id}/sources/preview`, 'POST', { source: sqlInput, revision: 3, target: 'published' })).status, 403);
+  assert.equal((await f.request(`/api/models/${created.id}/sources/preview`, 'POST', { source: sqlOutput, revision: 3 })).status, 400);
+  f.env.SQL_GATEWAY_FETCH = async () => new Response(JSON.stringify({ error: 'password=secret host=private SELECT *' }), { status: 500 });
+  const failed = await f.request(`/api/models/${created.id}/sources/preview`, 'POST', { source: sqlInput, revision: 3 }); assert.equal(failed.status, 502); assert.ok(!JSON.stringify(failed.body).includes('password'));
+});
+
+test('SQL-backed published and scheduled runs use snapshot mappings, fresh readings and fresh virtual formulas before output', async t => {
+  const f = fixture(t), calls = configureGateway(f), created = await mappedSqlModel(f);
+  assert.equal((await f.request(`/api/models/${created.id}/publication`, 'PATCH', { published: true, revision: 3 })).status, 200);
+  assert.equal((await f.request(`/api/models/${created.id}/schedule`, 'PATCH', { changes: { enabled: true, inputSourceId: sqlInput.id, outputSourceId: sqlOutput.id }, revision: 4 })).status, 200);
+  const result = await f.request(`/api/models/${created.id}/runs`, 'POST', { trigger: 'manual', target: 'published' }); assert.equal(result.status, 200, JSON.stringify(result.body));
+  assert.equal(result.body.run.modelSnapshot.streams[0].value, 120); assert.equal(result.body.run.modelSnapshot.streams[1].value, 120); assert.equal(result.body.run.publishedVersion, 1); assert.equal(result.body.run.sql.input.readings[0].originalValue, 100);
+  const written = calls.find(call => call.endpoint === 'write'); assert.equal(written.body.rows[0].published_version, 1); assert.equal(written.body.rows[0].raw_kg, 120);
+  const repo = new Repository(f.env.DB); const stored = await repo.model(created.id); assert.equal(stored.model.streams[0].value, 100); assert.equal(stored.publishedModel.streams[0].value, 100);
+  // The fake gateway reads a fixed timestamp; advancing to due time requires an
+  // equally fresh response to match the newly claimed half-open batch window.
+  f.advance(3_600_000); f.env.SQL_GATEWAY_FETCH = async (url, options) => { const body = JSON.parse(options.body); return new Response(JSON.stringify(new URL(url).pathname === '/read' ? { readings: body.tags.map(sourceName => ({ sourceName, value: { f1: 120, f3: 70, f4: 45 }[sourceName], timestamp: '2026-10-09T20:30:00.000Z' })), window: { start: body.start, end: body.end } } : { written: body.rows.length })); };
+  const scheduled = await f.request(`/api/models/${created.id}/runs`, 'POST', { trigger: 'scheduled' }); assert.equal(scheduled.status, 200); assert.equal(scheduled.body.run.target, 'published'); assert.equal(scheduled.body.run.sql.output.written, 4);
+});
+
+test('SQL input failure prevents outputs; output delivery failure retains reconciled result and SQL audit in run history', async t => {
+  const f = fixture(t); configureGateway(f); const created = await mappedSqlModel(f);
+  await f.request(`/api/models/${created.id}/publication`, 'PATCH', { published: true, revision: 3 }); await f.request(`/api/models/${created.id}/schedule`, 'PATCH', { changes: { inputSourceId: sqlInput.id, outputSourceId: sqlOutput.id }, revision: 4 });
+  const calls = [];
+  f.env.SQL_GATEWAY_FETCH = async (url, options) => { const endpoint = new URL(url).pathname; calls.push(endpoint); const body = JSON.parse(options.body); return new Response(JSON.stringify(endpoint === '/read' ? { readings: body.tags.map(sourceName => ({ sourceName, value: { f1: 120, f3: 70, f4: 45 }[sourceName], timestamp: '2026-10-09T19:30:00.000Z' })), window: { start: body.start, end: body.end } } : { written: 0 })); };
+  const result = await f.request(`/api/models/${created.id}/runs`, 'POST', { trigger: 'manual', target: 'published' }); assert.equal(result.status, 200); assert.equal(result.body.run.status, 'failed'); assert.ok(result.body.run.result); assert.match(result.body.run.error, /Output failed/); assert.equal(result.body.run.sql.output.written, 0);
+  assert.equal((await new Repository(f.env.DB).runs(created.id))[0].id, result.body.run.id);
+  calls.length = 0; f.env.SQL_GATEWAY_FETCH = async url => { calls.push(new URL(url).pathname); return new Response(JSON.stringify({ readings: [], window: { start: 'wrong', end: 'wrong' } })); };
+  const missing = await f.request(`/api/models/${created.id}/runs`, 'POST', { trigger: 'manual' }); assert.equal(missing.body.run.status, 'failed'); assert.equal(missing.body.run.result, null); assert.deepEqual(calls, ['/read']);
+});
+
+test('SQL output rechecks current user access after input fetch and never delivers after revocation', async t => {
+  const f = fixture(t); configureGateway(f); const created = await mappedSqlModel(f);
+  await f.request(`/api/models/${created.id}/publication`, 'PATCH', { published: true, revision: 3 }); await f.request(`/api/models/${created.id}/schedule`, 'PATCH', { changes: { inputSourceId: sqlInput.id, outputSourceId: sqlOutput.id }, revision: 4 });
+  const calls = [];
+  f.env.SQL_GATEWAY_FETCH = async (url, options) => { const endpoint = new URL(url).pathname; calls.push(endpoint); const body = JSON.parse(options.body); f.sqlite.prepare("UPDATE users SET role='viewer' WHERE id=?").run(f.admin.id); return new Response(JSON.stringify({ readings: body.tags.map(sourceName => ({ sourceName, value: { f1: 120, f3: 70, f4: 45 }[sourceName], timestamp: '2026-10-09T19:30:00.000Z' })), window: { start: body.start, end: body.end } })); };
+  const result = await f.request(`/api/models/${created.id}/runs`, 'POST', { trigger: 'manual' }); assert.equal(result.status, 403); assert.deepEqual(calls, ['/read']); assert.equal(f.sqlite.prepare('SELECT count(*) as count FROM model_runs WHERE model_id=?').get(created.id).count, 0);
+});
 
 test('trusted identities bootstrap only configured admin; new users see no models or admin data', async t => {
   const f = fixture(t);

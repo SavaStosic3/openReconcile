@@ -859,6 +859,55 @@ h3 { font-size: 14px; line-height: 1.4; font-weight: 650; }
 }
 
 /* Source-to-diagram mapping foundation */
+/* SQL connector administration */
+.sql-view { width: min(1280px, 100%); margin: 0 auto; padding: 32px 28px 50px; }
+.is-sql .top-actions, .is-sql .model-view-switch, .is-sql .model-page-banner { display: none; }
+.sql-gateway-banner { display: flex; justify-content: space-between; align-items: center; gap: 15px; padding: 18px 22px; background: var(--surface); border: 1px solid var(--line); border-radius: 8px; }
+.sql-gateway-banner strong { font-size: 14px; }
+.sql-gateway-banner strong[data-ready="true"] { color: var(--teal-dark); }
+.sql-gateway-banner p { font-size: 12px; color: var(--muted); margin: 7px 0 0; }
+.sql-setup-note { margin-top: 12px; padding: 18px 22px; border: 1px solid #dfcc9b; border-radius: 7px; background: #fcf7e8; font-size: 13px; line-height: 1.6; }
+.sql-setup-note p { margin: 6px 0; max-width: 920px; }
+.sql-setup-note a { color: var(--teal-dark); font-weight: 600; }
+.sql-model-bar { display: flex; align-items: end; flex-wrap: wrap; gap: 15px; margin: 24px 0 10px; }
+.sql-model-bar .field { margin: 0; flex: 1; max-width: 470px; min-width: 200px; }
+.sql-model-links { display: flex; flex-wrap: wrap; gap: 8px; }
+.sql-layout { display: grid; grid-template-columns: minmax(260px, .8fr) minmax(400px, 1.2fr); gap: 22px; align-items: start; margin-top: 20px; }
+.sql-source-panel, .sql-form-panel { padding: 23px; border: 1px solid var(--line); background: var(--surface); border-radius: 8px; min-width: 0; }
+.sql-panel-heading { display: flex; justify-content: space-between; flex-wrap: wrap; gap: 12px; align-items: center; margin-bottom: 18px; }
+.sql-view h2 { font-size: 18px; margin: 0 0 8px; }
+.sql-panel-heading .helper { margin: 0; }
+.sql-source-card { display: flex; justify-content: space-between; gap: 12px; padding: 17px 0; border-top: 1px solid var(--line); overflow-wrap: anywhere; }
+.sql-source-card.is-selected { border-left: 3px solid var(--teal); padding-left: 12px; }
+.sql-source-card .eyebrow { font-size: 9px; }
+.sql-source-card h3 { margin: 6px 0; font-size: 14px; }
+.sql-source-card p, .sql-source-card small { margin: 5px 0; font-size: 11px; color: var(--muted); display: block; }
+.sql-source-card .pill { margin-top: 8px; }
+.sql-card-actions { display: flex; flex-direction: column; align-items: end; flex-shrink: 0; }
+.sql-list-empty { padding: 25px 0; font-size: 13px; line-height: 1.7; color: var(--muted); }
+.sql-list-empty strong { color: var(--ink); }
+.sql-selection-note { margin: 16px 0 0; padding-top: 16px; border-top: 1px solid var(--line); }
+.sql-form-panel > h2 { margin-bottom: 22px; }
+.sql-form-panel .field input, .sql-form-panel .field select { min-width: 0; width: 100%; }
+.sql-field-row { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; }
+.sql-form-panel fieldset { margin: 8px 0 20px; padding: 16px; border: 1px solid var(--line); border-radius: 6px; }
+.sql-form-panel legend { font-size: 12px; font-weight: 600; padding: 0 6px; }
+.sql-form-panel .helper { line-height: 1.65; }
+.sql-form-actions { display: flex; flex-wrap: wrap; gap: 9px; }
+.sql-preview-choice .field { max-width: 250px; }
+.sql-schema-details { margin-bottom: 22px; font-size: 12px; }
+.sql-schema-details code { display: block; overflow-wrap: anywhere; line-height: 1.8; margin-top: 12px; }
+.sql-schema-details summary { cursor: pointer; color: var(--teal-dark); }
+.sql-message { font-size: 12px; line-height: 1.7; margin: 16px 0 0; color: var(--teal-dark); }
+.sql-message.is-error { color: #a7372c; }
+.sql-preview { margin-top: 24px; }
+.sql-preview .table-heading { flex-wrap: wrap; gap: 10px; }
+.sql-run-audit { margin: 16px 0; padding: 17px 22px; border: 1px solid var(--line); border-radius: 7px; background: var(--surface); font-size: 12px; line-height: 1.7; overflow-wrap: anywhere; }
+.sql-run-audit.is-error { border-color: #ebc2b8; background: #fff6f2; }
+.sql-run-audit p { margin: 4px 0; }
+@media (max-width: 900px) { .sql-layout { grid-template-columns: 1fr; } }
+@media (max-width: 580px) { .sql-view { padding: 22px 12px 30px; } .sql-source-panel, .sql-form-panel { padding: 17px; } .sql-field-row { grid-template-columns: 1fr; gap: 0; } .sql-gateway-banner { flex-wrap: wrap; } .sql-model-links { gap: 0; } .sql-view .management-page-header { flex-wrap: wrap; gap: 16px; } }
+
 .mapping-view { width: min(1200px, 100%); margin: 0 auto; padding: 32px 28px 50px; }
 .mapping-controls { display: flex; flex-wrap: wrap; align-items: end; gap: 18px; padding: 21px 23px; border: 1px solid var(--line); border-radius: 8px 8px 0 0; background: var(--surface); }
 .mapping-controls .field { flex: 1; min-width: 180px; margin: 0; }

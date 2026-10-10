@@ -192,6 +192,25 @@ export async function connectWorkspace(onError) {
         applyChange(id, result, 'schedule'); return result;
       });
     },
+    sources(id, sources) {
+      return enqueue(async () => {
+        await drain();
+        const result = await request(`/api/models/${encodeURIComponent(id)}/sources`, 'PUT', { sources, revision: revision(id) });
+        applyChange(id, result, 'sources'); return result;
+      });
+    },
+    sqlTest(id, source) {
+      return enqueue(async () => {
+        await drain();
+        return request(`/api/models/${encodeURIComponent(id)}/sources/test`, 'POST', { source, revision: revision(id) });
+      });
+    },
+    sqlPreview(id, source, target) {
+      return enqueue(async () => {
+        await drain();
+        return request(`/api/models/${encodeURIComponent(id)}/sources/preview`, 'POST', { source, revision: revision(id), target });
+      });
+    },
     publication(id, published) {
       return enqueue(async () => {
         await drain();

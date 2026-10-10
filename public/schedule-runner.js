@@ -13,6 +13,35 @@ export function sameRunInputs(left, right) {
   return JSON.stringify(normalized(left)) === JSON.stringify(normalized(right));
 }
 
+// SQL readings replace only this run's detached snapshot. Restore their audited
+// saved values when deciding whether results still belong to the current model.
+export function runMatchesModelInputs(run, model) {
+  if (!run?.modelSnapshot) return false;
+  const baseline = clone(run.modelSnapshot);
+  if (run.sql?.input) {
+    if (!Array.isArray(run.sql.input.readings)) return false;
+    for (const reading of run.sql.input.readings) {
+      const stream = baseline.streams.find(item => item.id === reading.itemId);
+      if (!stream || !Object.hasOwn(reading, 'originalValue')) return false;
+      stream.value = reading.originalValue;
+    }
+  }
+  return sameRunInputs(baseline, model);
+}
+
+export function runMatchesInputSource(run, sources, schedule) {
+  if ((run?.inputSourceId ?? null) !== (schedule?.inputSourceId ?? null)) return false;
+  if (run?.inputSourceId == null) return !run?.sql?.input;
+  if (!Array.isArray(sources)) return false;
+  const source = sources.find(item => item.id === run.inputSourceId);
+  if (!source) return false;
+  if (source.type === 'sql') {
+    const audited = run.sql?.input?.source;
+    return Boolean(audited && Object.keys(audited).length === Object.keys(source).length && Object.keys(source).every(key => Object.hasOwn(audited, key) && audited[key] === source[key]));
+  }
+  return !run.sql?.input;
+}
+
 function sourceHandler(source, adapters, direction) {
   const key = source.adapterKey ?? source.adapter ?? source.type;
   if (typeof key !== 'string' || !key || !adapters || !Object.hasOwn(adapters, key) || typeof adapters[key] !== 'function') {
@@ -25,7 +54,8 @@ function sourceHandler(source, adapters, direction) {
 // selects a model, edits saved readings, advances a schedule, or writes storage.
 export async function executeModelRun(catalog, modelId, {
   trigger = 'manual', id = crypto.randomUUID(), now = Date.now,
-  inputAdapters = {}, outputAdapters = {}
+  inputAdapters = {}, outputAdapters = {}, target, publishedVersion = null,
+  beforeOutput = async () => {}
 } = {}) {
   if (!['manual', 'scheduled'].includes(trigger)) throw new Error('A run trigger must be manual or scheduled.');
   if (typeof id !== 'string' || !/^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$/.test(id) || ['constructor', 'prototype', '__proto__'].includes(id)) throw new Error('Choose a safe run ID of at most 128 characters.');
@@ -43,12 +73,21 @@ export async function executeModelRun(catalog, modelId, {
     inputSourceId: schedule.inputSourceId, outputSourceId: schedule.outputSourceId,
     modelSnapshot: clone(entry.model), result: null, status: 'failed', error: null
   };
+  if (target !== undefined) {
+    if (!['draft', 'published'].includes(target) || (target === 'published' ? !Number.isSafeInteger(publishedVersion) || publishedVersion < 1 : publishedVersion !== null)) throw new Error('Choose a valid run target and publication version.');
+    run.target = target; run.publishedVersion = publishedVersion;
+  }
+  const batchStart = Date.parse(startedAt) - Number(entry.model.periodHours) * 3_600_000;
+  const window = { start: Number.isFinite(batchStart) && Math.abs(batchStart) <= 8.64e15 ? new Date(batchStart).toISOString() : null, end: startedAt };
+  const context = () => ({ modelId, runId: id, startedAt, window: clone(window), target: run.target ?? 'draft', publishedVersion: run.publishedVersion ?? null,
+    recordInputAudit: audit => { run.sql ??= {}; run.sql.input = clone(audit); },
+    recordOutputAudit: audit => { run.sql ??= {}; run.sql.output = clone(audit); } });
   let stage = 'Input';
   try {
     if (run.inputSourceId !== null) {
       const source = sources.find(item => item.id === run.inputSourceId);
       const handler = sourceHandler(source, inputAdapters, 'input');
-      const imported = await handler(clone(source), clone(run.modelSnapshot), { modelId });
+      const imported = await handler(clone(source), clone(run.modelSnapshot), source.type === 'sql' ? context() : { modelId });
       run.modelSnapshot = validateEditableModel(imported);
     }
     stage = 'Reconciliation';
@@ -72,7 +111,8 @@ export async function executeModelRun(catalog, modelId, {
       const source = sources.find(item => item.id === run.outputSourceId);
       const handler = sourceHandler(source, outputAdapters, 'output');
       run.finishedAt = timestamp();
-      await handler(clone(source), clone(run), { modelId });
+      await beforeOutput(clone(run));
+      await handler(clone(source), clone(run), source.type === 'sql' ? context() : { modelId });
     }
   } catch (error) {
     run.status = 'failed';

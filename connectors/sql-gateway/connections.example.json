@@ -1,0 +1,38 @@
+[
+  {
+    "id": "plant-postgres",
+    "name": "Plant PostgreSQL",
+    "dialect": "postgres",
+    "host": "sql.plant.example",
+    "port": 5432,
+    "database": "production",
+    "user": "openreconcile",
+    "password": "SET_IN_SECRET_CONFIGURATION",
+    "readableTables": ["public.mass_readings"],
+    "writableTables": ["public.reconciliation_results"]
+  },
+  {
+    "id": "plant-sqlserver",
+    "name": "Plant SQL Server",
+    "dialect": "sqlserver",
+    "host": "sqlserver.plant.example",
+    "port": 1433,
+    "database": "production",
+    "user": "openreconcile",
+    "password": "SET_IN_SECRET_CONFIGURATION",
+    "readableTables": ["dbo.mass_readings"],
+    "writableTables": ["dbo.reconciliation_results"]
+  },
+  {
+    "id": "plant-mysql",
+    "name": "Plant MySQL",
+    "dialect": "mysql",
+    "host": "mysql.plant.example",
+    "port": 3306,
+    "database": "production",
+    "user": "openreconcile",
+    "password": "SET_IN_SECRET_CONFIGURATION",
+    "readableTables": ["production.mass_readings"],
+    "writableTables": ["production.reconciliation_results"]
+  }
+]

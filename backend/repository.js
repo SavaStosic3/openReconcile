@@ -143,6 +143,18 @@ export class Repository {
     const saved = await this.model(id);
     return { schedule: saved.schedule, permission: await this.permission(user, saved) };
   }
+  async updateSources(user, id, sources, schedule, revision) {
+    // Admin and editing lock checks are repeated in the atomic write. A source
+    // change increments the same revision as diagrams, schedules, and policies.
+    const guard = adminClause(user.id);
+    const result = await this.statement(`UPDATE models SET sources_json=?,schedule_json=?,revision=revision+1,updated_at=? WHERE id=? AND revision=? AND deleted_at IS NULL AND edit_locked=0 AND ${guard.sql}`, [JSON.stringify(sources), JSON.stringify(schedule), this.stamp(), id, revision, ...guard.values]).run();
+    if (!changed(result)) {
+      requireAdmin(await this.user(user.id));
+      await this.rejectWrite(user, id, revision, 'canEdit');
+    }
+    const saved = await this.model(id);
+    return { sources: saved.sources, schedule: saved.schedule, entry: this.entry(saved), permission: await this.permission(user, saved) };
+  }
   async updatePublication(user, id, published, revision, disabledSchedule) {
     const { model } = await this.accessibleModel(user, id);
     const guard = accessClause('edit', user.id);

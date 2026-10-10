@@ -1,10 +1,10 @@
 # Feature roadmap
 
-Current capabilities and planned enhancements for openReconcile, a standalone, open-source mass balance reconciliation tool. Browser-triggered scheduling, authenticated shared models, administrator/model permissions, data mapping, virtual meters, line visibility/crossing bridges, published results, and the initial process-unit symbol library are implemented as described below. Other items describe planned behavior.
+Current capabilities and planned enhancements for openReconcile, a standalone, open-source mass balance reconciliation tool. Browser-triggered scheduling, authenticated shared models, administrator/model permissions, data mapping, SQL input/output through a server gateway, virtual meters, line visibility/crossing bridges, published results, and the initial process-unit symbol library are implemented as described below. Other items describe planned behavior.
 
 ## 1. Scheduled reconciliation
 
-**Implemented with browser triggering and server execution:** editors and administrators configure each published model's elapsed run frequency in minutes, hours, or days from the hamburger menu's Model Management page. New models are drafts with scheduling disabled; publishing is explicit. Runs use saved model measurements and store results in the shared D1 workspace by default. Optional sources require defined adapters, and no external adapters are included. Manual and scheduled runs retain snapshots, results, and status for the latest 20 runs per model.
+**Implemented with browser triggering and server execution:** editors and administrators configure each published model's elapsed run frequency in minutes, hours, or days from the hamburger menu's Model Management page. New models are drafts with scheduling disabled; publishing is explicit. Runs use saved model measurements and store results in the shared D1 workspace by default. Administrators can define SQL input/output sources for a model, using a separately configured gateway, then select them for its manual and scheduled workflow. Manual and scheduled runs retain snapshots, results, and status for the latest 20 runs per model.
 
 Triggering requires an open app with an account permitted to run that model. The backend checks permissions and atomically claims due runs to prevent duplicate execution across sessions. Browser sleep and background throttling may delay runs. On resume or reopening, an overdue schedule executes once and skips missed intervals. Timestamps are stored as absolute instants and shown in the browser's local time zone; daily means every 24 hours. Unpublishing or deleting a model pauses its schedule.
 
@@ -12,7 +12,7 @@ Triggering requires an open app with an account permitted to run that model. The
 
 - Run without an open browser, using an unattended backend scheduler.
 - Configure calendar schedules, reporting windows, and explicit time zones.
-- Retrieve fresh input data through external adapters and retain model versions alongside input snapshots, results, and status.
+- Add further external input adapters and richer reporting-window and data-quality controls; SQL input already retrieves fresh readings for each run.
 - Add retries, recovery for interrupted executions, and controls for long-running overlapping jobs.
 
 ## 2. Multiple models with role-based access control
@@ -26,7 +26,7 @@ Every API request enforces authentication and permissions. Content writes also c
 **Future organization and versioning:**
 
 - Add plant/workspace organization, browsable model versions, and restoration of a previous model version.
-- Extend the permission model to connector credentials and publishing results to external systems as those integrations are introduced.
+- Extend the current administrator-only SQL configuration and model-run permissions with dedicated connector grants and broader publishing controls as those integrations grow.
 - Record significant administrative and model changes in an audit history.
 
 Revision checks, run snapshots, and separate working drafts and published snapshots are implemented. Publishing promotes the saved draft to a numbered publication; manual published runs and schedules use that copy while edits remain separate. A user-facing history for browsing or restoring every model version remains planned.
@@ -42,28 +42,36 @@ Revision checks, run snapshots, and separate working drafts and published snapsh
 
 **Implemented mapping foundation:** the hamburger menu's **Data Mapping** page lists items in the selected model with their current **Model Name** and an optional **Source Name** for an external tag, column, or field. Source Name is also editable from a unit or stream's settings, including unmetered streams. Mappings attach to stable item IDs, survive renaming, saving, duplication, and JSON import/export, and follow existing draft editing permissions and locks. Published mappings remain read-only until draft changes are published.
 
-Mapping names are model metadata rather than credentials. They do not fetch data or change readings; no external connector adapters or connection setup are implemented.
+**Implemented SQL input:** an administrator can configure and inspect per-model SQL sources through **SQL Connectors**, test a server connection, and preview data without changing readings. Connection IDs refer to a separately deployed Node.js gateway using `mssql` for SQL Server, `pg` for PostgreSQL, or `mysql2` for MySQL. Database credentials remain in the gateway's server environment; the Workers app calls that gateway over authenticated HTTP.
+
+The initial input format is a tag/value/timestamp table, matched by each physical meter's distinct Source Name. A run reads the half-open interval ending at its start time and extending back by the model's batch duration, with configurable Latest, Sum, or arithmetic Average aggregation. Every physical meter requires a mapping and valid interval data. Values must already use the meter's configured unit; virtual meters then calculate from the fresh readings. Inputs are retained in the run snapshot rather than overwriting saved model readings. Current source configuration applies to subsequent selected-source runs, while diagram mappings come from the selected draft/publication snapshot. Changing or removing a selected source pauses its schedule pending explicit re-enabling.
+
+Mapping names are model metadata rather than credentials. Saving a mapping alone does not fetch data or change readings. SQL requires explicit server connection setup and network access; an actual plant integration must be configured and validated separately.
 
 **Future connector capabilities:**
 
-- Obtain model readings from CSV files, SQL databases, ODBC sources, SAP, OSIsoft PI, HTTP APIs, and additional adapters.
+- Obtain model readings from CSV files, ODBC sources, SAP, OSIsoft PI, HTTP APIs, and additional adapters; broaden SQL table formats and supported databases.
 - Extend item mappings with connector selection and measurement fields, units, timestamps, uncertainty, and data-quality information; add inventory mappings when storage units are supported.
-- Preview and validate the data; align readings and interval totals to the reporting window and explain missing, stale, or invalid inputs.
+- Extend the SQL preview and required-data validation with richer quality flags, staleness rules, counter differences, and explicit time-zone/reporting-calendar controls.
 - Support credentials and plant-network connectivity through server-side integrations or gateways.
 
 ## 5. Output data connectors
 
-- Deliver results through CSV, SQL, ODBC, SAP, OSIsoft PI, HTTP APIs, and additional adapters where the destination supports the required writes.
-- Map reconciled values, corrections, uncertainty, quality/status, and run metadata to destination fields or tags.
-- Preserve the original readings and distinguish reconciled results from raw data at the destination.
-- Support explicit publishing permissions, delivery acknowledgements, retries, and duplicate/revision handling.
+**Implemented SQL output:** administrators configure a per-model output source through **SQL Connectors** and select it in Model Management. The SQL gateway writes observable mapped stream results and mapped unit incoming/outgoing totals to a normalized result table, in kg per reporting batch, with run/model/item identifiers and available measurement, correction, uncertainty, and status fields. Unobservable values are skipped and counted. Bound inserts execute in one transaction. Database operation errors roll back output; reconciliation results and delivery failures remain in shared run history. A lost acknowledgement after commit needs destination inspection by run ID before replay.
+
+Administrators configure sources; permitted operators execute the model's selected workflow. Table allowlists and database credentials stay in the gateway. Source settings are current operational configuration; item mappings and run inputs come from the selected snapshot. The gateway and destination schema require separate setup and real database validation before plant use.
+
+**Future output capabilities:**
+
+- Deliver results through CSV, ODBC, SAP, OSIsoft PI, HTTP APIs, and additional adapters where the destination supports the required writes.
+- Add destination schema flexibility, separate input/output mappings, and additional quality/metadata fields.
+- Add dedicated publishing grants, delivery acknowledgement workflows, retries, and duplicate/revision handling.
 
 ## 6. Reusable plant data workflows
 
-- Configure a model's input mappings, reconciliation settings, and output mappings as a reusable workflow.
-- Let users preview inputs, run and review the balance, and publish or consume the selected results without rebuilding mappings for each run.
-- Reuse compatible connector configurations across models while keeping model permissions and credentials scoped correctly.
-- Keep the reporting interval, units, model version, and result provenance attached to data throughout the workflow.
+**Implemented initial SQL workflow:** configure item mappings, per-model SQL sources, and Model Management's input/output selections once; preview fresh data and run the same workflow manually or on the browser-triggered schedule. Runs retain their input snapshot, publication target, results, and delivery status. Multiple model sources can refer to a server-configured connection ID without exposing its database credentials.
+
+Further enhancements include independent input/output mappings, reusable configuration templates, explicit input review/approval before automatic output, and richer delivery and reporting-interval provenance across connector types.
 
 ## 7. Virtual meters
 

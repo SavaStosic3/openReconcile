@@ -1,5 +1,5 @@
 import { createCatalog, validateCatalog, getModelEntry, addModel, updateModel, duplicateModel, setActiveModel, setSchedule, dueSchedules, advanceSchedule, appendRun, frequencyToMinutes } from './management-store.js';
-import { executeModelRun, sameRunInputs } from './schedule-runner.js';
+import { executeModelRun, sameRunInputs, runMatchesModelInputs, runMatchesInputSource } from './schedule-runner.js';
 
 const CATALOG_KEY = 'openreconcile-model-library-v1';
 const LEGACY_KEY = 'massflow-model-v1';
@@ -133,14 +133,14 @@ export function createManagement({ fallbackModel, beforeAction, onActivate, onRu
     for (const source of sources) {
       const key = source.adapterKey ?? source.adapter ?? source.type;
       const adapters = direction === 'input' ? inputAdapters : outputAdapters;
-      const supported = Object.hasOwn(adapters, key) && typeof adapters[key] === 'function';
+      const supported = (backend && source.type === 'sql') || (Object.hasOwn(adapters, key) && typeof adapters[key] === 'function');
       const option = new Option(`${source.name}${supported ? '' : ' · adapter unavailable'}`, source.id);
       option.disabled = !supported;
       select.add(option);
     }
     select.value = selection || '';
     $(`#schedule-${direction}-help`).textContent = sources.length
-      ? 'Choose a defined source. Sources require a supported adapter to run.'
+      ? 'SQL sources use the server’s configured gateway. Input fetches fresh batch readings; output writes reconciled results. These choices also apply to manual runs.'
       : direction === 'input' ? 'No external input sources defined. Uses this model’s saved readings; no new plant data is fetched.' : backend ? 'No external output destinations defined. Results are saved in the shared model history.' : 'No external output destinations defined. Results are saved in this browser’s model history.';
   }
   function cadence(minutes) {
@@ -163,7 +163,7 @@ export function createManagement({ fallbackModel, beforeAction, onActivate, onRu
   function matchesRun(entry, run, target) {
     if (runTarget(entry, run) !== target) return false;
     const snapshot = target === 'published' ? entry.publishedModel : entry.model;
-    if (!snapshot || !sameRunInputs(run.modelSnapshot, snapshot)) return false;
+    if (!snapshot || !runMatchesModelInputs(run, snapshot) || !runMatchesInputSource(run, catalog.sources[entry.id], catalog.schedules[entry.id])) return false;
     return target !== 'published' || run.publishedVersion === entry.publishedVersion || (run.target === undefined && entry.publishedVersion === 1);
   }
   function render(form = false) {
