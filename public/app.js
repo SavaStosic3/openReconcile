@@ -1,4 +1,5 @@
 import { exampleModel, emptyModel, METRICS, NODE_TYPES, measurementToMass } from './model.js';
+import { showcaseModel } from './showcase-model.js';
 import { createEditor } from './editor.js';
 import { createManagement } from './management.js';
 import { validateEditableModel } from './management-store.js';
@@ -392,7 +393,10 @@ $('#published-model-select').onchange = event => openPage('published', event.tar
 $('#view-live-button').onclick = () => openPage('published');
 $('#publish-draft-button').onclick = publishDraft;
 $('#new-button').onclick = () => askReplace('Start a new model?', () => replaceModel(emptyModel()));
-function loadDemo() { askReplace('Create a model from the feed and separation template?', () => { replaceModel(exampleModel()); toast('Template loaded with 3 measured streams and 1 unmetered stream.'); }); }
+function templateForModel() {
+  return [showcaseModel(), exampleModel()].find(template => template.streams.every(preset => model.streams.some(stream => stream.id === preset.id && stream.source === preset.source && stream.target === preset.target)));
+}
+function loadDemo() { askReplace('Create the slurry filtration with recycle model?', () => { replaceModel(showcaseModel()); toast('Template loaded with 5 physical meters, 1 virtual meter, and 3 unmetered streams.'); }); }
 $('#demo-button').onclick = loadDemo; $('#empty-demo').onclick = loadDemo;
 $('#help-button').onclick = () => $('#help-dialog').showModal();
 $$('.close-dialog').forEach(button => button.addEventListener('click', () => button.closest('dialog').close()));
@@ -581,7 +585,7 @@ function refreshMeterReadouts() {
 function renderData() {
   $('#batch-period').value = [1,24].includes(Number(model.periodHours)) ? String(model.periodHours) : 'custom';
   $('#custom-hours-label').classList.toggle('hidden', [1,24].includes(Number(model.periodHours))); $('#custom-hours').value = model.periodHours;
-  $('#sample-readings').hidden = !['f1','f3','f4'].every(id => model.streams.some(s => s.id === id));
+  $('#sample-readings').hidden = !templateForModel();
   const readings = evaluateMeterDetails(model);
   $('#measurement-rows').innerHTML = model.streams.map(stream => {
     const source = model.nodes.find(n => n.id === stream.source), target = model.nodes.find(n => n.id === stream.target);
@@ -595,7 +599,16 @@ function renderData() {
 }
 $('#batch-period').onchange = event => { if (!requireEdit()) return; if (event.target.value === 'custom') { $('#custom-hours-label').classList.remove('hidden'); $('#custom-hours').focus(); } else { model.periodHours = Number(event.target.value); commit(); renderData(); } };
 $('#custom-hours').onchange = event => { if (!requireEdit()) return; const n = Number(event.target.value); if (Number.isFinite(n) && n > 0) { model.periodHours = n; commit(); renderData(); } else { toast('Batch duration must be greater than zero.'); event.target.value = model.periodHours; } };
-$('#sample-readings').onclick = () => { if (!requireEdit()) return; for (const [id,value,uncertainty] of [['f1',100,1],['f3',60,2],['f4',35,2]]) { const stream = model.streams.find(s => s.id === id); if (stream && !isVirtualMeter(stream)) Object.assign(stream,{measured:true,metric:'mass',unit:'kg',value,uncertainty,uncertaintyType:'absolute'}); } editor.setModel(model); commit(); renderData(); toast('Template readings restored.'); };
+$('#sample-readings').onclick = () => {
+  if (!requireEdit()) return;
+  const template = templateForModel();
+  if (!template) return;
+  for (const preset of template.streams.filter(stream => stream.measured && !isVirtualMeter(stream))) {
+    const stream = model.streams.find(item => item.id === preset.id);
+    if (stream && !isVirtualMeter(stream)) Object.assign(stream, { measured: true, metric: preset.metric, unit: preset.unit, value: preset.value, uncertainty: preset.uncertainty, uncertaintyType: preset.uncertaintyType });
+  }
+  editor.setModel(model); commit(); renderData(); toast('Template readings restored.');
+};
 
 async function run() {
   if (!backend.permission(editingModelId).canRun || (viewMode === 'published' && !hasPublishedModel())) { toast('Your account cannot run this model.'); return; }

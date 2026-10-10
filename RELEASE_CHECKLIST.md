@@ -97,9 +97,12 @@ Local evidence on 2026-10-10: the final `npm test` suite passed **289 tests**, i
 ## Application copy
 
 - [ ] Review sign-in, navigation, empty states, dialogs, measurements, results, and settings for clear product wording. Keep demo, MVP, prototype, and future-feature promises out of the application interface.
-- [ ] Confirm **Load template** creates a separate **Feed and separation** model, and **Reset template readings** restores its preset readings. Retain existing user-defined model names.
+- [ ] Confirm **Load template** creates a separate **Slurry filtration with recycle** model and preserves existing models. Verify the [analytical reference](examples/showcase-model.md): one-hour external inputs `804 + 201 kg`, outputs `900 + 105 kg`, recycle `51 kg`, mixed/filter feed `1,056 kg`, and zero unit residuals. Confirm **Reset template readings** restores physical presets for this template and the legacy **Feed and separation** template without replacing virtual formulas or the reporting period.
 - [ ] Confirm operational requirements remain clear: total-mass conservation without accumulation, fixed conversion properties, browser-session scheduling, and SQL gateway configuration.
 - [ ] Review results and settings layouts for clipped or overflowing labels, and keep the README and roadmap action names aligned with the interface.
+- [ ] Check stream and unit settings with optional labels, physical and virtual meters, and source mappings. Paired controls must align on desktop; narrow dialogs must stack fields without horizontal overflow. Confirm uncertainty controls fit their column and line actions remain grouped at the left of the stream footer.
+
+Local verification on 2026-10-10: **294 tests** passed, including five independent checks of the filtration showcase, every unit/boundary balance, a consistent baseline, and elapsed-duration scaling. Type checking and the production build passed. Browser checks with local simulated sign-in confirmed template creation, physical-reading reset, the expected one-hour draft and published reconciliation, and visible results on the diagram. Physical/virtual stream settings aligned on desktop and stacked without dialog overflow at 390px; unit mapping labels were checked. These checks do not establish real plant or connector validation.
 
 ## Closeout
 

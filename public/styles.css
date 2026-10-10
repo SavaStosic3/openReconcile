@@ -217,6 +217,8 @@ h3 { font-size: 14px; line-height: 1.4; font-weight: 650; }
 
 .field { display: flex; flex-direction: column; gap: 6px; margin-bottom: 14px; min-width: 0; font-size: 11px; font-weight: 550; }
 .field label, .field > span:first-child { font-size: 11px; font-weight: 600; color: #566770; }
+.field-label { display: flex; align-items: baseline; gap: 6px; flex-wrap: wrap; }
+.field-label .management-optional { margin-left: 0; }
 .field input, .field select, .field textarea, .number-input, .batch-controls input, .batch-controls select {
   min-width: 0; width: 100%; min-height: 35px; padding: 7px 9px;
   color: var(--ink); background: #fff; border: 1px solid var(--line-strong); border-radius: 5px;
@@ -238,7 +240,7 @@ h3 { font-size: 14px; line-height: 1.4; font-weight: 650; }
 .virtual-reading { display: block; font-variant-numeric: tabular-nums; font-weight: 600; }
 .data-table small.virtual-formula { max-width: 220px; white-space: normal; overflow-wrap: anywhere; font-family: ui-monospace, SFMono-Regular, Consolas, monospace; }
 .virtual-formula-error { max-width: 220px; white-space: normal; line-height: 1.5; }
-.field-grid { display: grid; grid-template-columns: 1fr 1fr; column-gap: 12px; }
+.field-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); column-gap: 12px; align-items: start; }
 .field-grid .full { grid-column: 1 / -1; }
 .checkbox-field { display: flex; align-items: flex-start; gap: 8px; font-size: 12px; margin: 14px 0; }
 .checkbox-field input { width: 15px; height: 15px; margin: 1px 0 0; accent-color: var(--teal); }
@@ -345,15 +347,16 @@ h3 { font-size: 14px; line-height: 1.4; font-weight: 650; }
 .dialog-body > :last-child { margin-bottom: 0; }
 .dialog-footer { display: flex; align-items: center; justify-content: flex-end; gap: 9px; flex-wrap: wrap; padding: 15px 24px; background: var(--surface-subtle); border-top: 1px solid var(--line); }
 .dialog-footer > div { display: flex; align-items: center; gap: 8px; margin-left: auto; }
+#stream-dialog .dialog-footer > .stream-visibility-actions { margin-left: 0; margin-right: auto; }
 .dialog-footer > .text-button { margin-right: auto; }
 .dialog-footer > .helper { margin-right: auto; }
 .small-dialog { width: min(430px, calc(100vw - 32px)); }
 .connection-summary { margin-bottom: 20px; padding: 11px 13px; border: 1px solid var(--line); border-radius: 5px; background: var(--surface-subtle); font-size: 12px; color: #657775; }
 .form-section-title { margin: 4px 0 13px !important; padding-top: 16px; border-top: 1px solid var(--line); font-size: 11px; }
 .optional { color: #9ba6a1; font-size: 9px; font-weight: 400; }
-.input-pair { display: flex; gap: 7px; }
-.input-pair input { width: 42%; }
-.input-pair select { width: 58%; font-size: 10px; }
+.input-pair { display: grid; grid-template-columns: minmax(0, 2fr) minmax(0, 3fr); gap: 7px; }
+.input-pair input, .input-pair select { width: 100%; }
+.input-pair select { font-size: 10px; }
 .meter-option { margin: 18px 0; padding: 11px 12px; border: 1px solid #d7e4db; background: #f1f7f3; border-radius: 6px; }
 .meter-option .checkbox-field { margin: 0; }
 .meter-option small { display: block; margin-top: 3px; color: var(--muted); font-size: 10px; }
@@ -473,6 +476,7 @@ h3 { font-size: 14px; line-height: 1.4; font-weight: 650; }
   .dialog { max-height: calc(100vh - 24px); }
   .dialog-header { padding: 17px 18px; }
   .dialog-body { padding: 20px 18px; }
+  .dialog .field-grid { grid-template-columns: minmax(0, 1fr); }
   .dialog-footer { padding: 14px 18px; }
 }
 @media (prefers-reduced-motion: reduce) {

@@ -1,0 +1,265 @@
+{
+  "version": 1,
+  "name": "Slurry filtration with recycle",
+  "periodHours": 1,
+  "nodes": [
+    {
+      "id": "raw-feed",
+      "kind": "inlet",
+      "name": "Raw slurry",
+      "x": 70,
+      "y": 260
+    },
+    {
+      "id": "feed-pump",
+      "kind": "pump",
+      "name": "Feed pump",
+      "x": 240,
+      "y": 260
+    },
+    {
+      "id": "wash-water",
+      "kind": "inlet",
+      "name": "Wash water",
+      "x": 240,
+      "y": 70
+    },
+    {
+      "id": "feed-mixer",
+      "kind": "mixer",
+      "name": "Feed mixer",
+      "x": 460,
+      "y": 260
+    },
+    {
+      "id": "slurry-heater",
+      "kind": "heatExchanger",
+      "name": "Slurry heater",
+      "x": 680,
+      "y": 260
+    },
+    {
+      "id": "pressure-filter",
+      "kind": "filter",
+      "name": "Pressure filter",
+      "x": 900,
+      "y": 260
+    },
+    {
+      "id": "product-split",
+      "kind": "splitter",
+      "name": "Product split",
+      "x": 1120,
+      "y": 260
+    },
+    {
+      "id": "product",
+      "kind": "outlet",
+      "name": "Product",
+      "x": 1300,
+      "y": 260
+    },
+    {
+      "id": "filter-cake",
+      "kind": "outlet",
+      "name": "Filter cake",
+      "x": 1120,
+      "y": 460
+    }
+  ],
+  "streams": [
+    {
+      "id": "raw-feed-flow",
+      "source": "raw-feed",
+      "target": "feed-pump",
+      "name": "F-01 · Raw feed",
+      "material": "Aqueous process slurry",
+      "phase": "Slurry",
+      "density": 1100,
+      "temperature": 25,
+      "pressure": 300,
+      "measured": true,
+      "metric": "massFlow",
+      "unit": "kg/h",
+      "value": 800,
+      "uncertainty": 10,
+      "uncertaintyType": "absolute",
+      "dataMapping": {
+        "sourceName": "FILTRATION.RAW_FEED_FLOW"
+      },
+      "meterType": "physical",
+      "meterName": "RAW FEED"
+    },
+    {
+      "id": "pump-discharge",
+      "source": "feed-pump",
+      "target": "feed-mixer",
+      "name": "F-02 · Pump discharge",
+      "material": "Aqueous process slurry",
+      "phase": "Slurry",
+      "density": 1100,
+      "temperature": 25,
+      "pressure": 300,
+      "measured": false,
+      "metric": "massFlow",
+      "unit": "kg/h",
+      "value": "",
+      "uncertainty": 10,
+      "uncertaintyType": "absolute",
+      "dataMapping": {
+        "sourceName": "FILTRATION.PUMP_DISCHARGE"
+      }
+    },
+    {
+      "id": "wash-water-flow",
+      "source": "wash-water",
+      "target": "feed-mixer",
+      "name": "F-03 · Wash water",
+      "material": "Wash water",
+      "phase": "Liquid",
+      "density": 1000,
+      "temperature": 25,
+      "pressure": 200,
+      "measured": true,
+      "metric": "massFlow",
+      "unit": "kg/h",
+      "value": 200,
+      "uncertainty": 5,
+      "uncertaintyType": "absolute",
+      "dataMapping": {
+        "sourceName": "FILTRATION.WASH_WATER_FLOW"
+      },
+      "meterType": "physical",
+      "meterName": "WASH WATER"
+    },
+    {
+      "id": "mixed-feed",
+      "source": "feed-mixer",
+      "target": "slurry-heater",
+      "name": "F-04 · Mixed feed",
+      "material": "Diluted process slurry",
+      "phase": "Slurry",
+      "density": 1100,
+      "temperature": 25,
+      "pressure": 300,
+      "measured": true,
+      "metric": "massFlow",
+      "unit": "kg/h",
+      "value": "",
+      "uncertainty": 5,
+      "uncertaintyType": "absolute",
+      "dataMapping": {
+        "sourceName": "FILTRATION.MIXED_FEED"
+      },
+      "meterType": "virtual",
+      "meterName": "MIXED FEED",
+      "formula": "[RAW FEED] + [WASH WATER] + [RECYCLE]"
+    },
+    {
+      "id": "conditioned-feed",
+      "source": "slurry-heater",
+      "target": "pressure-filter",
+      "name": "F-05 · Filter feed",
+      "material": "Heated process slurry",
+      "phase": "Slurry",
+      "density": 1100,
+      "temperature": 45,
+      "pressure": 300,
+      "measured": true,
+      "metric": "massFlow",
+      "unit": "kg/h",
+      "value": 1060,
+      "uncertainty": 10,
+      "uncertaintyType": "absolute",
+      "dataMapping": {
+        "sourceName": "FILTRATION.CONDITIONED_FEED"
+      },
+      "meterType": "physical",
+      "meterName": "FILTER FEED"
+    },
+    {
+      "id": "filtrate",
+      "source": "pressure-filter",
+      "target": "product-split",
+      "name": "F-06 · Filtrate",
+      "material": "Filtered process liquid",
+      "phase": "Liquid",
+      "density": 1050,
+      "temperature": 45,
+      "pressure": 300,
+      "measured": false,
+      "metric": "massFlow",
+      "unit": "kg/h",
+      "value": "",
+      "uncertainty": 10,
+      "uncertaintyType": "absolute",
+      "dataMapping": {
+        "sourceName": "FILTRATION.FILTRATE"
+      }
+    },
+    {
+      "id": "filter-cake-flow",
+      "source": "pressure-filter",
+      "target": "filter-cake",
+      "name": "F-07 · Filter cake",
+      "material": "Wet filter cake",
+      "phase": "Solid",
+      "density": 1400,
+      "temperature": 45,
+      "pressure": 300,
+      "measured": false,
+      "metric": "massFlow",
+      "unit": "kg/h",
+      "value": "",
+      "uncertainty": 10,
+      "uncertaintyType": "absolute",
+      "dataMapping": {
+        "sourceName": "FILTRATION.FILTER_CAKE_FLOW"
+      }
+    },
+    {
+      "id": "product-flow",
+      "source": "product-split",
+      "target": "product",
+      "name": "F-08 · Product",
+      "material": "Filtered process liquid",
+      "phase": "Liquid",
+      "density": 1050,
+      "temperature": 45,
+      "pressure": 300,
+      "measured": true,
+      "metric": "massFlow",
+      "unit": "kg/h",
+      "value": 900,
+      "uncertainty": 10,
+      "uncertaintyType": "absolute",
+      "dataMapping": {
+        "sourceName": "FILTRATION.PRODUCT_FLOW"
+      },
+      "meterType": "physical",
+      "meterName": "PRODUCT"
+    },
+    {
+      "id": "recycle",
+      "source": "product-split",
+      "target": "feed-mixer",
+      "name": "F-09 · Recycle",
+      "material": "Recycled process liquid",
+      "phase": "Liquid",
+      "density": 1050,
+      "temperature": 45,
+      "pressure": 300,
+      "measured": true,
+      "metric": "massFlow",
+      "unit": "kg/h",
+      "value": 50,
+      "uncertainty": 5,
+      "uncertaintyType": "absolute",
+      "dataMapping": {
+        "sourceName": "FILTRATION.RECYCLE"
+      },
+      "meterType": "physical",
+      "meterName": "RECYCLE"
+    }
+  ]
+}
