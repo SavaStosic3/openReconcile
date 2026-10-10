@@ -9,6 +9,55 @@ import { exampleModel, emptyModel, newStream } from '../public/model.js';
 import { reconcile } from '../public/solver.js';
 import { setItemDataMapping } from '../public/data-mapping.js';
 
+test('completed SQL periods align at 10:07, preview matches, and historical reruns retain prior readings and output windows', async t => {
+  const f = fixture(t); let amount = 120;
+  const calls = configureGateway(f, (endpoint, body) => endpoint === 'connections' ? { connections: [{ id: 'plant', name: 'Plant', dialect: 'postgres', canRead: true, canWrite: false }, { id: 'results', name: 'Results', dialect: 'postgres', canRead: false, canWrite: true }] } : endpoint === 'read' ? { readings: body.tags.map(sourceName => ({ sourceName, value: sourceName === 'f1' ? amount : sourceName === 'f3' ? 70 : 45, timestamp: new Date((Date.parse(body.start) + Date.parse(body.end)) / 2).toISOString() })), window: { start: body.start, end: body.end } } : { written: body.rows.length });
+  const created = await mappedSqlModel(f);
+  assert.equal((await f.request(`/api/models/${created.id}/publication`, 'PATCH', { revision: 3, published: true })).status, 200);
+  assert.equal((await f.request(`/api/models/${created.id}/schedule`, 'PATCH', { revision: 4, changes: { inputSourceId: sqlInput.id, outputSourceId: sqlOutput.id } })).status, 200);
+  f.advance(7 * 60_000);
+  const preview = await f.request(`/api/models/${created.id}/sources/preview`, 'POST', { source: sqlInput, revision: 5 });
+  assert.equal(preview.status, 200); assert.equal(preview.body.window.start, '2026-10-09T19:00:00.000Z'); assert.equal(preview.body.window.end, '2026-10-09T20:00:00.000Z');
+  const period = { start: '2026-10-08T09:00:00.000Z', end: '2026-10-08T10:00:00.000Z', kind: 'hour' };
+  const first = await f.request(`/api/models/${created.id}/runs`, 'POST', { trigger: 'manual', target: 'draft', period });
+  assert.equal(first.status, 200); assert.ok(first.body.run.result, first.body.run.error);
+  amount = 130;
+  const second = await f.request(`/api/models/${created.id}/runs`, 'POST', { trigger: 'manual', target: 'draft', period });
+  assert.equal(second.body.run.rerunOf, first.body.run.id); assert.equal(second.body.run.sql.input.readings[0].value, 130);
+  const history = await new Repository(f.env.DB).runs(created.id);
+  assert.equal(history[0].sql.input.readings[0].value, 120); assert.equal(history[1].sql.input.readings[0].value, 130);
+  for (const write of calls.filter(call => call.endpoint === 'write')) for (const row of write.body.rows) { assert.equal(row.batch_start, period.start); assert.equal(row.batch_end, period.end); }
+  assert.equal(JSON.parse(f.sqlite.prepare('SELECT model_json FROM models WHERE id=?').get(created.id).model_json).streams[0].value, 100);
+});
+
+test('reporting selections reject incomplete, unaligned, extra fields and scheduled overrides before SQL reads', async t => {
+  const f = fixture(t), calls = configureGateway(f), created = await mappedSqlModel(f);
+  calls.length = 0;
+  for (const period of [{ start: '2026-10-09T20:00:00.000Z', end: '2026-10-09T21:00:00.000Z' }, { start: '2026-10-09T19:07:00.000Z', end: '2026-10-09T20:07:00.000Z' }, { start: '2026-10-09T18:00:00.000Z', end: '2026-10-09T19:00:00.000Z', arbitrary: true }]) {
+    assert.equal((await f.request(`/api/models/${created.id}/runs`, 'POST', { trigger: 'manual', period })).status, 400);
+    assert.equal((await f.request(`/api/models/${created.id}/sources/preview`, 'POST', { source: sqlInput, revision: 3, period })).status, 400);
+  }
+  assert.equal((await f.request(`/api/models/${created.id}/runs`, 'POST', { trigger: 'scheduled', period: null })).status, 400);
+  assert.equal(calls.length, 0);
+  assert.equal((await f.request(`/api/models/${created.id}/publication`, 'PATCH', { revision: 3, published: true })).status, 200);
+  assert.equal((await f.request(`/api/models/${created.id}/schedule`, 'PATCH', { revision: 4, changes: { reporting: { kind: 'hour', settlingMinutes: 15 } } })).status, 200);
+  const run = await f.request(`/api/models/${created.id}/runs`, 'POST', { trigger: 'manual' });
+  assert.equal(run.body.run.reportingPeriod.end, '2026-10-09T19:00:00.000Z');
+});
+
+test('a DST reporting day uses its actual elapsed hours for rates without changing the saved model', async t => {
+  const f = fixture(t), created = await f.create(), model = exampleModel();
+  for (const stream of model.streams.filter(item => item.measured)) Object.assign(stream, { metric: 'massFlow', unit: 'kg/h' });
+  await f.request(`/api/models/${created.entry.id}`, 'PATCH', { revision: 1, model });
+  assert.equal((await f.request(`/api/models/${created.entry.id}/publication`, 'PATCH', { revision: 2, published: true })).status, 200);
+  assert.equal((await f.request(`/api/models/${created.entry.id}/schedule`, 'PATCH', { revision: 3, changes: { reporting: { kind: 'day', timeZone: 'America/Toronto' } } })).status, 200);
+  const period = { start: '2026-03-08T05:00:00.000Z', end: '2026-03-09T04:00:00.000Z', kind: 'day' };
+  const result = await f.request(`/api/models/${created.entry.id}/runs`, 'POST', { trigger: 'manual', period });
+  assert.equal(result.status, 200); assert.equal(result.body.run.reportingPeriod.periodHours, 23); assert.equal(result.body.run.modelSnapshot.periodHours, 23); assert.equal(result.body.run.reportingPeriod.modelPeriodHours, 1);
+  assert.equal(result.body.run.result.streams.find(item => item.id === 'f1').raw, 2300);
+  assert.equal(JSON.parse(f.sqlite.prepare('SELECT model_json FROM models WHERE id=?').get(created.entry.id).model_json).periodHours, 1);
+});
+
 const sqlInput = { id: 'sql-in', name: 'Plant SQL input', type: 'sql', direction: 'input', connectionId: 'plant', table: 'readings', tagColumn: 'tag', valueColumn: 'value', timestampColumn: 'observed_at', aggregation: 'latest' };
 const sqlOutput = { id: 'sql-out', name: 'Plant SQL output', type: 'sql', direction: 'output', connectionId: 'results', table: 'reconciled_results' };
 function configureGateway(f, handler) {
@@ -698,4 +747,55 @@ test('published, draft and scheduled run snapshots retain their own source mappi
   assert.equal(run.status, 200); assert.deepEqual(run.body.run.modelSnapshot, publishedRun.body.run.modelSnapshot);
   const entry = (await f.request('/api/workspace')).body.catalog.models.find(entry => entry.id === id);
   assert.deepEqual(entry.model, draft); assert.deepEqual(entry.publishedModel, model);
+});
+
+test('real gateway quality failures retain a failed period audit without reconciling or writing output', async t => {
+  const { aggregateReadings, validateRead } = await import('../connectors/sql-gateway/src/contract.js');
+  const f = fixture(t), calls = configureGateway(f), created = await mappedSqlModel(f);
+  const source = { ...sqlInput, quality: { maxAgeMinutes: 30, qualityColumn: 'flag' } };
+  assert.equal((await f.request(`/api/models/${created.id}/sources`, 'PUT', { sources: [source, sqlOutput], revision: 3 })).status, 200);
+  assert.equal((await f.request(`/api/models/${created.id}/publication`, 'PATCH', { published: true, revision: 4 })).status, 200);
+  assert.equal((await f.request(`/api/models/${created.id}/schedule`, 'PATCH', { changes: { inputSourceId: source.id, outputSourceId: sqlOutput.id }, revision: 5 })).status, 200);
+  const before = f.sqlite.prepare('SELECT model_json,published_model_json,sources_json,schedule_json FROM models WHERE id=?').get(created.id);
+  let mode = 'good';
+  f.env.SQL_GATEWAY_FETCH = async (url, options) => {
+    const endpoint = new URL(url).pathname.slice(1), body = JSON.parse(options.body);
+    calls.push({ endpoint, body });
+    if (endpoint === 'write') return new Response(JSON.stringify({ written: body.rows.length }));
+    assert.equal(endpoint, 'read');
+    const raw = body.tags.flatMap(source_name => {
+      const value = { f1: 120, f3: 70, f4: 45 }[source_name];
+      const first = { source_name, value, timestamp: body.start, quality_value: 'Good' };
+      const second = { source_name, value, timestamp: new Date(Date.parse(body.start) + 30 * 60_000).toISOString(), quality_value: 'Good' };
+      if (source_name === 'f1' && mode === 'bad') second.quality_value = 'Bad';
+      if (source_name === 'f1' && mode === 'stale') return [first];
+      if (source_name === 'f1' && mode === 'coverage') first.timestamp = new Date(Date.parse(body.start) + 10 * 60_000).toISOString();
+      return [first, second];
+    });
+    try {
+      return new Response(JSON.stringify(aggregateReadings(raw, validateRead(body, { readableTables: ['readings'] }))));
+    } catch (error) {
+      return new Response(JSON.stringify({ error: { code: error.code, message: error.message } }), { status: error.status });
+    }
+  };
+  const prior = await f.request(`/api/models/${created.id}/runs`, 'POST', { trigger: 'manual', target: 'published' });
+  assert.equal(prior.status, 200); assert.ok(prior.body.run.result, prior.body.run.error);
+  const writeCount = calls.filter(call => call.endpoint === 'write').length;
+  assert.equal(writeCount, 1);
+  for (const [failureMode, message] of [['bad', /unaccepted historian quality/], ['stale', /stale at the reporting-period end/], ['coverage', /minimum coverage/]]) {
+    mode = failureMode;
+    const failed = await f.request(`/api/models/${created.id}/runs`, 'POST', { trigger: 'manual', target: 'published' });
+    assert.equal(failed.status, 200, JSON.stringify(failed.body));
+    const run = failed.body.run;
+    assert.equal(run.status, 'failed'); assert.equal(run.result, null);
+    assert.match(run.error, /^Input failed: f1: /); assert.match(run.error, message);
+    assert.deepEqual(run.sql.input.window, { start: '2026-10-09T19:00:00.000Z', end: '2026-10-09T20:00:00.000Z' });
+    assert.equal(run.sql.input.source.quality.maxAgeMinutes, 30); assert.deepEqual(run.sql.input.readings, []);
+    assert.equal(run.sql.output, undefined);
+    assert.equal(calls.filter(call => call.endpoint === 'write').length, writeCount);
+    assert.deepEqual(f.sqlite.prepare('SELECT model_json,published_model_json,sources_json,schedule_json FROM models WHERE id=?').get(created.id), before);
+  }
+  const history = await new Repository(f.env.DB).runs(created.id);
+  assert.equal(history.length, 4); assert.equal(history.filter(run => run.status === 'failed').length, 3);
+  assert.equal(history.find(run => run.id === prior.body.run.id).sql.input.readings[0].value, 120);
 });

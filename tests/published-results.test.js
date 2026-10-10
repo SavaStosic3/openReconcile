@@ -16,7 +16,7 @@ test('published unit totals use reconciled streams and batch mass, including inf
   assert.deepEqual(summary('feed').lines, ['Inflow 99.444']);
   assert.deepEqual(summary('product').lines, ['Outflow 62.222']);
   assert.deepEqual(summary('byproduct').lines, ['Outflow 37.222']);
-  assert.match(summary('mix').description, /kg per batch/);
+  assert.match(summary('mix').description, /kg per reporting period/);
   assert.equal(summary('feed').incoming, null);
   assert.equal(summary('product').outgoing, null);
 });

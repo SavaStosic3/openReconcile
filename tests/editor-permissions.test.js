@@ -355,7 +355,7 @@ test('published presentation renders accessible mass badges and 3-decimal stream
   assert.ok(texts.some(item => item.textContent === 'In 99.444'));
   assert.ok(texts.some(item => item.textContent === 'Out 99.444'));
   assert.ok(texts.some(item => item.textContent === '62.222 kg'));
-  assert.match(f.node('mix').getAttribute('aria-label'), /incoming mass: 99\.444 kg per batch/);
+  assert.match(f.node('mix').getAttribute('aria-label'), /incoming mass: 99\.444 kg per reporting period/);
   f.editor.setResults(null);
   texts = f.svg.querySelectorAll('[font-size]');
   assert.equal(texts.filter(item => item.textContent === 'Awaiting run').length, f.model.nodes.length);

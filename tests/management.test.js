@@ -352,7 +352,7 @@ test('losing all shared model access clears publication, schedule, and saved-run
   assert.equal(env.node('#schedule-interval').value, '');
   assert.equal(env.node('#schedule-summary-state').textContent, 'No model selected');
   assert.equal(env.node('#schedule-summary-state').classList.contains('is-enabled'), false);
-  for (const field of ['frequency', 'input', 'output']) assert.equal(env.node(`#schedule-summary-${field}`).textContent, '—');
+  for (const field of ['frequency', 'period', 'input', 'output']) assert.equal(env.node(`#schedule-summary-${field}`).textContent, '—');
   assert.equal(env.node('#schedule-next-run').textContent, 'No upcoming run');
   assert.equal(env.node('#schedule-last-run').textContent, 'No runs yet');
   assert.equal(env.node('#schedule-input').children[0].text, 'No model selected');
@@ -398,6 +398,17 @@ test('latest published results require their exact publication version and retai
   assert.equal(controller.latest('model-a', { target: 'draft' }).id, 'draft-run');
 });
 
+test('saved results distinguish an hourly period from a custom batch with identical timestamps', t => {
+  const env = setup(t), backend = sharedBackend(withRun(seed(), 'model-a', 'hour-run'));
+  const base = backend.state.catalog.runs['model-a'][0];
+  const boundaries = { start: '2026-10-09T10:00:00.000Z', end: '2026-10-09T11:00:00.000Z' };
+  base.reportingPeriod = { ...boundaries, kind: 'hour', modelPeriodHours: 1 };
+  backend.state.catalog.runs['model-a'].push({ ...clone(base), id: 'batch-run', reportingPeriod: { ...base.reportingPeriod, kind: 'batch' } });
+  const controller = env.create({ backend });
+  assert.equal(controller.latest('model-a', { period: { ...boundaries, kind: 'hour' } }).id, 'hour-run');
+  assert.equal(controller.latest('model-a', { period: { ...boundaries, kind: 'batch' } }).id, 'batch-run');
+});
+
 test('manual target selection and browser scheduler both send explicit execution targets', async t => {
   const catalog = setSchedule(seed(), 'model-a', { enabled: true, intervalMinutes: 60 }, START - 3_600_000);
   const env = setup(t), backend = sharedBackend(catalog), calls = [];
@@ -409,10 +420,13 @@ test('manual target selection and browser scheduler both send explicit execution
   await controller.run('model-a', { target: 'draft' });
   await controller.run('model-a', { target: 'published' });
   await controller.tick();
+  const period = { start: '2026-10-08T10:00:00.000Z', end: '2026-10-08T11:00:00.000Z', kind: 'hour' };
+  await controller.run('model-a', { target: 'published', period });
   assert.deepEqual(calls, [
-    { id: 'model-a', trigger: 'manual', target: 'draft' },
-    { id: 'model-a', trigger: 'manual', target: 'published' },
-    { id: 'model-a', trigger: 'scheduled', target: 'published' }
+    { id: 'model-a', trigger: 'manual', target: 'draft', period: null },
+    { id: 'model-a', trigger: 'manual', target: 'published', period: null },
+    { id: 'model-a', trigger: 'scheduled', target: 'published', period: null },
+    { id: 'model-a', trigger: 'manual', target: 'published', period }
   ]);
 });
 

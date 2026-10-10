@@ -1,6 +1,7 @@
 import { ApiError } from './policy.js';
 import { validateSqlSource, getSqlInputMappings } from '../public/sql-sources.js';
 import { timeToEpoch } from '../public/management-store.js';
+import { validateInputQuality } from '../public/input-quality.js';
 
 const MAX_BYTES = 1_000_000;
 const safeId = value => typeof value === 'string' && /^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$/.test(value) && !['constructor', 'prototype', '__proto__'].includes(value);
@@ -11,6 +12,22 @@ const timestamp = value => {
   try { timeToEpoch(value); return true; } catch { return false; }
 };
 const finite = value => typeof value === 'number' && Number.isFinite(value);
+const qualityErrors = {
+  BAD_SOURCE_QUALITY: 'A reading has an unaccepted historian quality flag. Review accepted flags or exclude bad readings explicitly.',
+  STALE_SOURCE_DATA: 'Source readings are stale at the reporting-period end. Review reading age and source availability.',
+  INSUFFICIENT_COVERAGE: 'Source data does not meet the minimum coverage for this reporting period.',
+  SOURCE_DATA_GAP: 'Source data contains an uncovered interval. Review reading age, interpolation, and gap policy.',
+  TOTALIZER_RESET: 'A totalizer decreased. Review its reset or rollover policy before reconciling.',
+  INCOMPLETE_TOTALIZER: 'Totalizer boundaries or intervals are incomplete. Supply complete counter readings.',
+  INVALID_SOURCE_DATA: 'Source data contains an invalid reading for this reporting period.',
+  MISSING_SOURCE_DATA: 'Source readings are missing for this reporting period.',
+  AMBIGUOUS_SOURCE_DATA: 'Different source readings share a timestamp. Resolve duplicate readings.'
+};
+const qualityAudit = value => exact(value, ['coveragePercent', 'sampleCount', 'rejectedCount', 'latestTimestamp', 'resetCount', 'warnings'])
+  && finite(value.coveragePercent) && value.coveragePercent >= 0 && value.coveragePercent <= 100
+  && ['sampleCount', 'rejectedCount', 'resetCount'].every(key => Number.isSafeInteger(value[key]) && value[key] >= 0 && value[key] <= 10_000)
+  && timestamp(value.latestTimestamp) && Array.isArray(value.warnings) && value.warnings.length <= 32
+  && value.warnings.every(warning => typeof warning === 'string' && warning.length > 0 && warning.length <= 500 && !/[\u0000-\u001f\u007f]/.test(warning));
 
 export function sqlGatewayConfigured(env) { return Boolean(env.SQL_GATEWAY_URL && env.SQL_GATEWAY_TOKEN); }
 function gatewayConfiguration(env) {
@@ -31,7 +48,6 @@ export async function callSqlGateway(env, endpoint, body) {
   try {
     const fetcher = typeof env.SQL_GATEWAY_FETCH === 'function' ? env.SQL_GATEWAY_FETCH : fetch;
     const result = await fetcher(url.toString(), { method: body === undefined ? 'GET' : 'POST', headers: { Authorization: `Bearer ${token}`, ...(body === undefined ? {} : { 'Content-Type': 'application/json' }) }, ...(body === undefined ? {} : { body: JSON.stringify(body) }), redirect: 'manual', signal: controller.signal });
-    if (!result.ok) throw new Error('gateway status');
     if (Number(result.headers.get('Content-Length')) > MAX_BYTES || !result.body) throw new Error('gateway size');
     const reader = result.body.getReader(), chunks = []; let size = 0;
     try {
@@ -46,8 +62,17 @@ export async function callSqlGateway(env, endpoint, body) {
     for (const chunk of chunks) { bytes.set(chunk, offset); offset += chunk.length; }
     const data = JSON.parse(new TextDecoder('utf-8', { fatal: true }).decode(bytes));
     if (!plain(data)) throw new Error('gateway shape');
+    if (!result.ok) {
+      // Never forward remote messages or driver errors, even for a known code.
+      if ([400, 422].includes(result.status) && plain(data.error) && Object.hasOwn(qualityErrors, data.error.code)) {
+        const tag = Array.isArray(body?.tags) && typeof data.error.message === 'string' ? body.tags.find(name => data.error.message.startsWith(`${name}: `)) : null;
+        throw new ApiError(422, `${tag ? `${tag}: ` : ''}${qualityErrors[data.error.code]}`);
+      }
+      throw new Error('gateway status');
+    }
     return data;
-  } catch {
+  } catch (error) {
+    if (error instanceof ApiError) throw error;
     throw new ApiError(502, 'The SQL gateway request failed. Check its configuration and service availability.');
   } finally { clearTimeout(timer); }
 }
@@ -68,7 +93,7 @@ export async function sqlConnections(env) {
 export async function testSqlSource(env, source) {
   source = validateSqlSource(source);
   const { connectionId, direction, table, tagColumn, valueColumn, timestampColumn } = source;
-  const data = await callSqlGateway(env, 'test', { connectionId, direction, table, ...(direction === 'input' ? { tagColumn, valueColumn, timestampColumn } : {}) });
+  const data = await callSqlGateway(env, 'test', { connectionId, direction, table, ...(direction === 'input' ? { tagColumn, valueColumn, timestampColumn, ...(source.quality ? { quality: source.quality } : {}) } : {}) });
   if (!exact(data, ['ok']) || data.ok !== true) throw new ApiError(502, 'The SQL gateway could not verify this source.');
   return { ok: true };
 }
@@ -85,15 +110,19 @@ export async function readSqlInput(env, source, model, window) {
   let mappings;
   try { mappings = getSqlInputMappings(model); } catch (error) { throw new ApiError(400, error.message); }
   const { connectionId, table, tagColumn, valueColumn, timestampColumn, aggregation } = source;
+  const advanced = ['timeWeightedAverage', 'totalizerDelta'].includes(aggregation);
+  const quality = source.quality || (advanced ? validateInputQuality() : null);
+  if (aggregation === 'timeWeightedAverage' && mappings.some(mapping => !mapping.unit.endsWith('/h'))) throw new ApiError(400, 'Time-weighted flow requires every mapped physical meter to use a rate unit per hour.');
+  if (aggregation === 'totalizerDelta' && mappings.some(mapping => mapping.unit.endsWith('/h'))) throw new ApiError(400, 'Totalizer differences require cumulative mass or volume units, without a rate denominator.');
   if (!timestamp(window?.start) || !timestamp(window?.end) || Date.parse(window.start) >= Date.parse(window.end) || Date.parse(window.end) - Date.parse(window.start) > 366 * 86_400_000) throw new Error('Choose a nonempty SQL input window of at most 366 days.');
-  const data = await callSqlGateway(env, 'read', { connectionId, table, tagColumn, valueColumn, timestampColumn, tags: mappings.map(mapping => mapping.sourceName), start: window.start, end: window.end, aggregation });
+  const data = await callSqlGateway(env, 'read', { connectionId, table, tagColumn, valueColumn, timestampColumn, tags: mappings.map(mapping => mapping.sourceName), start: window.start, end: window.end, aggregation, ...(quality ? { quality } : {}) });
   if (!exact(data, ['readings', 'window']) || !Array.isArray(data.readings) || data.readings.length !== mappings.length || !exact(data.window, ['start', 'end']) || data.window.start !== window.start || data.window.end !== window.end) throw new ApiError(502, 'The SQL gateway returned incomplete readings or a different batch window.');
   const byName = new Map();
   for (const reading of data.readings) {
-    if (!exact(reading, ['sourceName', 'value', 'timestamp']) || typeof reading.sourceName !== 'string' || byName.has(reading.sourceName) || !mappings.some(mapping => mapping.sourceName === reading.sourceName) || !finite(reading.value) || reading.value < 0 || !timestamp(reading.timestamp) || Date.parse(reading.timestamp) < Date.parse(window.start) || Date.parse(reading.timestamp) >= Date.parse(window.end)) throw new ApiError(502, 'The SQL gateway returned missing, duplicate, invalid, or out-of-window readings.');
+    if (!exact(reading, ['sourceName', 'value', 'timestamp', ...(quality ? ['quality'] : [])]) || (quality && (!qualityAudit(reading.quality) || reading.quality.latestTimestamp !== reading.timestamp || reading.quality.coveragePercent + 1e-8 < quality.minCoveragePercent || Date.parse(window.end) - Date.parse(reading.timestamp) > quality.maxAgeMinutes * 60_000)) || typeof reading.sourceName !== 'string' || byName.has(reading.sourceName) || !mappings.some(mapping => mapping.sourceName === reading.sourceName) || !finite(reading.value) || reading.value < 0 || !timestamp(reading.timestamp) || Date.parse(reading.timestamp) < Date.parse(window.start) - (advanced && quality ? quality.maxAgeMinutes * 60_000 : 0) || Date.parse(reading.timestamp) > Date.parse(window.end) || (!advanced && Date.parse(reading.timestamp) === Date.parse(window.end))) throw new ApiError(502, 'The SQL gateway returned missing, duplicate, invalid, or out-of-window readings.');
     byName.set(reading.sourceName, reading);
   }
-  return { readings: mappings.map(mapping => ({ ...mapping, value: byName.get(mapping.sourceName).value, timestamp: byName.get(mapping.sourceName).timestamp })), window: { ...window } };
+  return { readings: mappings.map(mapping => ({ ...mapping, ...byName.get(mapping.sourceName) })), window: { ...window } };
 }
 
 export function sqlOutputRows(run, window) {

@@ -3,7 +3,8 @@ import { executeModelRun } from '../public/schedule-runner.js';
 import { ApiError, USER_ROLES, MODEL_LEVELS, fields, safeId, validateRevision, requireAdmin, requirePermission } from './policy.js';
 import { Repository } from './repository.js';
 import { validateSqlSource } from '../public/sql-sources.js';
-import { sqlConnections, testSqlSource, readSqlInput, sqlBatchWindow, sqlAdapters } from './sql-connectors.js';
+import { sqlConnections, testSqlSource, readSqlInput, sqlAdapters } from './sql-connectors.js';
+import { resolveReportingPeriod } from '../public/reporting-periods.js';
 
 const MAX_BODY_BYTES = 2_000_000;
 const headers = { 'Content-Type': 'application/json; charset=utf-8', 'Cache-Control': 'no-store', 'X-Content-Type-Options': 'nosniff' };
@@ -113,7 +114,7 @@ export async function handleApi(request, env, identity) {
         if (schedulePaused) { schedule.enabled = false; schedule.nextRunAt = null; }
         return response({ ...await repo.updateSources(user, route.id, sources, schedule, body.revision), schedulePaused });
       }
-      fields(body, ['source', 'revision', ...(route.kind === 'sourcePreview' ? ['target'] : [])], ['source', 'revision']);
+      fields(body, ['source', 'revision', ...(route.kind === 'sourcePreview' ? ['target', 'period'] : [])], ['source', 'revision']);
       const source = validated(() => validateSqlSource(body.source));
       let data;
       if (route.kind === 'sourceTest') data = await testSqlSource(env, source);
@@ -123,7 +124,8 @@ export async function handleApi(request, env, identity) {
         if (target === 'published' && (!model.published || !model.publishedModel)) throw new ApiError(403, 'Publish this model before previewing its published SQL inputs.');
         const snapshot = target === 'published' ? model.publishedModel : model.model;
         if (source.direction !== 'input') throw new ApiError(400, 'Only input sources have a readings preview.');
-        data = await readSqlInput(env, source, snapshot, validated(() => sqlBatchWindow(snapshot, new Date(clock(env)()).toISOString())));
+        const reportingPeriod = validated(() => resolveReportingPeriod(model.schedule.reporting, snapshot, clock(env)(), body.period ?? null));
+        data = { ...await readSqlInput(env, source, snapshot, { start: reportingPeriod.start, end: reportingPeriod.end }), reportingPeriod };
       }
       requireAdmin(await repo.user(user.id));
       const fresh = await repo.accessibleModel(user, route.id, 'canEdit');
@@ -154,14 +156,16 @@ export async function handleApi(request, env, identity) {
       return response(await repo.updatePublication(user, route.id, body.published, body.revision, { ...model.schedule, enabled: false, nextRunAt: null }));
     }
     if (route.kind === 'runs') {
-      fields(body, ['trigger', 'target'], ['trigger']);
+      fields(body, ['trigger', 'target', 'period'], ['trigger']);
       if (!['manual', 'scheduled'].includes(body.trigger)) throw new ApiError(400, 'Choose a manual or scheduled run.');
       if (Object.hasOwn(body, 'target') && !['draft', 'published'].includes(body.target)) throw new ApiError(400, 'Choose the draft or published model for this run.');
       if (body.trigger === 'scheduled' && body.target === 'draft') throw new ApiError(400, 'Scheduled runs use the published model.');
+      if (body.trigger === 'scheduled' && Object.hasOwn(body, 'period')) throw new ApiError(400, 'Scheduled runs use the latest completed configured reporting period.');
       let { model, permission } = await repo.accessibleModel(user, route.id, 'canRun');
       const target = body.trigger === 'scheduled' ? 'published' : body.target ?? (model.published ? 'published' : 'draft');
       if (target === 'published' && (!model.published || !model.publishedModel || model.publishedVersion < 1)) throw new ApiError(403, 'Publish this model before running its published version.');
       let catalog = singleCatalog(model, target);
+      const reportingPeriod = validated(() => resolveReportingPeriod(model.schedule.reporting, catalog.models[0].model, clock(env)(), body.period ?? null));
       if (body.trigger === 'scheduled') {
         if (!model.published || !model.schedule.enabled) throw new ApiError(403, 'Only a published model with an enabled schedule can run on schedule.');
         const now = clock(env)();
@@ -170,8 +174,10 @@ export async function handleApi(request, env, identity) {
         model = await repo.claimSchedule(user, model, catalog.schedules[route.id]);
         catalog = singleCatalog(model, target);
       }
-      const { run } = await executeModelRun(catalog, route.id, { trigger: body.trigger, id: repo.uuid(), now: clock(env), target, publishedVersion: target === 'published' ? model.publishedVersion : null,
+      const { run } = await executeModelRun(catalog, route.id, { trigger: body.trigger, id: repo.uuid(), now: clock(env), target, period: { start: reportingPeriod.start, end: reportingPeriod.end, kind: reportingPeriod.kind }, publishedVersion: target === 'published' ? model.publishedVersion : null,
         ...sqlAdapters(env), beforeOutput: async () => { await repo.accessibleModel(user, route.id, 'canRun'); } });
+      const previous = (await repo.runs(route.id, model)).findLast(item => item.target === run.target && item.publishedVersion === run.publishedVersion && item.reportingPeriod?.start === reportingPeriod.start && item.reportingPeriod?.end === reportingPeriod.end && item.reportingPeriod?.kind === reportingPeriod.kind);
+      if (previous) run.rerunOf = previous.id;
       await repo.appendRun(user, route.id, run);
       const fresh = await repo.model(route.id);
       if (!fresh) throw new ApiError(404, 'That model was deleted during the run.');

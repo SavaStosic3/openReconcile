@@ -12,6 +12,7 @@ import { sameRunInputs, runMatchesModelInputs, runMatchesInputSource } from './s
 import { getModelItemName, getDataMapping, validateDataMapping } from './data-mapping.js';
 import { createDataMapping } from './mapping-ui.js';
 import { createSqlConnectors } from './sql-ui.js';
+import { createPeriodSelector, qualityAuditHtml } from './reporting-ui.js';
 
 const $ = (s, root = document) => root.querySelector(s);
 const $$ = (s, root = document) => [...root.querySelectorAll(s)];
@@ -41,7 +42,7 @@ function buildPalette() {
   $('#node-form').elements.kind.innerHTML = Object.entries(UNIT_SYMBOLS).map(([kind, symbol]) => `<option value="${kind}">${esc(symbol.label)}</option>`).join('');
 }
 buildPalette();
-let model = emptyModel(), results = null, selection = null, activeTab = 'model', mode = 'select', editingStream = null, editingNode = null, confirmAction = null, toastTimer, admin = null, mappingPage = null, sqlPage = null, runningWorkbench = false, viewMode = 'editing', activeRun = null;
+let model = emptyModel(), results = null, selection = null, activeTab = 'model', mode = 'select', editingStream = null, editingNode = null, confirmAction = null, toastTimer, admin = null, mappingPage = null, sqlPage = null, periodSelector = null, runningWorkbench = false, viewMode = 'editing', activeRun = null;
 const modelSessions = new Map();
 const backend = await connectWorkspace(toast);
 const lineVisibility = createLineVisibility();
@@ -73,6 +74,8 @@ function commit() {
   refreshChrome(); renderInspector(); if (activeTab === 'results') renderResults();
 }
 function refreshChrome() {
+  periodSelector?.refresh();
+  if (activeRun?.reportingPeriod && periodSelector?.selected && (activeRun.reportingPeriod.start !== periodSelector.selected.start || activeRun.reportingPeriod.end !== periodSelector.selected.end || activeRun.reportingPeriod.kind !== periodSelector.selected.kind)) { activeRun = null; results = null; editor.setResults(null); if (activeTab === 'results') renderResults(); }
   if (admin?.isOpen && backend.user.role !== 'admin') { admin.leave(); switchTab('model'); }
   if (sqlPage?.isOpen && backend.user.role !== 'admin') { sqlPage.leave(); switchTab('model'); }
   if (document.activeElement !== $('#model-name')) $('#model-name').value = model.name;
@@ -84,6 +87,7 @@ function refreshChrome() {
   $('#undo-button').disabled = !editable || historyIndex === 0; $('#redo-button').disabled = !editable || historyIndex >= history.length - 1;
   $('#model-name').disabled = !editable || management.isOpen || Boolean(admin?.isOpen) || Boolean(sqlPage?.isOpen);
   const available = viewMode !== 'published' || hasPublishedModel();
+  periodSelector?.setEnabled(permission.canView && available && !runningWorkbench);
   $('#run-button').disabled = !permission.canRun || !available || runningWorkbench; $('#data-run-button').disabled = !permission.canRun || runningWorkbench;
   if (!runningWorkbench) $('#run-button').innerHTML = `<span aria-hidden="true">▶</span> ${viewMode === 'published' ? 'Run reconciliation' : 'Test draft reconciliation'}`;
   $$('.palette-item').forEach(button => { button.disabled = !editable; button.draggable = editable; });
@@ -108,7 +112,7 @@ function refreshChrome() {
   $('#empty-new-model').hidden = !canCreate(); $('#empty-import-legacy').hidden = !canCreate();
   $$('.tab').forEach(button => button.disabled = !exists);
   if ((!exists || !available) && !management.isOpen && !admin?.isOpen && !sqlPage?.isOpen) $$('[role="tabpanel"]').forEach(view => view.classList.add('hidden'));
-  if (viewMode === 'published') $('#canvas-status').textContent = 'Published diagram · mass values in kg per batch. Select a unit or stream to inspect its results.';
+  if (viewMode === 'published') $('#canvas-status').textContent = 'Published diagram · mass values in kg per reporting period. Select a unit or stream to inspect its results.';
   else if (exists && permission.editLocked) $('#canvas-status').textContent = 'Editing is locked by an administrator. You can still review and run this model if permitted.';
   else if (exists && !editable) $('#canvas-status').textContent = 'Read-only model. Your assigned permissions control editing and reconciliation.';
   refreshPageChrome();
@@ -186,6 +190,7 @@ function refreshPageChrome() {
   $('#editing-banner').hidden = !pageOpen || published || !entry;
   $('#published-empty').hidden = !pageOpen || !published || available;
   $('#workflow-nav').classList.toggle('hidden', !pageOpen || !entry || (published && !available));
+  $('#reporting-period').hidden = !pageOpen || !entry || (published && !available) || activeTab === 'mapping';
   $('#workspace-empty').hidden = published || Boolean(entry) || !pageOpen;
   $('#workspace-empty').classList.toggle('hidden', $('#workspace-empty').hidden);
   $('#open-published-view').setAttribute('aria-pressed', String(published));
@@ -208,7 +213,7 @@ function refreshPageChrome() {
   $('#published-run-time').textContent = activeRun ? `Last run ${new Intl.DateTimeFormat(undefined, { dateStyle: 'medium', timeStyle: 'short' }).format(new Date(activeRun.finishedAt || activeRun.startedAt))}` : 'No run for this version yet';
   $('#published-result-status').textContent = activeRun ? activeRun.status === 'ok' ? 'Reconciled' : activeRun.status === 'underdetermined' ? 'Needs measurements' : activeRun.status === 'warning' ? 'Review warnings' : 'Run needs attention' : 'Awaiting reconciliation';
   $('#published-result-status').dataset.status = activeRun?.status || 'pending';
-  $('#published-message').textContent = available ? `${fmt(Number(model.periodHours))}-hour batch · kg per batch. ${activeRun ? activeRun.result?.message || activeRun.error || 'Run completed.' : 'Run reconciliation to display the saved version’s values.'}${entry.hasUnpublishedChanges ? ' Draft changes are separate from this published model.' : ''}` : 'Choose a published model, or publish a draft from Model editor.';
+  $('#published-message').textContent = available ? `${activeRun?.reportingPeriod?.label || 'Select a completed reporting period'} · kg per period. ${activeRun ? activeRun.result?.message || activeRun.error || 'Run completed.' : 'Run reconciliation to display values for the selected period.'}${entry.hasUnpublishedChanges ? ' Draft changes are separate from this published model.' : ''}` : 'Choose a published model, or publish a draft from Model editor.';
   const changed = entry && (!entry.publishedModel || JSON.stringify(viewMode === 'editing' ? model : entry.model) !== JSON.stringify(entry.publishedModel));
   $('#editing-status').textContent = permission.published ? changed ? `Draft changes · published version ${entry?.publishedVersion} is unchanged` : `Draft matches published version ${entry?.publishedVersion}` : 'Draft · not published';
   $('#publish-draft-button').textContent = permission.published ? 'Publish changes' : 'Publish model';
@@ -228,7 +233,8 @@ function refreshPublishedModel() {
   const next = hasPublishedModel() ? entry.publishedModel : emptyModel();
   const changed = JSON.stringify(model) !== JSON.stringify(next);
   if (changed) { model = clone(next); selection = null; editor.setModel(model); }
-  activeRun = hasPublishedModel() ? management.latest(editingModelId, { target: 'published' }) : null;
+  periodSelector?.refresh();
+  activeRun = hasPublishedModel() ? management.latest(editingModelId, { target: 'published', period: periodSelector?.selected }) : null;
   results = runResult(activeRun); editor.setResults(results); renderInspector();
   if (changed) editor.fit();
   if (activeTab === 'results') renderResults();
@@ -257,6 +263,11 @@ const editor = createEditor({
 });
 editor.setPresentation(viewMode === 'published' ? 'published' : 'editing');
 editor.setModel(model); refreshChrome(); renderInspector();
+periodSelector = createPeriodSelector({ container: $('#reporting-period'), prefix: 'model-period', context: () => ({ id: editingModelId, model, settings: backend.workspace.catalog.schedules[editingModelId]?.reporting, runs: backend.workspace.catalog.runs[editingModelId], target: viewMode === 'published' ? 'published' : 'draft', publishedVersion: currentEntry()?.publishedVersion, inputSourceId: backend.workspace.catalog.schedules[editingModelId]?.inputSourceId ?? null, now: backend.now() }), onChange: () => {
+  activeRun = management.latest(editingModelId, { target: viewMode === 'published' ? 'published' : 'draft', period: periodSelector.selected });
+  results = runResult(activeRun); editor.setResults(results); renderInspector(); refreshChrome(); if (activeTab === 'results') renderResults();
+} });
+setInterval(() => { if (!document.hidden && !management.isOpen && !admin?.isOpen && !sqlPage?.isOpen) refreshChrome(); }, 30_000);
 $('#show-hidden-lines').onchange = event => { lineVisibility.setShowHidden(event.target.checked); applyLineVisibility(); };
 $('#restore-all-lines').onclick = () => { lineVisibility.showAll(); applyLineVisibility(); $('#lines-menu > summary').focus({ preventScroll: true }); toast('All flow lines restored.'); };
 document.addEventListener('click', event => { if (!event.composedPath().includes($('#lines-menu'))) $('#lines-menu').open = false; });
@@ -355,10 +366,12 @@ function activateManagedModel(entry, options = {}) {
   editingModelId = entry.id; model = clone(viewMode === 'published' ? backend.permission(entry.id).published && entry.publishedModel || emptyModel() : entry.model); selection = null;
   const previous = modelSessions.get(entry.id), same = previous?.json === JSON.stringify(model);
   history = viewMode === 'editing' && same ? previous.history : [JSON.stringify(model)]; historyIndex = viewMode === 'editing' && same ? previous.historyIndex : 0;
-  activeRun = viewMode === 'published' && !hasPublishedModel() ? null : management.latest(entry.id, { target: viewMode === 'published' ? 'published' : 'draft' });
+  periodSelector?.refresh();
+  activeRun = viewMode === 'published' && !hasPublishedModel() ? null : management.latest(entry.id, { target: viewMode === 'published' ? 'published' : 'draft', period: periodSelector?.selected });
   results = runResult(activeRun);
   editor.setPresentation(viewMode === 'published' ? 'published' : 'editing'); editor.setModel(model); editor.setResults(results); setMode('select');
   refreshChrome(); renderInspector(); if (!admin?.isOpen && !management.isOpen) switchTab('model'); editor.fit();
+  if (viewMode === 'editing' && canEdit()) $('#canvas-status').textContent = 'Drag a port to another unit to connect. Right-click a stream to add a meter.';
   const url = new URL(location.href); url.searchParams.set('view', viewMode);
   if (entry.id) url.searchParams.set('model', entry.id); else url.searchParams.delete('model');
   window.history.replaceState({}, '', url);
@@ -366,6 +379,8 @@ function activateManagedModel(entry, options = {}) {
 function acceptManagedRun(record) {
   if (record.modelId !== editingModelId || record.target !== (viewMode === 'published' ? 'published' : 'draft') || !runMatchesModelInputs(record, model) || !runMatchesInputSource(record, backend.workspace.catalog.sources[editingModelId] || [], backend.workspace.catalog.schedules[editingModelId])) return;
   if (viewMode === 'published' && record.publishedVersion !== currentEntry()?.publishedVersion) return;
+  if (record.trigger === 'scheduled' && periodSelector?.selected && (record.reportingPeriod?.start !== periodSelector.selected.start || record.reportingPeriod?.end !== periodSelector.selected.end || record.reportingPeriod?.kind !== periodSelector.selected.kind)) return;
+  periodSelector?.select(record.reportingPeriod);
   activeRun = record; results = runResult(record); editor.setResults(results); refreshChrome(); renderInspector();
   if (activeTab === 'results' && !management.isOpen) renderResults();
 }
@@ -413,7 +428,7 @@ function renderInspector() {
     $('#inspector').innerHTML = `<p class="eyebrow">MODEL SETUP</p><h2>Build your flowsheet</h2><p class="helper">Define process units, connect material streams, and add measurements to reconcile your mass balance.</p><ol class="mini-steps"><li><strong>Place units</strong><span>Drag from the toolbox.</span></li><li><strong>Connect flows</strong><span>Drag between connection ports.</span></li><li><strong>Add measurements</strong><span>Right-click a stream to add a meter.</span></li><li><strong>Enter data & run</strong><span>Review adjustments and inferred flows.</span></li></ol><div class="inspector-callout"><span class="boundary-glyph">▶</span><p>Red triangles mark where material enters and leaves your model.</p></div><button class="button secondary full-width" id="inspect-guide">Open quick guide</button><div class="scope-note">Changes are saved to your workspace.<br><span>Export your model for a portable copy.</span></div>`;
     $('#inspect-guide').onclick = () => $('#help-dialog').showModal();
     if (viewMode === 'published') {
-      $('#inspector').innerHTML = `<p class="eyebrow">PUBLISHED MODEL</p><h2>Reconciliation overview</h2><p class="helper">Each unit shows incoming and outgoing mass above its symbol. Lines show the reconciled value of each stream.</p><div class="published-unit-readout"><span>${esc(activeRun ? `Version ${currentEntry()?.publishedVersion} · ${activeRun.status}` : 'Awaiting reconciliation')}</span><p class="helper">${esc(activeRun?.result?.message || activeRun?.error || 'Run this published version to display batch results.')}</p></div><p class="helper">All values are kg per batch. Inferred stream values are marked. A dash means the available measurements do not determine the value.</p><p class="helper">Select a unit or stream to inspect its results. Draft changes take effect when published.</p>`;
+      $('#inspector').innerHTML = `<p class="eyebrow">PUBLISHED MODEL</p><h2>Reconciliation overview</h2><p class="helper">Each unit shows incoming and outgoing mass above its symbol. Lines show the reconciled value of each stream.</p><div class="published-unit-readout"><span>${esc(activeRun ? `Version ${currentEntry()?.publishedVersion} · ${activeRun.status}` : 'Awaiting reconciliation')}</span><p class="helper">${esc(activeRun?.result?.message || activeRun?.error || 'Run this published version to display reporting-period results.')}</p></div><p class="helper">All values are kg per reporting period. Inferred stream values are marked. A dash means the available measurements do not determine the value.</p><p class="helper">Select a unit or stream to inspect its results. Draft changes take effect when published.</p>`;
     }
   }
   if ($('#inspect-delete')) $('#inspect-delete').onclick = () => editor.deleteSelection();
@@ -585,13 +600,16 @@ $('#sample-readings').onclick = () => { if (!requireEdit()) return; for (const [
 async function run() {
   if (!backend.permission(editingModelId).canRun || (viewMode === 'published' && !hasPublishedModel())) { toast('Your account cannot run this model.'); return; }
   if ($('dialog[open]')) return;
+  let period;
+  try { period = periodSelector.value(); } catch (error) { toast(error.message); return; }
   flushVisibleDraft();
   const targetId = editingModelId, target = viewMode === 'published' ? 'published' : 'draft', snapshot = clone(model), version = target === 'published' ? currentEntry()?.publishedVersion : null;
   runningWorkbench = true; $('#run-button').disabled = true; $('#data-run-button').disabled = true; $('#run-button').textContent = 'Reconciling…';
   try {
-    const record = await management.run(targetId, { target });
+    const record = await management.run(targetId, { target, period });
     if (editingModelId === targetId && (viewMode === 'published' ? 'published' : 'draft') === target && sameRunInputs(model, snapshot) && runMatchesModelInputs(record, snapshot) && runMatchesInputSource(record, backend.workspace.catalog.sources[targetId] || [], backend.workspace.catalog.schedules[targetId]) && (target !== 'published' || record.publishedVersion === version)) {
       activeRun = record; results = runResult(record);
+      periodSelector.select(record.reportingPeriod);
       editor.setResults(results); switchTab(target === 'published' ? 'model' : 'results'); renderInspector(); editor.fit();
     }
   }
@@ -604,11 +622,11 @@ function renderResults() {
   const good = ['ok','warning','underdetermined'].includes(results.status); const severe = ['invalid','infeasible'].includes(results.status); const warnings = results.warnings || []; const inferred = results.streams.filter(s => s.status === 'estimated').length; const unknown = results.streams.filter(s => s.status === 'unobservable').length;
   const balanced = results.balances.filter(b => b.reconciled !== null && Number.isFinite(b.reconciled)); const maxError = balanced.length ? Math.max(...balanced.map(b => Math.abs(b.reconciled))) : null;
   const heading = results.status === 'ok' ? 'Reconciliation complete' : results.status === 'underdetermined' ? 'Additional measurements required' : results.status === 'warning' ? 'Reconciliation needs review' : 'Review model and inputs';
-  $('#view-results').innerHTML = `<div class="view-header"><div><p class="eyebrow">STEP 03 / RECONCILIATION</p><h1>${esc(heading)}</h1><p class="muted">${esc(model.name)} · ${fmt(Number(model.periodHours))}-hour batch · total mass in kg</p></div><div class="top-actions"><button class="button secondary" id="results-flowsheet">View on flowsheet</button>${good ? '<button class="button secondary" id="export-results">Export results ↓</button>' : ''}</div></div><div class="result-banner ${severe ? 'error' : results.status === 'ok' ? 'success' : 'warning'}"><span class="banner-icon">${severe ? '!' : results.status === 'ok' ? '✓' : '!'}</span><div><strong>${esc(results.message)}</strong>${warnings.length ? `<ul>${warnings.map(w => `<li>${esc(w)}</li>`).join('')}</ul>` : ''}</div></div>${good ? `<div class="summary-grid"><div class="summary-card"><span>Largest closing error</span><strong>${fmt(maxError)} <small>kg</small></strong><p>Across ${balanced.length} observable process units</p></div><div class="summary-card"><span>Weighted adjustment</span><strong>${fmt(results.objective)}</strong><p>Squared residuals weighted by uncertainty</p></div><div class="summary-card"><span>Inferred streams</span><strong>${inferred}<small> / ${model.streams.filter(s => !s.measured).length}</small></strong><p>${unknown ? `${unknown} unresolved stream${unknown === 1 ? '' : 's'}` : 'Unique estimates where observable'}</p></div></div><div class="table-heading"><h2>Stream results</h2><span class="helper">All values normalized to kg per batch</span></div><div class="table-wrap"><table class="data-table"><thead><tr><th>Stream / material</th><th>Input mass</th><th>Reconciled</th><th>Adjustment</th><th>Estimate uncertainty (1σ)</th><th>Status</th></tr></thead><tbody>${results.streams.map(s => {const original = model.streams.find(v => v.id === s.id); return `<tr><td><button class="stream-name-button" data-result-stream="${esc(s.id)}">${esc(original?.name || s.id)}</button><small>${esc(original?.material)}</small></td><td class="mono">${fmt(s.raw)}</td><td class="mono result-number">${fmt(s.value)}</td><td class="mono">${s.correction !== null && s.correction !== undefined && s.correction > 0 ? '+' : ''}${fmt(s.correction)}</td><td class="mono">${fmt(s.uncertainty)}${s.atBound ? '<small>At physical bound</small>' : ''}</td><td><span class="status-pill ${s.status}">${s.status === 'unobservable' ? 'Needs measurement' : s.atBound ? 'At zero bound' : s.status === 'estimated' ? 'Inferred' : 'Reconciled'}</span></td></tr>`;}).join('')}</tbody></table></div><div class="table-heading"><h2>Unit balance checks</h2><span class="helper">Incoming mass − outgoing mass</span></div><div class="table-wrap"><table class="data-table balance-table"><thead><tr><th>Process unit</th><th>Before reconciliation</th><th>After reconciliation</th></tr></thead><tbody>${results.balances.map(b => `<tr><td>${esc(b.name)}</td><td class="mono">${fmt(b.raw)} kg</td><td class="mono">${fmt(b.reconciled)} kg</td></tr>`).join('')}</tbody></table></div><div class="result-method"><strong>How this result is calculated</strong><p>Measurements are adjusted using nonnegative, constrained generalized least squares. Every process unit conserves total mass with zero accumulation. Missing flows are reported only when uniquely determined. Physical reading errors and each virtual meter's calculation error are assumed independent and unbiased. Shared meter references use first-order covariance propagation; conversion properties stay fixed. Active bounds limit the usual Gaussian uncertainty interpretation.</p><p>A closed balance does not prove instrument accuracy. Raw values are preserved; corrections and diagnostics should be reviewed before using results for reporting.</p></div>` : '<button class="button secondary" id="results-fix-data">Review measurements</button>'}`;
-  if (activeRun?.sql || activeRun?.error && activeRun?.result) {
+  $('#view-results').innerHTML = `<div class="view-header"><div><p class="eyebrow">STEP 03 / RECONCILIATION</p><h1>${esc(heading)}</h1><p class="muted">${esc(model.name)} · ${esc(activeRun?.reportingPeriod?.label || 'Reporting period unavailable')} · ${fmt(Number(activeRun?.reportingPeriod?.periodHours ?? model.periodHours))} elapsed ${Number(activeRun?.reportingPeriod?.periodHours ?? model.periodHours) === 1 ? 'hour' : 'hours'} · total mass in kg</p></div><div class="top-actions"><button class="button secondary" id="results-flowsheet">View on flowsheet</button>${good ? '<button class="button secondary" id="export-results">Export results ↓</button>' : ''}</div></div><div class="result-banner ${severe ? 'error' : results.status === 'ok' ? 'success' : 'warning'}"><span class="banner-icon">${severe ? '!' : results.status === 'ok' ? '✓' : '!'}</span><div><strong>${esc(results.message)}</strong>${warnings.length ? `<ul>${warnings.map(w => `<li>${esc(w)}</li>`).join('')}</ul>` : ''}</div></div>${good ? `<div class="summary-grid"><div class="summary-card"><span>Largest closing error</span><strong>${fmt(maxError)} <small>kg</small></strong><p>Across ${balanced.length} observable process units</p></div><div class="summary-card"><span>Weighted adjustment</span><strong>${fmt(results.objective)}</strong><p>Squared residuals weighted by uncertainty</p></div><div class="summary-card"><span>Inferred streams</span><strong>${inferred}<small> / ${model.streams.filter(s => !s.measured).length}</small></strong><p>${unknown ? `${unknown} unresolved stream${unknown === 1 ? '' : 's'}` : 'Unique estimates where observable'}</p></div></div><div class="table-heading"><h2>Stream results</h2><span class="helper">All values normalized to kg per reporting period</span></div><div class="table-wrap"><table class="data-table"><thead><tr><th>Stream / material</th><th>Input mass</th><th>Reconciled</th><th>Adjustment</th><th>Estimate uncertainty (1σ)</th><th>Status</th></tr></thead><tbody>${results.streams.map(s => {const original = model.streams.find(v => v.id === s.id); return `<tr><td><button class="stream-name-button" data-result-stream="${esc(s.id)}">${esc(original?.name || s.id)}</button><small>${esc(original?.material)}</small></td><td class="mono">${fmt(s.raw)}</td><td class="mono result-number">${fmt(s.value)}</td><td class="mono">${s.correction !== null && s.correction !== undefined && s.correction > 0 ? '+' : ''}${fmt(s.correction)}</td><td class="mono">${fmt(s.uncertainty)}${s.atBound ? '<small>At physical bound</small>' : ''}</td><td><span class="status-pill ${s.status}">${s.status === 'unobservable' ? 'Needs measurement' : s.atBound ? 'At zero bound' : s.status === 'estimated' ? 'Inferred' : 'Reconciled'}</span></td></tr>`;}).join('')}</tbody></table></div><div class="table-heading"><h2>Unit balance checks</h2><span class="helper">Incoming mass − outgoing mass</span></div><div class="table-wrap"><table class="data-table balance-table"><thead><tr><th>Process unit</th><th>Before reconciliation</th><th>After reconciliation</th></tr></thead><tbody>${results.balances.map(b => `<tr><td>${esc(b.name)}</td><td class="mono">${fmt(b.raw)} kg</td><td class="mono">${fmt(b.reconciled)} kg</td></tr>`).join('')}</tbody></table></div><div class="result-method"><strong>How this result is calculated</strong><p>Measurements are adjusted using nonnegative, constrained generalized least squares. Every process unit conserves total mass with zero accumulation. Missing flows are reported only when uniquely determined. Physical reading errors and each virtual meter's calculation error are assumed independent and unbiased. Shared meter references use first-order covariance propagation; conversion properties stay fixed. Active bounds limit the usual Gaussian uncertainty interpretation.</p><p>A closed balance does not prove instrument accuracy. Raw values are preserved; corrections and diagnostics should be reviewed before using results for reporting.</p></div>` : '<button class="button secondary" id="results-fix-data">Review measurements</button>'}`;
+  if (activeRun?.reportingPeriod || activeRun?.sql || activeRun?.error && activeRun?.result) {
     const audit = document.createElement('div'); audit.className = 'sql-run-audit' + (activeRun.error ? ' is-error' : '');
     const input = activeRun.sql?.input, output = activeRun.sql?.output;
-    audit.innerHTML = `<strong>Run data and delivery</strong>${activeRun.error ? `<p>${esc(activeRun.error)}</p>` : ''}${input ? `<p>Input: ${esc(input.source.name)} · ${input.readings.length} physical readings · ${esc(input.window.start)} to ${esc(input.window.end)} (UTC). Saved model readings are unchanged.</p>` : ''}${output ? `<p>Output: ${esc(output.source.name)} · ${output.written} rows acknowledged${output.skipped ? ` · ${output.skipped} unresolved mapped items omitted` : ''}.</p>` : ''}`;
+    audit.innerHTML = `<strong>Run data and delivery</strong>${activeRun.reportingPeriod ? `<p>${esc(activeRun.reportingPeriod.label)} · ${fmt(activeRun.reportingPeriod.periodHours)} elapsed ${activeRun.reportingPeriod.periodHours === 1 ? 'hour' : 'hours'} · ${esc(activeRun.reportingPeriod.start)} → ${esc(activeRun.reportingPeriod.end)} (UTC).</p><p>Run ${esc(activeRun.id)}${activeRun.rerunOf ? ` · rerun of ${esc(activeRun.rerunOf)}` : ''} · ${esc(activeRun.trigger === 'scheduled' ? 'Scheduled' : 'Manual')} · model ${esc(activeRun.target === 'published' ? `published v${activeRun.publishedVersion}` : 'draft')}.</p>` : ''}${activeRun.error ? `<p>${esc(activeRun.error)}</p>` : ''}${input ? `<p>Input: ${esc(input.source.name)} · ${input.readings.length} physical readings · ${esc(input.window.start)} to ${esc(input.window.end)} (UTC). Saved model readings are unchanged.</p>${qualityAuditHtml(input.readings)}` : ''}${output ? `<p>Output: ${esc(output.source.name)} · ${output.written} rows acknowledged${output.skipped ? ` · ${output.skipped} unresolved mapped items omitted` : ''}.</p>` : ''}`;
     $('#view-results .view-header')?.after(audit);
   }
   if ($('#results-flowsheet')) $('#results-flowsheet').onclick = () => { switchTab('model'); editor.fit(); };
@@ -625,6 +643,6 @@ $('#auth-export-draft').onclick = () => {
 };
 $('#import-button').onclick = () => $('#import-file').click();
 $('#import-file').onchange = async event => { const file = event.target.files[0]; event.target.value = ''; if (!file) return; try { if (file.size > 2e6) throw new Error('Choose a model file smaller than 2 MB.'); const loaded = validateEditableModel(JSON.parse(await file.text())); askReplace('Import this plant model?', () => { replaceModel(loaded); toast('Model imported.'); }); } catch (error) { toast(`Import failed: ${error.message}`); } };
-function exportResults() { const cell = value => { let text = String(value ?? ''); if (typeof value === 'string' && /^[=+\-@\t\r]/.test(text)) text = `'${text}`; return `"${text.replace(/"/g,'""')}"`; }; const rows = [['Stream','Material','Measured kg','Reconciled kg','Adjustment kg','Standard uncertainty kg','Status']]; for (const s of results.streams) { const stream = model.streams.find(v => v.id === s.id); rows.push([stream?.name,stream?.material,s.raw,s.value,s.correction,s.uncertainty,s.status]); } download(`${safeFilename()}-results.csv`,rows.map(row=>row.map(cell).join(',')).join('\r\n'),'text/csv;charset=utf-8'); }
+function exportResults() { const cell = value => { let text = String(value ?? ''); if (typeof value === 'string' && /^[=+\-@\t\r]/.test(text)) text = `'${text}`; return `"${text.replace(/"/g,'""')}"`; }; const rows = [['Stream','Material','Measured kg','Reconciled kg','Adjustment kg','Standard uncertainty kg','Status','Period start UTC','Period end UTC','Period type','Model time zone','Run ID','Rerun of']]; for (const s of results.streams) { const stream = model.streams.find(v => v.id === s.id); rows.push([stream?.name,stream?.material,s.raw,s.value,s.correction,s.uncertainty,s.status,activeRun?.reportingPeriod?.start,activeRun?.reportingPeriod?.end,activeRun?.reportingPeriod?.kind,activeRun?.reportingPeriod?.timeZone,activeRun?.id,activeRun?.rerunOf]); } download(`${safeFilename()}-results.csv`,rows.map(row=>row.map(cell).join(',')).join('\r\n'),'text/csv;charset=utf-8'); }
 activateManagedModel(management.current(), { view: viewMode });
 requestAnimationFrame(() => editor.fit());

@@ -908,6 +908,32 @@ h3 { font-size: 14px; line-height: 1.4; font-weight: 650; }
 @media (max-width: 900px) { .sql-layout { grid-template-columns: 1fr; } }
 @media (max-width: 580px) { .sql-view { padding: 22px 12px 30px; } .sql-source-panel, .sql-form-panel { padding: 17px; } .sql-field-row { grid-template-columns: 1fr; gap: 0; } .sql-gateway-banner { flex-wrap: wrap; } .sql-model-links { gap: 0; } .sql-view .management-page-header { flex-wrap: wrap; gap: 16px; } }
 
+.reporting-period-bar { display: flex; align-items: center; flex-wrap: wrap; gap: 10px 20px; padding: 14px 25px; background: #f3f7f4; border-bottom: 1px solid var(--line); }
+.reporting-period-title { flex-shrink: 0; }
+.reporting-period-title .eyebrow { display: block; margin: 0 0 5px; font-size: 9px; color: var(--muted); }
+.reporting-period-title strong { display: block; font-size: 12px; }
+.reporting-period-controls { display: flex; align-items: center; flex: 1; flex-wrap: wrap; gap: 8px; min-width: 0; }
+.reporting-period-controls select { height: 36px; padding: 6px 10px; border: 1px solid var(--line); border-radius: 5px; background: var(--surface); font: inherit; font-size: 11px; min-width: 0; }
+.reporting-period-controls select:nth-of-type(2) { flex: 1; min-width: 210px; max-width: 660px; width: 100%; }
+.reporting-period-detail { flex-basis: 100%; margin: 0; font-size: 11px; line-height: 1.7; color: var(--muted); overflow-wrap: anywhere; }
+.reporting-period-detail.is-error { color: #a7372c; }
+.reporting-period-inline { margin: 0 0 20px; padding: 15px; border: 1px solid var(--line); border-radius: 6px; }
+.reporting-period-inline .reporting-period-title { flex-basis: 100%; }
+.reporting-period-dialog { width: min(520px, calc(100vw - 32px)); }
+.reporting-settings { margin: 0 0 22px; padding: 16px; border: 1px solid var(--line); border-radius: 6px; }
+.reporting-settings legend { padding: 0 6px; font-size: 12px; font-weight: 600; }
+.reporting-settings .field input, .reporting-settings .field select { width: 100%; min-width: 0; }
+.reporting-settings .helper { font-size: 11px; line-height: 1.6; }
+.sql-quality-settings > summary { color: var(--teal-dark); font-weight: 600; cursor: pointer; margin: 12px 0 18px; }
+.sql-quality-settings small { font-size: 10px; font-weight: 400; line-height: 1.6; }
+.quality-audit { margin-top: 12px; }
+.quality-audit > summary { cursor: pointer; font-weight: 600; margin-bottom: 10px; }
+.quality-table { font-size: 11px; }
+.quality-table td small { max-width: 350px; }
+.management-runs-table td small { display: block; margin: 5px 0; font-size: 10px; line-height: 1.5; color: var(--muted); }
+.is-auth #reporting-period, .is-management #reporting-period, .is-admin #reporting-period, .is-sql #reporting-period { display: none !important; }
+@media (max-width: 580px) { .reporting-period-bar { padding: 14px; gap: 10px; } .reporting-period-title { flex-basis: 100%; } .reporting-period-controls select:nth-of-type(2) { min-width: 210px; } .reporting-period-controls { flex-basis: 100%; } .reporting-settings { padding: 12px; } }
+
 .mapping-view { width: min(1200px, 100%); margin: 0 auto; padding: 32px 28px 50px; }
 .mapping-controls { display: flex; flex-wrap: wrap; align-items: end; gap: 18px; padding: 21px 23px; border: 1px solid var(--line); border-radius: 8px 8px 0 0; background: var(--surface); }
 .mapping-controls .field { flex: 1; min-width: 180px; margin: 0; }

@@ -7,6 +7,38 @@ import { createCatalog, registerSource, setSchedule } from '../public/management
 import { executeModelRun, runMatchesModelInputs, runMatchesInputSource } from '../public/schedule-runner.js';
 import { reconcile } from '../public/solver.js';
 import { validateRead, validateWrite, OUTPUT_COLUMNS } from '../connectors/sql-gateway/src/contract.js';
+import { validateInputQuality } from '../public/input-quality.js';
+
+test('known input-quality failures are actionable while remote database details remain private', async () => {
+  const env = { SQL_GATEWAY_URL: 'https://gateway.example', SQL_GATEWAY_TOKEN: 'a'.repeat(40), SQL_GATEWAY_FETCH: async () => new Response(JSON.stringify({ error: { code: 'STALE_SOURCE_DATA', message: 'Feed: password=secret host=plant-private' } }), { status: 400 }) };
+  await assert.rejects(callSqlGateway(env, 'read', { tags: ['Feed'] }), error => error.status === 422 && error.message.startsWith('Feed: ') && /stale/.test(error.message) && !error.message.includes('secret') && !error.message.includes('plant-private'));
+  env.SQL_GATEWAY_FETCH = async () => new Response(JSON.stringify({ error: { code: 'DATABASE_ERROR', message: 'password=secret' } }), { status: 400 });
+  await assert.rejects(callSqlGateway(env, 'read', { tags: ['Feed'] }), error => error.status === 502 && !error.message.includes('secret'));
+});
+
+test('weighted input validates rate units and quality audits and totalizers validate cumulative units', async () => {
+  const model = mappedModel(), window = sqlBatchWindow(model, end);
+  const source = { ...input, aggregation: 'timeWeightedAverage', quality: validateInputQuality() };
+  const g = gateway((_endpoint, body) => ({ ...readings(body), readings: body.tags.map(sourceName => ({ sourceName, value: 10, timestamp: body.end, quality: { coveragePercent: 100, sampleCount: 2, rejectedCount: 0, latestTimestamp: body.end, resetCount: 0, warnings: [] } })) }));
+  await assert.rejects(readSqlInput(g.env, source, model, window), /rate unit/); assert.equal(g.requests.length, 0);
+  for (const stream of model.streams.filter(item => item.measured)) Object.assign(stream, { metric: 'massFlow', unit: 'kg/h' });
+  const result = await readSqlInput(g.env, source, model, window); assert.equal(result.readings[0].quality.coveragePercent, 100); assert.deepEqual(g.requests[0].body.quality, source.quality);
+  await assert.rejects(readSqlInput(g.env, { ...source, aggregation: 'totalizerDelta' }, model, window), /cumulative/);
+  g.env.SQL_GATEWAY_FETCH = async (_url, options) => { const body = JSON.parse(options.body); return new Response(JSON.stringify({ ...readings(body), readings: body.tags.map(sourceName => ({ sourceName, value: 10, timestamp: body.end, quality: { coveragePercent: 50, sampleCount: 2, rejectedCount: 0, latestTimestamp: body.end, resetCount: 0, warnings: [] } })) })); };
+  await assert.rejects(readSqlInput(g.env, source, model, window), /invalid/);
+});
+
+test('quality warnings are retained in run results and nested policies compare by value', async () => {
+  let value = createCatalog(mappedModel(), { id: 'model-a', now: end });
+  const source = { ...input, quality: validateInputQuality({ minCoveragePercent: 50, badQualityPolicy: 'exclude' }) };
+  value = registerSource(value, 'model-a', source); value = setSchedule(value, 'model-a', { inputSourceId: source.id }, end);
+  const g = gateway((_endpoint, body) => ({ ...readings(body), readings: readings(body).readings.map(reading => ({ ...reading, quality: { coveragePercent: 50, sampleCount: 2, rejectedCount: 1, latestTimestamp: reading.timestamp, resetCount: 0, warnings: ['Excluded a reading with a bad quality flag.'] } })) }));
+  const { run } = await executeModelRun(value, 'model-a', { id: 'quality-run', now: () => Date.parse(end), ...sqlAdapters(g.env) });
+  assert.equal(run.status, 'warning'); assert.ok(run.result.warnings.some(warning => warning.startsWith('f1: Excluded')));
+  assert.equal(runMatchesInputSource(run, structuredClone(value.sources['model-a']), value.schedules['model-a']), true);
+  const changed = structuredClone(value.sources['model-a']); changed[0].quality.minCoveragePercent = 60;
+  assert.equal(runMatchesInputSource(run, changed, value.schedules['model-a']), false);
+});
 
 const end = '2026-10-10T20:00:00.000Z';
 const input = { id: 'sql-input', name: 'Historian SQL', type: 'sql', direction: 'input', connectionId: 'plant', table: 'dbo.Readings', tagColumn: 'tag_name', valueColumn: 'reading', timestampColumn: 'observed_at', aggregation: 'latest' };

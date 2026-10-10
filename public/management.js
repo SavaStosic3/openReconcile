@@ -1,5 +1,6 @@
 import { createCatalog, validateCatalog, getModelEntry, addModel, updateModel, duplicateModel, setActiveModel, setSchedule, dueSchedules, advanceSchedule, appendRun, frequencyToMinutes } from './management-store.js';
 import { executeModelRun, sameRunInputs, runMatchesModelInputs, runMatchesInputSource } from './schedule-runner.js';
+import { defaultReportingSettings, validateReportingSettings, resolveReportingPeriod, formatReportingPeriod } from './reporting-periods.js';
 
 const CATALOG_KEY = 'openreconcile-model-library-v1';
 const LEGACY_KEY = 'massflow-model-v1';
@@ -152,6 +153,20 @@ export function createManagement({ fallbackModel, beforeAction, onActivate, onRu
     const { value, unit } = cadence(minutes);
     return `Every ${value} ${value === 1 ? unit.slice(0, -1) : unit}`;
   }
+  function reportingForm() {
+    return validateReportingSettings({ kind: $('#schedule-period-kind').value, timeZone: $('#schedule-period-timezone').value.trim(), dayStart: $('#schedule-period-day-start').value, shiftStart: $('#schedule-period-shift-start').value, shiftHours: Number($('#schedule-period-shift-hours').value), batchHours: Number($('#schedule-period-batch-hours').value), settlingMinutes: Number($('#schedule-period-settling').value) });
+  }
+  function reportingPreview() {
+    const kind = $('#schedule-period-kind').value;
+    $('#schedule-day-field').hidden = !['day', 'batch'].includes(kind);
+    $('#schedule-shift-start-field').hidden = kind !== 'shift';
+    $('#schedule-shift-hours-field').hidden = kind !== 'shift';
+    $('#schedule-batch-field').hidden = kind !== 'batch';
+    try {
+      const period = resolveReportingPeriod(reportingForm(), getModelEntry(catalog, selectedId).model, now());
+      $('#schedule-period-preview').textContent = `Latest ready: ${formatReportingPeriod(period)} · ${number(period.periodHours)} elapsed ${period.periodHours === 1 ? 'hour' : 'hours'}.`;
+    } catch (error) { $('#schedule-period-preview').textContent = error.message; }
+  }
   function runTarget(entry, run) {
     if (['draft', 'published'].includes(run.target)) return run.target;
     if (!backend) return 'draft';
@@ -190,6 +205,7 @@ export function createManagement({ fallbackModel, beforeAction, onActivate, onRu
       $('#schedule-summary-state').textContent = 'No model selected';
       $('#schedule-summary-state').classList.remove('is-enabled');
       $('#schedule-summary-frequency').textContent = '—';
+      $('#schedule-summary-period').textContent = '—';
       $('#schedule-summary-input').textContent = '—';
       $('#schedule-summary-output').textContent = '—';
       $('#schedule-enabled').checked = false;
@@ -198,6 +214,8 @@ export function createManagement({ fallbackModel, beforeAction, onActivate, onRu
       $('#schedule-output').replaceChildren(new Option('No model selected', ''));
       $('#schedule-input-help').textContent = '';
       $('#schedule-output-help').textContent = '';
+      $('#schedule-period-preview').textContent = '';
+      for (const control of $('#schedule-form').querySelectorAll('[id^="schedule-period-"]')) if ('value' in control) control.value = '';
       renderedRuns = '';
       $('#schedule-next-run').textContent = 'No upcoming run';
       $('#schedule-last-run').textContent = 'No runs yet';
@@ -233,6 +251,9 @@ export function createManagement({ fallbackModel, beforeAction, onActivate, onRu
       $('#schedule-unit').value = choice.unit;
       sourceOptions('input', schedule.inputSourceId);
       sourceOptions('output', schedule.outputSourceId);
+      const reporting = schedule.reporting || defaultReportingSettings(entry.model);
+      for (const [name, field] of Object.entries({ kind: 'kind', timeZone: 'timezone', dayStart: 'day-start', shiftStart: 'shift-start', shiftHours: 'shift-hours', batchHours: 'batch-hours', settlingMinutes: 'settling' })) $(`#schedule-period-${field}`).value = reporting[name];
+      reportingPreview();
       message(storageWarning, Boolean(storageWarning));
     }
     $('#management-model-count').textContent = `${catalog.models.length} saved model${catalog.models.length === 1 ? '' : 's'} · ${entry.model.streams.length} streams in this model`;
@@ -240,9 +261,11 @@ export function createManagement({ fallbackModel, beforeAction, onActivate, onRu
     $('#schedule-summary-state').classList.toggle('is-enabled', schedule.enabled);
     $('#schedule-next-run').textContent = schedule.enabled ? date(schedule.nextRunAt) : 'No upcoming run';
     $('#schedule-summary-frequency').textContent = frequency(schedule.intervalMinutes);
+    const reporting = schedule.reporting || defaultReportingSettings(entry.model);
+    $('#schedule-summary-period').textContent = `${({ hour: 'Calendar hour', day: 'Reporting day', shift: `${reporting.shiftHours}-hour shift`, batch: `${reporting.batchHours}-hour batch` })[reporting.kind]} · ${reporting.settlingMinutes} min late-data allowance`;
     $('#schedule-summary-input').textContent = catalog.sources[selectedId].find(source => source.id === schedule.inputSourceId)?.name || 'Saved model measurements';
     $('#schedule-summary-output').textContent = catalog.sources[selectedId].find(source => source.id === schedule.outputSourceId)?.name || 'Save run results';
-    $('#schedule-timezone').textContent = `Times shown in ${Intl.DateTimeFormat().resolvedOptions().timeZone}. Daily means every 24 hours.`;
+    $('#schedule-timezone').textContent = `Reporting boundaries: ${reporting.timeZone}. Run times below: ${Intl.DateTimeFormat().resolvedOptions().timeZone}. Schedule checks use the latest eligible completed period.`;
     const runs = catalog.runs[selectedId];
     $('#schedule-last-run').textContent = runs.length ? `${date(runs.at(-1).finishedAt)} · ${runs.at(-1).status}` : 'No runs yet';
     $('#schedule-run-now').disabled = running.has(selectedId) || (backend && !backend.permission(selectedId).canRun);
@@ -252,7 +275,18 @@ export function createManagement({ fallbackModel, beforeAction, onActivate, onRu
     if (!runs.length) {
       $('#management-runs').innerHTML = '<div class="management-runs-empty"><h3>No runs yet</h3><p>Run a reconciliation to see its status and results here.</p></div>';
     } else {
-      $('#management-runs').innerHTML = `<div class="table-wrap"><table class="management-runs-table"><thead><tr><th>Run time</th><th>Model</th><th>Trigger</th><th>Status</th><th>Result</th></tr></thead><tbody>${[...runs].reverse().slice(0, 10).map(run => `<tr><td>${esc(date(run.startedAt))}</td><td>${runTarget(entry, run) === 'published' ? `Published v${esc(run.publishedVersion ?? 1)}` : runTarget(entry, run) === 'draft' ? 'Draft test' : 'Legacy run'}</td><td>${run.trigger === 'scheduled' ? 'Scheduled' : 'Manual'}</td><td><span class="status-pill ${run.status === 'ok' ? 'estimated' : run.status === 'failed' || run.status === 'invalid' ? 'unobservable' : ''}">${esc(run.status)}</span></td><td>${run.error ? esc(run.error) : `<span>${esc(run.result?.message || 'Completed')}</span><details><summary>Stream results</summary><ul>${(run.result?.streams || []).map(stream => `<li>${esc(run.modelSnapshot?.streams.find(item => item.id === stream.id)?.name || stream.id)}: ${number(stream.value)} kg · ${esc(stream.status)}</li>`).join('')}</ul></details><button type="button" class="text-button" data-review-run="${esc(run.id)}">View on diagram</button>`}</td></tr>`).join('')}</tbody></table></div>`;
+      $('#management-runs').innerHTML = `<div class="table-wrap"><table class="management-runs-table"><thead><tr><th>Run time / reporting period</th><th>Model</th><th>Trigger</th><th>Status</th><th>Result</th></tr></thead><tbody>${[...runs].reverse().slice(0, 10).map(run => `<tr><td>${esc(date(run.startedAt))}${run.reportingPeriod ? `<small>${esc(run.reportingPeriod.label)}</small>${run.rerunOf ? `<small>Rerun of ${esc(run.rerunOf)}</small>` : ''}` : ''}</td><td>${runTarget(entry, run) === 'published' ? `Published v${esc(run.publishedVersion ?? 1)}` : runTarget(entry, run) === 'draft' ? 'Draft test' : 'Legacy run'}</td><td>${run.trigger === 'scheduled' ? 'Scheduled' : 'Manual'}</td><td><span class="status-pill ${run.status === 'ok' ? 'estimated' : run.status === 'failed' || run.status === 'invalid' ? 'unobservable' : ''}">${esc(run.status)}</span></td><td>${run.error ? esc(run.error) : `<span>${esc(run.result?.message || 'Completed')}</span><details><summary>Stream results</summary><ul>${(run.result?.streams || []).map(stream => `<li>${esc(run.modelSnapshot?.streams.find(item => item.id === stream.id)?.name || stream.id)}: ${number(stream.value)} kg · ${esc(stream.status)}</li>`).join('')}</ul></details><button type="button" class="text-button" data-review-run="${esc(run.id)}">View on diagram</button>`}${run.reportingPeriod ? `<button type="button" class="text-button" data-rerun-period="${esc(run.id)}" ${backend && !backend.permission(selectedId).canRun || running.has(selectedId) ? 'disabled' : ''}>Rerun period</button>` : ''}</td></tr>`).join('')}</tbody></table></div>`;
+      $('#management-runs').querySelectorAll('[data-rerun-period]').forEach(button => button.onclick = async () => {
+        const prior = catalog.runs[selectedId].find(item => item.id === button.dataset.rerunPeriod), targetId = selectedId;
+        if (!prior?.reportingPeriod) return;
+        try {
+          beforeAction?.();
+          const target = backend?.permission(targetId).published ? 'published' : 'draft';
+          const { start, end, kind } = prior.reportingPeriod;
+          const run = await withLock(() => execute(targetId, 'manual', { target, period: { start, end, kind } }));
+          if (selectedId === targetId) message(run.error || `Period rerun using the current ${target === 'published' ? 'published version' : 'draft'}. A new record is saved in retained history.`, run.status === 'failed' || run.status === 'invalid');
+        } catch (error) { message(error.message, true); }
+      });
       $('#management-runs').querySelectorAll('[data-review-run]').forEach(button => button.onclick = async () => {
         const run = catalog.runs[selectedId].find(item => item.id === button.dataset.reviewRun);
         const current = getModelEntry(catalog, selectedId), target = runTarget(current, run);
@@ -265,7 +299,7 @@ export function createManagement({ fallbackModel, beforeAction, onActivate, onRu
     }
   }
 
-  async function execute(id, trigger = 'manual', { target = trigger === 'scheduled' ? 'published' : 'draft' } = {}) {
+  async function execute(id, trigger = 'manual', { target = trigger === 'scheduled' ? 'published' : 'draft', period = null } = {}) {
     if (!['published', 'draft'].includes(target)) throw new Error('Choose a published reconciliation or a draft test.');
     if (running.has(id)) throw new Error('This model is already running.');
     running.add(id);
@@ -273,10 +307,10 @@ export function createManagement({ fallbackModel, beforeAction, onActivate, onRu
     try {
       pullShared();
       if (backend) {
-        const run = await backend.execute(id, trigger, { target });
+        const run = await backend.execute(id, trigger, { target, period });
         pullShared(); onRun?.(clone(run)); return run;
       }
-      const { run } = await executeModelRun(clone(catalog), id, { trigger, now, id: crypto.randomUUID(), inputAdapters, outputAdapters });
+      const { run } = await executeModelRun(clone(catalog), id, { trigger, now, id: crypto.randomUUID(), inputAdapters, outputAdapters, period });
       pullShared();
       if (!save(appendRun(catalog, id, run, { limit: 20 }))) onToast?.('Run completed, but browser storage is unavailable. Export your model and results to keep them.');
       onRun?.(clone(run));
@@ -372,14 +406,15 @@ export function createManagement({ fallbackModel, beforeAction, onActivate, onRu
       pullShared();
       const intervalMinutes = frequencyToMinutes(Number($('#schedule-interval').value), $('#schedule-unit').value);
       if (backend) {
-        await backend.schedule(selectedId, { enabled: $('#schedule-enabled').checked, intervalMinutes, inputSourceId: $('#schedule-input').value || null, outputSourceId: $('#schedule-output').value || null });
+        await backend.schedule(selectedId, { enabled: $('#schedule-enabled').checked, intervalMinutes, inputSourceId: $('#schedule-input').value || null, outputSourceId: $('#schedule-output').value || null, reporting: reportingForm() });
         pullShared(); render(true); message('Schedule saved. Scheduled runs require an open, authorized browser session.'); return;
       }
-      save(setSchedule(catalog, selectedId, { enabled: $('#schedule-enabled').checked, intervalMinutes, inputSourceId: $('#schedule-input').value || null, outputSourceId: $('#schedule-output').value || null }, now()), true);
+      save(setSchedule(catalog, selectedId, { enabled: $('#schedule-enabled').checked, intervalMinutes, inputSourceId: $('#schedule-input').value || null, outputSourceId: $('#schedule-output').value || null, reporting: reportingForm() }, now()), true);
       render(true);
       message('Schedule saved. Scheduled runs require an open browser session.');
     } catch (error) { message(error.message, true); }
   };
+  for (const input of $('#schedule-form').querySelectorAll('[id^="schedule-period-"]')) for (const event of ['input', 'change']) input.addEventListener(event, reportingPreview);
   $('#schedule-run-now').onclick = async () => {
     const targetId = selectedId;
     try { beforeAction?.(); const target = backend?.permission(targetId).published ? 'published' : 'draft'; const run = await withLock(() => execute(targetId, 'manual', { target })); if (selectedId === targetId) message(run.error || run.result?.message || 'Run completed.', run.status === 'failed' || run.status === 'invalid'); }
@@ -433,10 +468,10 @@ export function createManagement({ fallbackModel, beforeAction, onActivate, onRu
       if (backend) return (async () => { beforeAction?.(); const entry = await backend.create(value); pullShared(); return activate(entry.id, { flush: false, view: 'editing' }); })().catch(error => onToast?.(error.message));
       beforeAction?.(); pullShared(); save(addModel(catalog, value, { id: crypto.randomUUID(), now: now() })); activate(catalog.activeId, { flush: false, view: 'editing' });
     },
-    latest(id = catalog.activeId, { target = 'draft' } = {}) { if (!id) return null; const entry = getModelEntry(catalog, id); return clone([...catalog.runs[id]].reverse().find(run => matchesRun(entry, run, target)) || null); },
+    latest(id = catalog.activeId, { target = 'draft', period = null } = {}) { if (!id) return null; const entry = getModelEntry(catalog, id); return clone([...catalog.runs[id]].reverse().find(run => matchesRun(entry, run, target) && (!period || run.reportingPeriod?.start === period.start && run.reportingPeriod?.end === period.end && run.reportingPeriod?.kind === period.kind)) || null); },
     publishedEntries: () => clone(catalog.models.filter(entry => entry.publishedModel && (!backend || backend.permission(entry.id).published))),
     activate,
-    run(id = catalog.activeId, { target = 'draft' } = {}) { return withLock(() => execute(id, 'manual', { target })); },
+    run(id = catalog.activeId, { target = 'draft', period = null } = {}) { return withLock(() => execute(id, 'manual', { target, period })); },
     leave: leaveManagement,
     open,
     tick,

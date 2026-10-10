@@ -1,3 +1,5 @@
+import { aggregateQualityReadings, InputQualityError, validateInputQuality } from '../../../public/input-quality.js';
+
 export const MAX_ROWS = 10_000;
 export const MAX_WRITE_ROWS = 900;
 export const OUTPUT_COLUMNS = Object.freeze([
@@ -55,8 +57,13 @@ export function validateRead(body, connection) {
   if (new Set(tags).size !== tags.length) fail('Source tags must be unique.');
   const start = dateField(body.start, 'Batch start'), end = dateField(body.end, 'Batch end');
   if (start >= end || Date.parse(end) - Date.parse(start) > 366 * 86_400_000) fail('Select a nonempty batch window of at most 366 days.');
-  if (!['latest', 'sum', 'average'].includes(body.aggregation)) fail('Select latest, sum, or average aggregation.');
-  return { ...body, tags, start, end };
+  if (!['latest', 'sum', 'average', 'timeWeightedAverage', 'totalizerDelta'].includes(body.aggregation)) fail('Select a supported input aggregation.');
+  let quality;
+  if (Object.hasOwn(body, 'quality') || ['timeWeightedAverage', 'totalizerDelta'].includes(body.aggregation)) {
+    try { quality = validateInputQuality(body.quality); } catch (error) { fail(error.message); }
+    if (columns.map(key => body[key]).includes(quality.qualityColumn)) fail('The quality column must be distinct from the input columns.');
+  }
+  return { ...body, tags, start, end, ...(quality ? { quality } : {}) };
 }
 export function readQuery(connection, input) {
   const dialect = connection.dialect;
@@ -65,21 +72,62 @@ export function readQuery(connection, input) {
   const placeholder = i => dialect === 'postgres' ? `$${i + 1}` : dialect === 'sqlserver' ? `@p${i}` : '?';
   const top = dialect === 'sqlserver' ? `TOP (${MAX_ROWS + 1}) ` : '';
   const limit = dialect === 'sqlserver' ? '' : ` LIMIT ${MAX_ROWS + 1}`;
+  const qualitySelection = input.quality?.qualityColumn ? `, ${q(input.quality.qualityColumn)} AS ${q('quality_value')}` : '';
+  if (['timeWeightedAverage', 'totalizerDelta'].includes(input.aggregation)) {
+    // Read only one boundary timestamp per tag before start, retaining ties so
+    // conflicting baseline values fail rather than being selected arbitrarily.
+    const boundaryParams = [];
+    const bound = value => { boundaryParams.push(value); return placeholder(boundaryParams.length - 1); };
+    const tagParameters = input.tags.map(tag => bound(tag)).join(', ');
+    const lower = bound(new Date(Date.parse(input.start) - input.quality.maxAgeMinutes * 60_000));
+    const end = bound(new Date(input.end));
+    const seedStart = bound(new Date(input.start));
+    const windowStart = bound(new Date(input.start));
+    const names = ['source_name', 'value', 'timestamp', ...(qualitySelection ? ['quality_value'] : [])].map(q).join(', ');
+    return {
+      sql: `WITH source_rows AS (SELECT ${q(input.tagColumn)} AS ${q('source_name')}, ${q(input.valueColumn)} AS ${q('value')}, ${q(input.timestampColumn)} AS ${q('timestamp')}${qualitySelection} FROM ${quoteIdentifier(input.table, dialect, true)} WHERE ${q(input.tagColumn)} IN (${tagParameters}) AND ${q(input.timestampColumn)} >= ${lower} AND ${q(input.timestampColumn)} <= ${end}), seed_times AS (SELECT ${q('source_name')}, MAX(${q('timestamp')}) AS ${q('seed_timestamp')} FROM source_rows WHERE ${q('timestamp')} < ${seedStart} GROUP BY ${q('source_name')}) SELECT ${top}${names} FROM source_rows WHERE ${q('timestamp')} >= ${windowStart} OR EXISTS (SELECT 1 FROM seed_times WHERE seed_times.${q('source_name')} = source_rows.${q('source_name')} AND seed_times.${q('seed_timestamp')} = source_rows.${q('timestamp')}) ORDER BY ${q('timestamp')} DESC${limit}`,
+      params: boundaryParams,
+    };
+  }
   return {
-    sql: `SELECT ${top}${q(input.tagColumn)} AS ${q('source_name')}, ${q(input.valueColumn)} AS ${q('value')}, ${q(input.timestampColumn)} AS ${q('timestamp')} FROM ${quoteIdentifier(input.table, dialect, true)} WHERE ${q(input.tagColumn)} IN (${input.tags.map((_, i) => placeholder(i)).join(', ')}) AND ${q(input.timestampColumn)} >= ${placeholder(input.tags.length)} AND ${q(input.timestampColumn)} < ${placeholder(input.tags.length + 1)} ORDER BY ${q(input.timestampColumn)} DESC${limit}`,
+    sql: `SELECT ${top}${q(input.tagColumn)} AS ${q('source_name')}, ${q(input.valueColumn)} AS ${q('value')}, ${q(input.timestampColumn)} AS ${q('timestamp')}${qualitySelection} FROM ${quoteIdentifier(input.table, dialect, true)} WHERE ${q(input.tagColumn)} IN (${input.tags.map((_, i) => placeholder(i)).join(', ')}) AND ${q(input.timestampColumn)} >= ${placeholder(input.tags.length)} AND ${q(input.timestampColumn)} < ${placeholder(input.tags.length + 1)} ORDER BY ${q(input.timestampColumn)} DESC${limit}`,
     params,
   };
 }
 export function testQuery(connection, input) {
   if (!['input', 'output'].includes(input.direction)) fail('Select input or output.');
   authorizeTable(connection, input.table, input.direction);
-  const columns = input.direction === 'output' ? OUTPUT_COLUMNS : [input.tagColumn, input.valueColumn, input.timestampColumn];
+  let quality;
+  if (Object.hasOwn(input, 'quality')) {
+    if (input.direction !== 'input') fail('Only input sources have data-quality settings.');
+    try { quality = validateInputQuality(input.quality); } catch (error) { fail(error.message); }
+  }
+  const columns = input.direction === 'output' ? OUTPUT_COLUMNS : [input.tagColumn, input.valueColumn, input.timestampColumn, ...(quality?.qualityColumn ? [quality.qualityColumn] : [])];
   columns.forEach(column => identifier(column));
+  if (new Set(columns).size !== columns.length) fail('Input columns must be distinct.');
   return { sql: `SELECT ${columns.map(column => quoteIdentifier(column, connection.dialect)).join(', ')} FROM ${quoteIdentifier(input.table, connection.dialect, true)} WHERE 1 = 0`, params: [] };
 }
 export function aggregateReadings(rawRows, input) {
   if (!Array.isArray(rawRows) || rawRows.length > MAX_ROWS) throw new GatewayError('TOO_MANY_ROWS', 'The batch contains more than 10,000 source rows. Use a smaller window.', 422);
   const grouped = new Map(input.tags.map(tag => [tag, []]));
+  if (input.quality || ['timeWeightedAverage', 'totalizerDelta'].includes(input.aggregation)) {
+    for (const row of rawRows) {
+      if (typeof row.source_name !== 'string' || !grouped.has(row.source_name)) throw new GatewayError('INVALID_SOURCE_DATA', 'The source returned an unexpected tag.', 422);
+      let timestamp = row.timestamp;
+      if (timestamp instanceof Date) {
+        if (!Number.isFinite(timestamp.getTime())) throw new GatewayError('INVALID_SOURCE_DATA', 'The source returned an invalid timestamp.', 422);
+        timestamp = timestamp.toISOString();
+      }
+      try { timestamp = dateField(timestamp, 'Source timestamp'); } catch { throw new GatewayError('INVALID_SOURCE_DATA', 'The source returned an invalid timestamp.', 422); }
+      grouped.get(row.source_name).push({ value: row.value, timestamp, quality: row.quality_value });
+    }
+    try {
+      return { readings: input.tags.map(sourceName => aggregateQualityReadings(grouped.get(sourceName), { ...input, sourceName })), window: { start: input.start, end: input.end } };
+    } catch (error) {
+      if (error instanceof InputQualityError) throw new GatewayError(error.code, error.message, 422);
+      throw error;
+    }
+  }
   for (const row of rawRows) {
     if (typeof row.source_name !== 'string' || !grouped.has(row.source_name)) throw new GatewayError('INVALID_SOURCE_DATA', 'The source returned an unexpected tag.', 422);
     let timestamp = row.timestamp;

@@ -26,7 +26,7 @@ export function getPublishedUnitSummary(node, model, result) {
       status = 'unresolved'; input = null; output = null;
     }
   }
-  const heading = status === 'awaiting' ? 'Awaiting run' : 'Reconciled · kg/batch';
+  const heading = status === 'awaiting' ? 'Awaiting run' : 'Reconciled · kg/period';
   const lines = status === 'awaiting' ? [] : node.kind === 'inlet'
     ? [`Inflow ${formatPublishedMass(output)}`]
     : node.kind === 'outlet' ? [`Outflow ${formatPublishedMass(input)}`]
@@ -35,9 +35,9 @@ export function getPublishedUnitSummary(node, model, result) {
     : status === 'unresolved' ? connected.length
       ? 'Unit throughput is unavailable because a connected stream is missing or unobservable. Add independent measurements and reconcile again.'
       : 'Unit throughput is unavailable because this unit has no connected streams.'
-    : node.kind === 'inlet' ? `Plant inflow: ${formatPublishedMass(output)} kg per batch.`
-      : node.kind === 'outlet' ? `Plant outflow: ${formatPublishedMass(input)} kg per batch.`
-        : `Reconciled incoming mass: ${formatPublishedMass(input)} kg per batch. Reconciled outgoing mass: ${formatPublishedMass(output)} kg per batch.`;
+    : node.kind === 'inlet' ? `Plant inflow: ${formatPublishedMass(output)} kg per reporting period.`
+      : node.kind === 'outlet' ? `Plant outflow: ${formatPublishedMass(input)} kg per reporting period.`
+        : `Reconciled incoming mass: ${formatPublishedMass(input)} kg per reporting period. Reconciled outgoing mass: ${formatPublishedMass(output)} kg per reporting period.`;
   const width = Math.max(172, ...[heading, ...lines].map(line => line.length * 7 + 24));
   const height = status === 'awaiting' ? 28 : isBoundary ? 46 : 64;
   const bottom = isBoundary ? -38 : -46;

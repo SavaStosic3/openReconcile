@@ -105,6 +105,67 @@ test('averages avoid overflow; sums that overflow fail', () => {
   assert.equal(aggregateReadings(large, { ...normalizedInput, aggregation: 'average' }).readings[0].value, 1e308);
   assertInvalid(() => aggregateReadings(large, { ...normalizedInput, aggregation: 'sum' }), 'INVALID_SOURCE_DATA');
 });
+
+for (const dialect of ['postgres', 'mysql', 'sqlserver']) {
+  test(`${dialect} advanced reads bind their lookback and boundaries and quote the configured quality column`, () => {
+    const advanced = validateRead({ ...input, aggregation: 'timeWeightedAverage', quality: { maxAgeMinutes: 30, qualityColumn: 'historian_flag' } }, connection);
+    const query = readQuery({ ...connection, dialect }, advanced);
+    assert.equal(query.sql.includes(input.tags[1]), false);
+    assert.match(query.sql, /WITH source_rows AS/);
+    assert.match(query.sql, /MAX\(/);
+    assert.match(query.sql, /10001/);
+    assert.match(query.sql, /quality_value/);
+    assert.equal(query.params.length, input.tags.length + 4);
+    assert.equal(query.params[input.tags.length].toISOString(), '2026-10-09T23:30:00.000Z');
+    assert.equal(query.params[input.tags.length + 1].toISOString(), '2026-10-10T01:00:00.000Z');
+    assert.equal(query.params.at(-1).toISOString(), '2026-10-10T00:00:00.000Z');
+    if (dialect === 'mysql') assert.equal(query.sql.match(/\?/g).length, query.params.length);
+  });
+}
+
+test('quality column schema tests and reads reject identifier injection and duplicate columns', () => {
+  assertInvalid(() => validateRead({ ...input, quality: { qualityColumn: 'flag;DROP' } }, connection));
+  assertInvalid(() => validateRead({ ...input, quality: { qualityColumn: input.valueColumn } }, connection));
+  assertInvalid(() => testQuery(connection, { ...input, direction: 'input', quality: { qualityColumn: 'flag;DROP' } }));
+  assert.match(testQuery(connection, { ...input, direction: 'input', quality: { qualityColumn: 'flag' } }).sql, /"flag"/);
+  assert.equal(Object.hasOwn(validateRead(input, connection), 'quality'), false);
+  assert.equal(validateRead({ ...input, aggregation: 'totalizerDelta' }, connection).quality.maxAgeMinutes, 60);
+});
+
+test('gateway quality aggregation preserves legacy shapes and rejects unsafe boundary or invalid Date records', () => {
+  assert.deepEqual(Object.keys(aggregateReadings(samples, normalizedInput).readings[0]), ['sourceName', 'value', 'timestamp']);
+  const weighted = validateRead({ ...input, tags: ['FEED'], aggregation: 'timeWeightedAverage', quality: {} }, connection);
+  const points = [{ source_name: 'FEED', value: 10, timestamp: '2026-10-09T23:50:00Z' }, { source_name: 'FEED', value: 40, timestamp: '2026-10-10T00:20:00Z' }];
+  const result = aggregateReadings(points, weighted);
+  assert.ok(Math.abs(result.readings[0].value - 30) < 1e-10);
+  assert.equal(result.readings[0].quality.coveragePercent, 100);
+  assertInvalid(() => aggregateReadings([{ ...points[0], timestamp: new Date(NaN) }], weighted), 'INVALID_SOURCE_DATA');
+  assertInvalid(() => aggregateReadings([{ ...points[0], timestamp: '2026-10-09T22:00:00Z' }], weighted), 'INVALID_SOURCE_DATA');
+  assertInvalid(() => aggregateReadings([{ ...points[0], timestamp: '2026-10-10T01:01:00Z' }], weighted), 'INVALID_SOURCE_DATA');
+  assertInvalid(() => aggregateReadings(Array(10_001).fill(points[0]), weighted), 'TOO_MANY_ROWS');
+});
+
+test('HTTP quality reads include audited integration and safe quality failures', async () => {
+  let bad = false;
+  const gateway = await startGateway({ driverFactory: async () => ({
+    query: async () => [
+      { source_name: 'FEED', value: 10, timestamp: input.start, quality_value: 'Good' },
+      { source_name: 'FEED', value: 30, timestamp: '2026-10-10T00:30:00Z', quality_value: bad ? 'Bad' : 'Good' },
+    ], close: async () => {},
+  }) });
+  try {
+    const body = { ...input, tags: ['FEED'], aggregation: 'timeWeightedAverage', quality: { qualityColumn: 'flag' } };
+    const success = await gateway.request('/read', body);
+    assert.equal(success.status, 200);
+    const result = await success.json();
+    assert.equal(result.readings[0].value, 20);
+    assert.equal(result.readings[0].quality.coveragePercent, 100);
+    bad = true;
+    const rejected = await gateway.request('/read', body);
+    assert.equal(rejected.status, 422);
+    assert.equal((await rejected.json()).error.code, 'BAD_SOURCE_QUALITY');
+  } finally { await gateway.close(); }
+});
 test('output validation rejects duplicate identities, unsafe statuses, mixed runs and nonnumeric fields', () => {
   assertInvalid(() => validateWrite({ table: 'public.results', rows: [resultRow, resultRow] }, connection));
   assertInvalid(() => validateWrite({ table: 'public.results', rows: [{ ...resultRow, status: 'unobservable' }] }, connection));

@@ -1,4 +1,5 @@
 import { validateModel } from './model.js';
+import { validateReportingSettings } from './reporting-periods.js';
 
 export const CATALOG_VERSION = 1;
 export const MAX_RUN_HISTORY = 100;
@@ -86,6 +87,7 @@ export function validateSchedule(schedule, sources = []) {
     outputSourceId: sourceRef(schedule.outputSourceId, sources, 'output'),
     nextRunAt: schedule.nextRunAt === null ? null : iso(schedule.nextRunAt, 'Next run')
   };
+  if (own(schedule, 'reporting')) normalized.reporting = validateReportingSettings(schedule.reporting);
   if (normalized.enabled && normalized.nextRunAt === null) throw new Error('An enabled schedule needs a next run timestamp.');
   if (!normalized.enabled && normalized.nextRunAt !== null) throw new Error('A disabled schedule must have no next run timestamp.');
   return normalized;
@@ -236,7 +238,7 @@ export function setSchedule(catalog, modelId, changes, now) {
   const result = validateCatalog(catalog);
   existing(result, modelId);
   if (!record(changes)) throw new Error('Schedule settings must be a record.');
-  const allowed = new Set(['enabled', 'intervalMinutes', 'inputSourceId', 'outputSourceId', 'nextRunAt']);
+  const allowed = new Set(['enabled', 'intervalMinutes', 'inputSourceId', 'outputSourceId', 'nextRunAt', 'reporting']);
   if (Object.keys(changes).some(key => !allowed.has(key))) throw new Error('Schedule settings contain an unsupported field.');
   const previous = result.schedules[modelId], schedule = { ...previous, ...changes };
   const epoch = timeToEpoch(now, 'Schedule clock');

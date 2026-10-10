@@ -1,7 +1,8 @@
 import { getModelItemName } from './data-mapping.js';
 import { isVirtualMeter } from './virtual-meters.js';
+import { validateInputQuality } from './input-quality.js';
 
-export const SQL_AGGREGATIONS = ['latest', 'sum', 'average'];
+export const SQL_AGGREGATIONS = ['latest', 'sum', 'average', 'timeWeightedAverage', 'totalizerDelta'];
 export const SQL_OUTPUT_COLUMNS = ['run_id', 'model_id', 'model_name', 'published_version', 'item_id', 'item_type', 'source_name', 'metric', 'value_kg', 'raw_kg', 'correction_kg', 'uncertainty_kg', 'status', 'batch_start', 'batch_end', 'finished_at'];
 const safeId = value => typeof value === 'string' && /^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$/.test(value) && !['constructor', 'prototype', '__proto__'].includes(value);
 export function isSqlIdentifier(value, { table = false } = {}) {
@@ -12,7 +13,7 @@ export function isSqlIdentifier(value, { table = false } = {}) {
 export function validateSqlSource(source) {
   if (!source || typeof source !== 'object' || Array.isArray(source) || ![Object.prototype, null].includes(Object.getPrototypeOf(source))) throw new Error('Choose a SQL source configuration.');
   const base = ['id', 'name', 'type', 'direction', 'connectionId', 'table'];
-  const keys = source.direction === 'input' ? [...base, 'tagColumn', 'valueColumn', 'timestampColumn', 'aggregation'] : base;
+  const keys = source.direction === 'input' ? [...base, 'tagColumn', 'valueColumn', 'timestampColumn', 'aggregation', ...(Object.hasOwn(source, 'quality') ? ['quality'] : [])] : base;
   if (Object.keys(source).length !== keys.length || Object.keys(source).some(key => !keys.includes(key)) || keys.some(key => !Object.hasOwn(source, key))) throw new Error('The SQL source contains missing or unsupported fields.');
   if (!safeId(source.id) || !safeId(source.connectionId)) throw new Error('Choose a safe source and connection identifier of at most 128 characters.');
   if (source.type !== 'sql' || !['input', 'output'].includes(source.direction)) throw new Error('Choose an input or output SQL source.');
@@ -21,7 +22,11 @@ export function validateSqlSource(source) {
   if (source.direction === 'input') {
     for (const column of ['tagColumn', 'valueColumn', 'timestampColumn']) if (!isSqlIdentifier(source[column])) throw new Error('Use simple SQL column identifiers of at most 64 characters.');
     if (new Set([source.tagColumn, source.valueColumn, source.timestampColumn]).size !== 3) throw new Error('Tag, value, and timestamp columns must be different.');
-    if (!SQL_AGGREGATIONS.includes(source.aggregation)) throw new Error('Choose latest, sum, or average for input data.');
+    if (!SQL_AGGREGATIONS.includes(source.aggregation)) throw new Error('Choose a supported SQL input aggregation.');
+    if (Object.hasOwn(source, 'quality')) {
+      source = { ...source, quality: validateInputQuality(source.quality) };
+      if ([source.tagColumn, source.valueColumn, source.timestampColumn].includes(source.quality.qualityColumn)) throw new Error('The quality column must be different from the tag, value, and timestamp columns.');
+    }
   }
   return Object.fromEntries(keys.map(key => [key, source[key]]));
 }

@@ -205,10 +205,10 @@ export async function connectWorkspace(onError) {
         return request(`/api/models/${encodeURIComponent(id)}/sources/test`, 'POST', { source, revision: revision(id) });
       });
     },
-    sqlPreview(id, source, target) {
+    sqlPreview(id, source, target, period = null) {
       return enqueue(async () => {
         await drain();
-        return request(`/api/models/${encodeURIComponent(id)}/sources/preview`, 'POST', { source, revision: revision(id), target });
+        return request(`/api/models/${encodeURIComponent(id)}/sources/preview`, 'POST', { source, revision: revision(id), target, ...(period ? { period } : {}) });
       });
     },
     publication(id, published) {
@@ -218,10 +218,10 @@ export async function connectWorkspace(onError) {
         applyChange(id, result, 'publication'); return result;
       });
     },
-    execute(id, trigger = 'manual', { target } = {}) {
+    execute(id, trigger = 'manual', { target, period = null } = {}) {
       return enqueue(async () => {
         await drain();
-        const result = await request(`/api/models/${encodeURIComponent(id)}/runs`, 'POST', { trigger, ...(target ? { target } : {}) });
+        const result = await request(`/api/models/${encodeURIComponent(id)}/runs`, 'POST', { trigger, ...(target ? { target } : {}), ...(period ? { period } : {}) });
         applyChange(id, result, 'run'); return result.run;
       });
     },

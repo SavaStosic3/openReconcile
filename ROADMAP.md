@@ -1,18 +1,21 @@
 # Feature roadmap
 
-Current capabilities and planned enhancements for openReconcile, a standalone, open-source mass balance reconciliation tool. Browser-triggered scheduling, authenticated shared models, administrator/model permissions, data mapping, SQL input/output through a server gateway, virtual meters, line visibility/crossing bridges, published results, and the initial process-unit symbol library are implemented as described below. Other items describe planned behavior.
+Current capabilities and planned enhancements for openReconcile, a standalone, open-source mass balance reconciliation tool. Browser-triggered scheduling, completed reporting periods, SQL input quality controls, authenticated shared models, administrator/model permissions, data mapping, SQL input/output through a server gateway, virtual meters, line visibility/crossing bridges, published results, and the initial process-unit symbol library are implemented as described below. Other items describe planned behavior.
 
 ## 1. Scheduled reconciliation
 
 **Implemented with browser triggering and server execution:** editors and administrators configure each published model's elapsed run frequency in minutes, hours, or days from the hamburger menu's Model Management page. New models are drafts with scheduling disabled; publishing is explicit. Runs use saved model measurements and store results in the shared D1 workspace by default. Administrators can define SQL input/output sources for a model, using a separately configured gateway, then select them for its manual and scheduled workflow. Manual and scheduled runs retain snapshots, results, and status for the latest 20 runs per model.
 
-Triggering requires an open app with an account permitted to run that model. The backend checks permissions and atomically claims due runs to prevent duplicate execution across sessions. Browser sleep and background throttling may delay runs. On resume or reopening, an overdue schedule executes once and skips missed intervals. Timestamps are stored as absolute instants and shown in the browser's local time zone; daily means every 24 hours. Unpublishing or deleting a model pauses its schedule.
+Triggering requires an open app with an account permitted to run that model. The backend checks permissions and atomically claims due runs to prevent duplicate execution across sessions. Browser sleep and background throttling may delay runs. On resume or reopening, an overdue schedule executes once and skips missed periods. Run frequency is elapsed time, so a daily frequency means every 24 hours; reporting periods use the model's configured time zone and calendar boundaries. Unpublishing or deleting a model pauses its schedule.
+
+**Implemented reporting periods:** select completed hours, calendar days, configurable shifts, or custom batches. Defaults are UTC, midnight reporting-day cutoff, 8-hour shifts starting at 06:00, and no late-data allowance. A configurable allowance delays eligibility for late source arrivals; an hourly run at 10:07 reads 09:00–10:00 instead of 09:07–10:07. Daylight saving changes preserve actual elapsed time and distinct repeated hours. Manual runs can choose another period kind or an aligned historical interval; scheduled runs use the latest ready configured period. Fixed-duration recurring batches have a deterministic epoch anchor; explicit times represent custom production batches. Reruns reread source data and append results with a link to a previous retained run for the period. Input, output, and run records share exact start/end boundaries. Only the latest 20 runs per model are retained.
 
 **Future server capabilities:**
 
 - Run without an open browser, using an unattended backend scheduler.
-- Configure calendar schedules, reporting windows, and explicit time zones.
-- Add further external input adapters and richer reporting-window and data-quality controls; SQL input already retrieves fresh readings for each run.
+- Add calendar-based trigger scheduling; configured reporting calendars and time zones are already implemented.
+- Add automatic late-data detection/backfill and long-term historical retention; manual historical reruns are already implemented.
+- Add further external input adapters and quality controls beyond the current SQL policies.
 - Add retries, recovery for interrupted executions, and controls for long-running overlapping jobs.
 
 ## 2. Multiple models with role-based access control
@@ -44,15 +47,17 @@ Revision checks, run snapshots, and separate working drafts and published snapsh
 
 **Implemented SQL input:** an administrator can configure and inspect per-model SQL sources through **SQL Connectors**, test a server connection, and preview data without changing readings. Connection IDs refer to a separately deployed Node.js gateway using `mssql` for SQL Server, `pg` for PostgreSQL, or `mysql2` for MySQL. Database credentials remain in the gateway's server environment; the Workers app calls that gateway over authenticated HTTP.
 
-The initial input format is a tag/value/timestamp table, matched by each physical meter's distinct Source Name. A run reads the half-open interval ending at its start time and extending back by the model's batch duration, with configurable Latest, Sum, or arithmetic Average aggregation. Every physical meter requires a mapping and valid interval data. Values must already use the meter's configured unit; virtual meters then calculate from the fresh readings. Inputs are retained in the run snapshot rather than overwriting saved model readings. Current source configuration applies to subsequent selected-source runs, while diagram mappings come from the selected draft/publication snapshot. Changing or removing a selected source pauses its schedule pending explicit re-enabling.
+The input format is a tag/value/timestamp table, with an optional historian quality column, matched by each physical meter's distinct Source Name. A run reads its selected completed reporting period with configurable Latest, Sum, arithmetic Average, Time-weighted average, or Totalizer difference aggregation. Every physical meter requires a mapping and valid interval data. Values must already use the meter's configured unit; virtual meters then calculate from the fresh readings. Inputs are retained in the run snapshot rather than overwriting saved model readings. Current source configuration applies to subsequent selected-source runs, while diagram mappings come from the selected draft/publication snapshot. Changing or removing a selected source pauses its schedule pending explicit re-enabling.
+
+**Implemented SQL data quality:** configurable maximum age at the period end, temporal coverage thresholds, exact accepted historian flag strings, rejection/exclusion of bad flags, step/linear time-weighted flow integration, and explicit counter reset/rollover policies. New quality-enabled sources default to 60-minute maximum age, full coverage, and rejection of bad flags, gaps, and counter decreases. Excluded bad points retain gaps; optional flow-gap scaling is audited as extrapolation. Counter calculations require boundary data and reject unknown gaps; zero-reset and one-wrap assumptions are explicit and warned. Preview and retained run inputs include per-meter coverage, sample/exclusion counts, latest timestamps, resets, and warnings. Legacy sources without quality settings keep their earlier aggregation behavior until configured.
 
 Mapping names are model metadata rather than credentials. Saving a mapping alone does not fetch data or change readings. SQL requires explicit server connection setup and network access; an actual plant integration must be configured and validated separately.
 
 **Future connector capabilities:**
 
 - Obtain model readings from CSV files, ODBC sources, SAP, OSIsoft PI, HTTP APIs, and additional adapters; broaden SQL table formats and supported databases.
-- Extend item mappings with connector selection and measurement fields, units, timestamps, uncertainty, and data-quality information; add inventory mappings when storage units are supported.
-- Extend the SQL preview and required-data validation with richer quality flags, staleness rules, counter differences, and explicit time-zone/reporting-calendar controls.
+- Extend item mappings with per-meter connector settings, units and uncertainty; add inventory mappings when storage units are supported.
+- Add provider-specific quality-code decoding, engineering-range rules, calibration information, and time-varying measurement uncertainty beyond the current SQL source-wide quality policy.
 - Support credentials and plant-network connectivity through server-side integrations or gateways.
 
 ## 5. Output data connectors
@@ -69,9 +74,9 @@ Administrators configure sources; permitted operators execute the model's select
 
 ## 6. Reusable plant data workflows
 
-**Implemented initial SQL workflow:** configure item mappings, per-model SQL sources, and Model Management's input/output selections once; preview fresh data and run the same workflow manually or on the browser-triggered schedule. Runs retain their input snapshot, publication target, results, and delivery status. Multiple model sources can refer to a server-configured connection ID without exposing its database credentials.
+**Implemented initial SQL workflow:** configure item mappings, per-model SQL sources, reporting periods, quality policies, and Model Management's input/output selections once; preview fresh data and run the same workflow manually or on the browser-triggered schedule. Runs retain exact reporting boundaries, actual elapsed duration, input/quality snapshots, publication target, results, rerun provenance, and delivery status. Multiple model sources can refer to a server-configured connection ID without exposing its database credentials.
 
-Further enhancements include independent input/output mappings, reusable configuration templates, explicit input review/approval before automatic output, and richer delivery and reporting-interval provenance across connector types.
+Further enhancements include independent input/output mappings, reusable configuration templates, explicit input review/approval before automatic output, and richer delivery provenance across connector types.
 
 ## 7. Virtual meters
 
@@ -109,7 +114,7 @@ Further enhancements:
 
 - Extend the existing reconciled-value labels and unit totals with selectable overlays for measured/reconciled values, corrections, uncertainty, and result status.
 - Identify physical measurements, virtual meters, inferred flows, unresolved values, and bounds or quality warnings.
-- Support selecting a saved run/reporting interval and inspecting detailed stream results directly from the diagram.
+- Extend completed-period and saved-run selection with long-term interval search, comparison, trends, and richer diagram inspection.
 - Keep dense diagrams legible and indicate when results are stale after a model or data change.
 
 ## 12. Process-unit symbols

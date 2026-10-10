@@ -213,6 +213,20 @@ test('local/invalid timestamps and invalid schedule fields cannot enable executi
   assert.throws(() => setSchedule(catalog(), 'plant-a', { enabled: true }, undefined), /timestamp/);
 });
 
+test('reporting settings persist with schedules while legacy schedule shape remains compatible', () => {
+  const reporting = { kind: 'shift', timeZone: 'America/Toronto', dayStart: '00:00', shiftStart: '06:00', shiftHours: 8, batchHours: 1, settlingMinutes: 15 };
+  const original = catalog();
+  const configured = setSchedule(original, 'plant-a', { reporting, enabled: true }, START);
+  assert.deepEqual(configured.schedules['plant-a'].reporting, reporting);
+  assert.deepEqual(validateCatalog(JSON.parse(JSON.stringify(configured))), configured);
+  reporting.shiftStart = '07:00';
+  assert.equal(configured.schedules['plant-a'].reporting.shiftStart, '06:00');
+  assert.equal(Object.hasOwn(original.schedules['plant-a'], 'reporting'), false);
+  const advanced = advanceSchedule(configured, 'plant-a', time(61));
+  assert.deepEqual(advanced.schedules['plant-a'].reporting, configured.schedules['plant-a'].reporting);
+  assert.throws(() => setSchedule(original, 'plant-a', { reporting: { kind: 'shift', shiftHours: 7 } }, START), /divides 24/);
+});
+
 test('source IDs are scoped to the model and must support the requested direction', () => {
   let original = registerSource(twoModels(), 'plant-a', { id: 'readings', name: 'Imported readings', direction: 'input', data: { feed: 12 } });
   original = registerSource(original, 'plant-a', { id: 'results', name: 'Result destination', direction: 'output' });

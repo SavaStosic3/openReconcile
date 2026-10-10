@@ -4,7 +4,7 @@ The gateway connects the hosted app to SQL Server, PostgreSQL, and MySQL through
 
 ## Setup
 
-1. Install Node.js 22.13 or later. In this directory, run `npm ci`.
+1. Install Node.js 22.13 or later. Keep the repository directory structure, including `public/input-quality.js` (shared with the app). In this directory, run `npm ci`.
 2. Have a database administrator create a read source table and/or the result table. Example DDL is in `schema/postgres.sql`, `schema/sqlserver.sql`, and `schema/mysql.sql`; adapt the table names before executing it. The gateway performs no DDL.
 3. Provision a least-privilege database account: `SELECT` on the allowlisted input tables; `SELECT` (for schema tests) and `INSERT` on the allowlisted result tables. MySQL output tables must use a transactional engine such as InnoDB.
 4. Set `SQL_GATEWAY_TOKEN` to a randomly generated secret of 32–512 non-whitespace characters. Set `SQL_CONNECTIONS_JSON` to a JSON array matching `connections.example.json`, using real values from your secret manager. Do not commit the resulting credentials. `schema` is optional informational metadata; SQL table names are exact allowlist entries, never implicitly prefixed.
@@ -20,11 +20,49 @@ TLS encryption and server certificate validation are enabled by default for all 
 
 ## Input data
 
-Input sources configure a table, tag column, numeric value column, timestamp column, and aggregation: `latest`, `sum`, or `average`. All three column names must be distinct. Existing model **Source Name** values identify the tags; model names remain presentation labels. The source reading is interpreted in the mapped physical meter's configured unit and rate interval. Convert or reshape upstream data before it enters the table if its units differ. Virtual meters calculate after physical readings have been loaded.
+Input sources configure a table, tag column, numeric value column, timestamp column, and aggregation: `latest`, `sum`, `average`, `timeWeightedAverage`, or `totalizerDelta`. All three column names must be distinct; an optional historian quality column must also be distinct. Existing model **Source Name** values identify the tags; model names remain presentation labels. The source reading is interpreted in the mapped physical meter's configured unit and rate interval. Convert or reshape upstream data before it enters the table if its units differ. Virtual meters calculate after physical readings have been loaded.
 
-Windows are ISO timestamps with an explicit timezone and use `[start, end)`: the start is included, the end excluded. A window must be nonempty and at most 366 days. Timestamp-without-timezone SQL Server/MySQL columns represent UTC; the drivers send and read UTC dates. PostgreSQL examples use `timestamptz`.
+Windows are ISO timestamps with an explicit timezone and use `[start, end)`: the start is included, the end excluded for ordinary aggregates. Weighted flow and totalizer reads additionally obtain the most recent timestamp per tag before the start (bounded by maximum reading age) and samples exactly at the end to support boundary calculations. All tied baseline records are retained so conflicting values fail. No post-period samples are fetched. A window must be nonempty and at most 366 days. Timestamp-without-timezone SQL Server/MySQL columns represent UTC; the drivers send and read UTC dates. PostgreSQL examples use `timestamptz`.
 
 The gateway reads at most 10,001 ordered rows and rejects a batch exceeding 10,000 rows; use a smaller window or aggregate upstream. Each request supports at most 500 distinct tags of at most 200 characters. `latest` selects the newest timestamp per tag; different values tied at that timestamp fail. `sum` adds samples; `average` takes their arithmetic mean, without time weighting or integration. Both report the latest contributing timestamp. Missing tags, null/bool/blank/non-numeric/negative values, nonfinite results, invalid timestamps, and out-of-window rows fail the entire input request. Decimal and scientific-notation strings are accepted. The gateway does not silently substitute zero or partial data.
+
+### Data-quality policy
+
+Input sources can include the following `quality` object. New source configurations use these defaults; existing sources that omit it retain their original ordinary-aggregation behavior. The two advanced aggregations always apply quality defaults even if the object is omitted.
+
+```json
+{
+  "maxAgeMinutes": 60,
+  "minCoveragePercent": 100,
+  "qualityColumn": null,
+  "goodQualityValues": ["Good"],
+  "badQualityPolicy": "reject",
+  "interpolation": "step",
+  "gapPolicy": "reject",
+  "totalizerReset": "reject",
+  "rolloverValue": null
+}
+```
+
+Maximum reading age is greater than zero and at most 366 days; minimum coverage is 0–100%. Freshness compares the latest accepted timestamp with the **reporting period end**, so historical reruns do not become stale merely because they execute later. Coverage measures the fraction of period time supported by accepted readings, rather than a percentage of sample rows. Ordinary aggregates and step flow hold each accepted point only until the next point or its maximum age. Linear flow and counter intervals require consecutive accepted endpoints no farther apart than the maximum age.
+
+If `qualityColumn` is configured, only the exact `goodQualityValues` whitelist is accepted. There are 1–32 distinct flags of at most 80 characters each. Finite integer SQL quality codes are converted to their text representation for matching (`192` matches a configured `"192"`); no vendor-specific interpretation is guessed. Missing or unfamiliar flags are bad. `badQualityPolicy: "reject"` fails the entire read; `"exclude"` retains the bad point as a gap barrier, so good samples on either side are never joined through it. An excluded bad-quality point may have an invalid numeric value; an accepted point must always have a valid nonnegative number. Conflicting values or acceptance states at any duplicate timestamp fail; identical quality-enabled records contribute once.
+
+Every quality-enabled reading returns `quality: { coveragePercent, sampleCount, rejectedCount, latestTimestamp, resetCount, warnings }`. `sampleCount` counts unique accepted sample points including contributing boundary points; `rejectedCount` counts rejected raw records. Warnings record exclusion, extrapolation, boundary interpolation, and counter assumptions. Failed quality checks return a tag-specific safe error; they do not run reconciliation on partial readings.
+
+### Time-weighted flow
+
+`timeWeightedAverage` returns the mean flow rate over the reporting period. With duration `T`, its value is `integral(flow(t), start, end) / T`; the app converts the rate to period mass using the actual elapsed duration (including daylight-saving periods). Irregular sampling therefore changes time weights, not just the number of samples. `interpolation: "step"` uses bounded last-value hold; `"linear"` integrates straight-line segments with the trapezoidal rule, clipped to the period boundaries. Linear interpolation requires endpoint support; it does not extend the final reading indefinitely.
+
+Flow gaps fail by default. To extrapolate, both set `gapPolicy: "scale"` and choose a minimum coverage that the period satisfies. The accepted time-weighted mean is then applied to the full period, and the uncovered percentage is recorded in a warning. The missing interval is an explicit estimation assumption, never an implicit zero or an unreported fill. This aggregation requires mapped physical meters configured as rates (`/h`). The advanced boundary query uses a common table expression; MySQL requires version 8 or later.
+
+### Totalizer deltas
+
+`totalizerDelta` sums increments of a cumulative quantity. Physical meters must use cumulative mass or volume units rather than rates; volume retains the model's configured density conversion. A valid start baseline and a reading exactly at the period end are required. A fresh sample before the start can bracket a later accepted sample to interpolate the starting counter value linearly; that assumption is recorded. Any missing or bad counter interval fails even when flow gap scaling is enabled, because a lost counter delta is unknown.
+
+An observed decrease fails under `totalizerReset: "reject"`. Explicit `"restart"` assumes a reset to zero and counts the first value after the reset; any material accumulated between the previous sample and the reset remains unknown and is excluded, with an audit warning. Explicit `"rollover"` requires a positive `rolloverValue` (the modulus), requires counter values below it, and computes `modulus - previous + next` for each decrease. Its warning records the assumption of one wrap per observed decrease; multiple wraps or resets between samples cannot be detected. A decrease spanning an interpolated reporting boundary fails because its amount cannot be allocated to the period safely.
+
+Upgrade the deployed gateway and app together when enabling quality or advanced aggregations. The gateway remains a separately operated plant-side service; publishing the app does not update it.
 
 ## Output data
 
@@ -51,8 +89,8 @@ The **Test connection** operation performs `SELECT ... WHERE 1 = 0` against inpu
 Every endpoint requires `Authorization: Bearer <SQL_GATEWAY_TOKEN>`. POST bodies use `Content-Type: application/json`. There is no CORS access; browsers use the authenticated app backend. Error responses are `{ "error": { "code": "...", "message": "..." } }`, with safe validation messages or a generic database error. Database server messages, queries, and credentials are not returned.
 
 - `GET /connections` → `{ connections: [{ id, name, dialect, canRead, canWrite }] }`; no host/user/password.
-- `POST /test` with `{ connectionId, direction, table, tagColumn?, valueColumn?, timestampColumn? }` → `{ ok: true }`. `direction` is `input` or `output`; input requires all three columns.
-- `POST /read` with `{ connectionId, table, tagColumn, valueColumn, timestampColumn, tags, start, end, aggregation }` → `{ readings: [{ sourceName, value, timestamp }], window: { start, end } }`.
+- `POST /test` with `{ connectionId, direction, table, tagColumn?, valueColumn?, timestampColumn?, quality? }` → `{ ok: true }`. `direction` is `input` or `output`; input requires all three columns and tests the optional quality column.
+- `POST /read` with `{ connectionId, table, tagColumn, valueColumn, timestampColumn, tags, start, end, aggregation, quality? }` → `{ readings: [{ sourceName, value, timestamp, quality? }], window: { start, end } }`.
 - `POST /write` with `{ connectionId, table, rows: [canonicalResultRow] }` → `{ written: number }`.
 
 Only generated SQL is supported. Table/column identifiers use the bounded grammar and exact table allowlists; all tags, dates, and result values are driver parameters. Requests are bounded by 2 MiB, a 20-second deadline, and eight concurrent operations; database statements have 10-second timeouts, and pools have at most four connections per configuration. Timed-out operations remain in the concurrency count until driver cancellation/rollback finishes. Driver sessions are discarded on abort where supported. Use reverse-proxy and database-side connection/query limits as additional operational controls.

@@ -31,7 +31,7 @@ function setup(t) {
   }
   const node = selector => { if (!nodes.has(selector)) nodes.set(selector, new Node()); return nodes.get(selector); };
   const form = node('#sql-source-form');
-  form.elements = Object.fromEntries(Object.entries({ name: '', direction: 'input', connectionId: '', table: '', tagColumn: 'source_name', valueColumn: 'value', timestampColumn: 'recorded_at', aggregation: 'latest' }).map(([name, value]) => [name, new Node(value)]));
+  form.elements = Object.fromEntries(Object.entries({ name: '', direction: 'input', connectionId: '', table: '', tagColumn: 'source_name', valueColumn: 'value', timestampColumn: 'recorded_at', aggregation: 'latest', maxAgeMinutes: '60', minCoveragePercent: '100', qualityColumn: '', goodQualityValues: 'Good', badQualityPolicy: 'reject', interpolation: 'step', gapPolicy: 'reject', totalizerReset: 'reject', rolloverValue: '' }).map(([name, value]) => [name, new Node(value)]));
   form.reset = () => { for (const field of Object.values(form.elements)) field.value = field.defaultValue; };
   form.querySelectorAll = () => [...Object.values(form.elements), node('#sql-save-source'), node('#sql-test-source'), node('#sql-preview-input')];
   node('#sql-preview-target').value = 'draft';
@@ -51,10 +51,11 @@ function setup(t) {
     api: async path => { calls.push({ kind: 'metadata', path }); return metadataHandler(); },
     sources: async (id, sources) => { calls.push({ kind: 'save', id, sources }); workspace.catalog.sources[id] = sources; for (const listener of listeners) listener(); return { schedulePaused: false }; },
     sqlTest: async (id, source) => { calls.push({ kind: 'test', id, source }); return testHandler(); },
-    sqlPreview: async (id, source, target) => { calls.push({ kind: 'preview', id, source, target }); return { window: { start: '2026-10-10T00:00:00.000Z', end: '2026-10-10T01:00:00.000Z' }, readings: [{ modelName: 'Feed', sourceName: 'FEED', value: 100, unit: 'kg', timestamp: '2026-10-10T00:30:00.000Z' }] }; },
+    sqlPreview: async (id, source, target, period) => { calls.push({ kind: 'preview', id, source, target, period }); return { window: { start: '2026-10-10T00:00:00.000Z', end: '2026-10-10T01:00:00.000Z' }, readings: [{ modelName: 'Feed', sourceName: 'FEED', value: 100, unit: 'kg', timestamp: '2026-10-10T00:30:00.000Z' }] }; },
     subscribe: listener => { listeners.add(listener); return () => listeners.delete(listener); }
   };
-  const ui = createSqlConnectors({ backend, beforeOpen: async () => {}, onToast: message => toasts.push(message) });
+  const period = { start: '2026-10-10T00:00:00.000Z', end: '2026-10-10T01:00:00.000Z', kind: 'hour' };
+  const ui = createSqlConnectors({ backend, beforeOpen: async () => {}, onToast: message => toasts.push(message), periodSelectorFactory: () => ({ refresh() {}, setEnabled() {}, value: () => period }) });
   return { ui, node, form, backend, permissions, calls, toasts,
     notify: () => { for (const listener of listeners) listener(); },
     refreshWith: handler => { refreshHandler = handler; }, metadataWith: handler => { metadataHandler = handler; }, testWith: handler => { testHandler = handler; },
@@ -121,6 +122,7 @@ test('connection failures leave saved sources untouched and release controls for
 test('changing SQL configuration clears readings and verification messages from the previous configuration', async t => {
   const f = setup(t); await f.ui.open(); f.validForm();
   await f.node('#sql-preview-input').onclick();
+  assert.deepEqual(f.calls.find(call => call.kind === 'preview').period, { start: '2026-10-10T00:00:00.000Z', end: '2026-10-10T01:00:00.000Z', kind: 'hour' });
   assert.match(f.node('#sql-preview').innerHTML, /Feed/);
   assert.match(f.node('#sql-message').textContent, /readings fetched/);
   f.form.elements.table.value = 'different_readings';

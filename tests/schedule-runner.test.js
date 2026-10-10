@@ -2,7 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { exampleModel } from '../public/model.js';
 import { createCatalog, addModel, appendRun, registerSource, setSchedule, updateModel } from '../public/management-store.js';
-import { executeModelRun, sameRunInputs } from '../public/schedule-runner.js';
+import { executeModelRun, sameRunInputs, runMatchesModelInputs } from '../public/schedule-runner.js';
 
 const start = Date.parse('2026-10-09T12:00:00.000Z');
 const clone = value => structuredClone(value);
@@ -16,6 +16,16 @@ const freeze = value => {
   if (value && typeof value === 'object') { Object.values(value).forEach(freeze); Object.freeze(value); }
   return value;
 };
+
+test('manual calendar and custom batch selections retain editable-input matching across different durations', async () => {
+  const source = catalog();
+  const period = { kind: 'batch', start: '2026-10-08T09:15:00.000Z', end: '2026-10-08T11:45:00.000Z' };
+  const { run } = await executeModelRun(source, 'model-a', options({ period }));
+  assert.equal(run.reportingPeriod.periodHours, 2.5); assert.equal(run.modelSnapshot.periodHours, 2.5);
+  assert.equal(runMatchesModelInputs(run, source.models[0].model), true);
+  const changed = clone(source.models[0].model); changed.periodHours = 2;
+  assert.equal(runMatchesModelInputs(run, changed), false);
+});
 
 function withSources() {
   let value = registerSource(catalog(), 'model-a', { id: 'readings', name: 'Test readings', direction: 'input', type: 'test-input' });
