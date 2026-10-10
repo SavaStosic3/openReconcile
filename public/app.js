@@ -9,6 +9,8 @@ import { getPublishedUnitSummary } from './published-results.js';
 import { createLineVisibility } from './line-visibility.js';
 import { getMeterName, isVirtualMeter, evaluateMeterReadings, evaluateMeterDetails } from './virtual-meters.js';
 import { sameRunInputs } from './schedule-runner.js';
+import { getModelItemName, getDataMapping, validateDataMapping } from './data-mapping.js';
+import { createDataMapping } from './mapping-ui.js';
 
 const $ = (s, root = document) => root.querySelector(s);
 const $$ = (s, root = document) => [...root.querySelectorAll(s)];
@@ -38,7 +40,7 @@ function buildPalette() {
   $('#node-form').elements.kind.innerHTML = Object.entries(UNIT_SYMBOLS).map(([kind, symbol]) => `<option value="${kind}">${esc(symbol.label)}</option>`).join('');
 }
 buildPalette();
-let model = emptyModel(), results = null, selection = null, activeTab = 'model', mode = 'select', editingStream = null, editingNode = null, confirmAction = null, toastTimer, admin = null, runningWorkbench = false, viewMode = 'editing', activeRun = null;
+let model = emptyModel(), results = null, selection = null, activeTab = 'model', mode = 'select', editingStream = null, editingNode = null, confirmAction = null, toastTimer, admin = null, mappingPage = null, runningWorkbench = false, viewMode = 'editing', activeRun = null;
 const modelSessions = new Map();
 const backend = await connectWorkspace(toast);
 const lineVisibility = createLineVisibility();
@@ -84,7 +86,7 @@ function refreshChrome() {
   if (!runningWorkbench) $('#run-button').innerHTML = `<span aria-hidden="true">▶</span> ${viewMode === 'published' ? 'Run reconciliation' : 'Test draft reconciliation'}`;
   $$('.palette-item').forEach(button => { button.disabled = !editable; button.draggable = editable; });
   $$('[data-field], #batch-period, #custom-hours, #sample-readings').forEach(input => input.disabled = !editable);
-  $$('.stream-name-button, [data-add-meter], #inspect-edit-node, #inspect-edit-stream, #inspect-delete').forEach(button => button.disabled = !editable);
+  $$('.stream-name-button:not([data-mapping-inspect]), [data-add-meter], #inspect-edit-node, #inspect-edit-stream, #inspect-delete').forEach(button => button.disabled = !editable);
   $$('[data-mode="connect"]').forEach(button => button.disabled = !editable);
   for (const id of ['new-button', 'demo-button', 'import-button', 'empty-new-model', 'empty-import-legacy']) $(`#${id}`).disabled = !canCreate();
   $('#export-button').disabled = !permission.canView;
@@ -108,6 +110,11 @@ function refreshChrome() {
   else if (exists && !editable) $('#canvas-status').textContent = 'Read-only model. Your assigned permissions control editing and reconciliation.';
   refreshPageChrome();
   syncLineVisibility();
+  if (activeTab === 'mapping') mappingPage?.render();
+  $('#menu-data-mapping').disabled = !exists;
+  for (const form of [$('#stream-form'), $('#node-form')]) {
+    form.querySelectorAll('input:not([readonly]), textarea, select, button[type="submit"]').forEach(control => control.disabled = !editable || (form.id === 'stream-form' && control.name === 'value' && (form.elements.meterType.value === 'virtual' || !form.elements.measured.checked)) || (form.id === 'node-form' && control.name === 'kind' && isBoundary(model.nodes.find(node => node.id === editingNode)?.kind)));
+  }
 }
 function syncLineVisibility() {
   const entry = currentEntry();
@@ -277,6 +284,7 @@ $('#empty-import-legacy').onclick = () => {
 };
 
 function switchTab(name) {
+  if (activeTab === 'mapping' && name !== 'mapping') mappingPage?.flush();
   if (viewMode === 'published' && name === 'data') name = 'model';
   admin?.leave();
   management.leave();
@@ -284,6 +292,7 @@ function switchTab(name) {
   for (const button of $$('.tab')) { const active = button.dataset.tab === name; button.classList.toggle('active', active); button.setAttribute('aria-selected', String(active)); button.tabIndex = active ? 0 : -1; }
   for (const view of $$('[role="tabpanel"]')) view.classList.toggle('hidden', view.id !== `view-${name}`);
   if (name === 'data') renderData(); if (name === 'results') renderResults();
+  if (name === 'mapping') mappingPage?.render();
   refreshChrome();
 }
 $$('.tab').forEach(button => button.addEventListener('click', () => switchTab(button.dataset.tab)));
@@ -320,6 +329,7 @@ $('#confirm-cancel').onclick = () => { confirmAction = null; $('#confirm-dialog'
 $('#confirm-ok').onclick = () => { $('#confirm-dialog').close(); const action = confirmAction; confirmAction = null; action?.(); };
 function flushVisibleDraft() {
   if (!canEdit()) return;
+  if (activeTab === 'mapping') mappingPage?.flush();
   if (!$('#model-name').disabled) model.name = $('#model-name').value.trim() || 'Untitled plant';
   if (activeTab === 'data' && !$('#view-data').classList.contains('hidden')) {
     for (const input of $$('[data-field]')) {
@@ -335,6 +345,7 @@ function flushVisibleDraft() {
 }
 function activateManagedModel(entry, options = {}) {
   if (viewMode === 'editing') modelSessions.set(editingModelId, { history, historyIndex, results, activeRun, json: JSON.stringify(model) });
+  mappingPage?.invalidate();
   viewMode = options.view || viewMode;
   editingModelId = entry.id; model = clone(viewMode === 'published' ? backend.permission(entry.id).published && entry.publishedModel || emptyModel() : entry.model); selection = null;
   const previous = modelSessions.get(entry.id), same = previous?.json === JSON.stringify(model);
@@ -407,7 +418,27 @@ function renderInspector() {
     }
   }
   $$('[data-inspect-stream]').forEach(b => b.onclick = () => { editor.select('stream', b.dataset.inspectStream); if (canEdit()) openStream(b.dataset.inspectStream); });
+  const item = node || stream;
+  if (item) {
+    const mapping = getDataMapping(item), card = document.createElement('div'); card.className = 'inspector-mapping';
+    card.innerHTML = `<h3>Data mapping</h3><dl class="properties-list"><dt>Model Name</dt><dd>${esc(getModelItemName(item, node ? 'node' : 'stream'))}</dd><dt>Source Name</dt><dd>${esc(mapping?.sourceName || 'Not mapped')}</dd></dl><button type="button" class="text-button">View all mappings →</button>`;
+    card.querySelector('button').onclick = () => switchTab('mapping');
+    $('#inspector').append(card);
+  }
 }
+
+mappingPage = createDataMapping({
+  getModel: () => model,
+  getModelId: () => editingModelId,
+  canEdit,
+  getModels: () => backend.workspace.catalog.models.filter(entry => viewMode !== 'published' || backend.permission(entry.id).published && entry.publishedModel).map(entry => ({ id: entry.id, name: viewMode === 'published' ? entry.publishedModel.name : entry.model.name, active: entry.id === editingModelId })),
+  getView: () => viewMode === 'published' ? `Published version ${currentEntry()?.publishedVersion || '—'} · read-only` : 'Working draft',
+  onChange: next => { if (!requireEdit()) return; model = next; editor.setModel(model); commit(); },
+  onSelectModel: async id => { await management.activate(id, { view: viewMode }); switchTab('mapping'); },
+  onInspect: (kind, id) => { switchTab('model'); if (kind) editor.select(kind, id); editor.fit(); },
+  onToast: toast
+});
+$('#menu-data-mapping').onclick = () => { flushVisibleDraft(); switchTab('mapping'); $('#mapping-heading').focus(); };
 
 const streamForm = $('#stream-form');
 for (const [key, metric] of Object.entries(METRICS)) streamForm.elements.metric.add(new Option(metric.label, key));
@@ -418,6 +449,8 @@ function streamFromForm(current) {
   for (const key of ['density','temperature','pressure','uncertainty']) next[key] = streamForm.elements[key].value === '' ? null : Number(streamForm.elements[key].value);
   next.measured = streamForm.elements.measured.checked;
   next.value = next.meterType === 'virtual' ? '' : streamForm.elements.value.value === '' ? '' : Number(streamForm.elements.value.value);
+  const sourceName = streamForm.elements.sourceName.value.trim();
+  if (sourceName) next.dataMapping = { sourceName }; else delete next.dataMapping;
   return next;
 }
 function updateMeterPreview() {
@@ -428,6 +461,7 @@ function updateMeterPreview() {
   $('#meter-uncertainty-label').textContent = virtual ? 'Calculation uncertainty (1σ)' : 'Uncertainty (1σ)';
   $('#meter-uncertainty-help').hidden = !virtual;
   streamForm.elements.meterName.placeholder = streamForm.elements.name.value || current.name;
+  $('#stream-mapping-model-name').value = getModelItemName({ ...current, name: streamForm.elements.name.value.trim(), meterName: streamForm.elements.meterName.value.trim(), measured: enabled }, 'stream');
   if (!virtual || !enabled) return;
   const next = streamFromForm(current), preview = $('#formula-preview');
   if (!next.formula) { preview.dataset.state = 'pending'; preview.textContent = 'Enter a formula to preview the calculated reading. You can save an incomplete formula and finish it later.'; return; }
@@ -447,6 +481,7 @@ function openStream(id) {
   editingStream = id;
   for (const key of ['name','material','phase','density','temperature','pressure','metric','value','uncertainty','uncertaintyType']) streamForm.elements[key].value = stream[key] ?? '';
   streamForm.elements.meterType.value = stream.meterType || 'physical'; streamForm.elements.meterName.value = stream.meterName || ''; streamForm.elements.formula.value = stream.formula || '';
+  streamForm.elements.sourceName.value = getDataMapping(stream)?.sourceName || '';
   updateUnits(stream.unit); streamForm.elements.measured.checked = stream.measured;
   $('#formula-reference-list').innerHTML = model.streams.filter(other => other.measured && other.id !== id).map(other => `<button type="button" class="formula-reference" data-reference-id="${esc(other.id)}"><span>[${esc(getMeterName(other))}]</span><small>${esc(other.unit)}</small></button>`).join('') || '<p class="helper">Add another meter to reference its reading, or use a constant formula.</p>';
   $$('[data-reference-id]').forEach(button => button.onclick = () => {
@@ -464,7 +499,7 @@ streamForm.addEventListener('submit', event => {
   const next = streamFromForm(current);
   try { validateEditableModel({ ...model, streams: model.streams.map(stream => stream.id === current.id ? next : stream) }); if (next.measured && !isVirtualMeter(next) && next.value !== '') measurementToMass(next, model.periodHours); }
   catch (error) { $('#stream-error').textContent = error.message; $('#stream-error').classList.remove('hidden'); return; }
-  Object.assign(current,next); $('#stream-dialog').close(); editor.setModel(model); commit(); if (activeTab === 'data') renderData(); toast(`${next.name} saved${next.measured ? ' · meter added' : ''}.`);
+  Object.assign(current,next); if (!next.dataMapping) delete current.dataMapping; $('#stream-dialog').close(); editor.setModel(model); commit(); if (activeTab === 'data') renderData(); toast(`${next.name} saved${next.measured ? ' · meter added' : ''}.`);
 });
 $('#delete-stream').onclick = () => { editor.select('stream',editingStream); editor.deleteSelection(); $('#stream-dialog').close(); if (activeTab === 'data') renderData(); };
 $('#hide-stream-line').onclick = () => { $('#stream-dialog').close(); hideLine(editingStream); };
@@ -477,15 +512,22 @@ function openNode(id) {
   const node = model.nodes.find(n => n.id === id); if (!node) return;
   editingNode = id;
   const form = $('#node-form'); form.elements.name.value = node.name;
+  form.elements.sourceName.value = getDataMapping(node)?.sourceName || ''; $('#node-mapping-model-name').value = node.name;
+  $('#node-error').classList.add('hidden');
   form.elements.kind.innerHTML = isBoundary(node.kind) ? `<option value="${node.kind}">${esc(NODE_TYPES[node.kind])}</option>` : Object.entries(UNIT_SYMBOLS).map(([kind, symbol]) => `<option value="${kind}">${esc(symbol.label)}</option>`).join('');
   form.elements.kind.value = node.kind; form.elements.kind.disabled = isBoundary(node.kind);
   updateNodeNote(); $('#node-dialog').showModal();
 }
 $('#node-form').elements.kind.onchange = updateNodeNote;
+$('#node-form').elements.name.oninput = event => { $('#node-mapping-model-name').value = event.target.value.trim(); };
 $('#node-form').onsubmit = event => {
   event.preventDefault(); if (!requireEdit()) return;
   const node = model.nodes.find(n => n.id === editingNode); if (!node) return;
   const form = $('#node-form'), kind = form.elements.kind.value;
+  const sourceName = form.elements.sourceName.value.trim();
+  try { validateDataMapping(sourceName ? { sourceName } : undefined, node.name); }
+  catch (error) { $('#node-error').textContent = error.message; $('#node-error').classList.remove('hidden'); return; }
+  if (sourceName) node.dataMapping = { sourceName }; else delete node.dataMapping;
   if (!isBoundary(node.kind) && Object.hasOwn(UNIT_SYMBOLS, kind)) node.kind = kind;
   node.name = form.elements.name.value.trim() || NODE_TYPES[node.kind];
   $('#node-dialog').close(); editor.setModel(model); commit();

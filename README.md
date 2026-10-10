@@ -49,6 +49,16 @@ Unmetered streams can be inferred only when the measurements and network uniquel
 - Earlier browser data is retained locally and is not uploaded automatically. **Import browser models** asks before importing the last single-model autosave into the shared workspace. Use JSON export/import for additional models from the previous browser library. Export files also provide portable backups.
 - Export model saves a JSON file including all properties and readings. Import adds a model from that format. Export results produces CSV with normalized masses and estimated uncertainties.
 
+## Data mapping
+
+Open **Data Mapping** in the hamburger menu to map items in the selected model. Each row shows a **Model Name** and an optional **Source Name**. Model Name comes from the current unit name or meter name, with the stream name used when there is no separate meter name. Source Name identifies the corresponding field in an external source, such as a historian tag or CSV column. You can also set Source Name in a unit's edit menu or a stream's material and meter menu; streams can have a mapping before a meter is enabled.
+
+Mappings belong to each item's stable model ID. Renaming an item updates its displayed Model Name while retaining its Source Name; deleting the item removes its mapping. An empty Source Name leaves the item unmapped. The fields retain their contents through saving, reopening, duplication, and JSON import/export. Mapping edits use the existing model edit permissions, editing locks, revision checks, and undo/redo behavior.
+
+The Data Mapping page edits the working draft. A published model's mappings are read-only and remain part of its publication snapshot until changes are published. Editing a draft mapping does not change the active publication or its saved results.
+
+This is the configuration foundation for future connectors. Saving a Source Name does not retrieve data, change a reading, or deliver results to an external system. Input/output adapters, connection settings, and data preview remain planned. Use a source identifier, not a password, token, or connection string: mapping names are model metadata included in accessible exports.
+
 ## Process-unit symbols
 
 The toolbox provides ten internal unit symbols: **pump, compressor, valve, heat exchanger, filter, cyclone, conveyor, mixer, splitter, and generic process unit**. The same concise SVG artwork appears in the toolbox and flowsheet. Red inflow/outflow triangles remain distinct model boundaries.

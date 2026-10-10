@@ -1,6 +1,6 @@
 # Feature roadmap
 
-Current capabilities and planned enhancements for openReconcile, a standalone, open-source mass balance reconciliation tool. Browser-triggered scheduling, authenticated shared models, administrator/model permissions, virtual meters, line visibility/crossing bridges, published results, and the initial process-unit symbol library are implemented as described below. Other items describe planned behavior.
+Current capabilities and planned enhancements for openReconcile, a standalone, open-source mass balance reconciliation tool. Browser-triggered scheduling, authenticated shared models, administrator/model permissions, data mapping, virtual meters, line visibility/crossing bridges, published results, and the initial process-unit symbol library are implemented as described below. Other items describe planned behavior.
 
 ## 1. Scheduled reconciliation
 
@@ -40,8 +40,14 @@ Revision checks, run snapshots, and separate working drafts and published snapsh
 
 ## 4. Input data connectors
 
+**Implemented mapping foundation:** the hamburger menu's **Data Mapping** page lists items in the selected model with their current **Model Name** and an optional **Source Name** for an external tag, column, or field. Source Name is also editable from a unit or stream's settings, including unmetered streams. Mappings attach to stable item IDs, survive renaming, saving, duplication, and JSON import/export, and follow existing draft editing permissions and locks. Published mappings remain read-only until draft changes are published.
+
+Mapping names are model metadata rather than credentials. They do not fetch data or change readings; no external connector adapters or connection setup are implemented.
+
+**Future connector capabilities:**
+
 - Obtain model readings from CSV files, SQL databases, ODBC sources, SAP, OSIsoft PI, HTTP APIs, and additional adapters.
-- Map tags, columns, or fields to stream and inventory measurements, with units, timestamps, uncertainty, and data-quality information.
+- Extend item mappings with connector selection and measurement fields, units, timestamps, uncertainty, and data-quality information; add inventory mappings when storage units are supported.
 - Preview and validate the data; align readings and interval totals to the reporting window and explain missing, stale, or invalid inputs.
 - Support credentials and plant-network connectivity through server-side integrations or gateways.
 

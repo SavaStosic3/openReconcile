@@ -35,6 +35,7 @@ button:disabled { cursor: default; opacity: .5; }
 button, a, input, select, textarea { -webkit-tap-highlight-color: transparent; }
 :focus-visible { outline: 3px solid #22a99a; outline-offset: 3px; }
 input:focus-visible, select:focus-visible, textarea:focus-visible { outline-offset: 1px; }
+input[readonly] { color: var(--muted); background: var(--surface-subtle); cursor: default; }
 svg { vertical-align: middle; }
 h1, h2, h3, p { margin-top: 0; }
 h1 { font-size: 25px; line-height: 1.2; letter-spacing: -.7px; font-weight: 650; }
@@ -856,3 +857,50 @@ h3 { font-size: 14px; line-height: 1.4; font-weight: 650; }
   .published-banner { padding: 12px 0; }
   .is-published .editor-layout { display: block; height: auto; }
 }
+
+/* Source-to-diagram mapping foundation */
+.mapping-view { width: min(1200px, 100%); margin: 0 auto; padding: 32px 28px 50px; }
+.mapping-controls { display: flex; flex-wrap: wrap; align-items: end; gap: 18px; padding: 21px 23px; border: 1px solid var(--line); border-radius: 8px 8px 0 0; background: var(--surface); }
+.mapping-controls .field { flex: 1; min-width: 180px; margin: 0; }
+.mapping-controls .pill { margin-bottom: 7px; }
+.mapping-info { padding: 18px 23px; border: 1px solid var(--line); border-top: 0; background: var(--surface-subtle); }
+.mapping-info > strong { display: block; margin-bottom: 8px; font-size: 13px; }
+.mapping-info .helper { margin: 0 0 6px; max-width: 810px; }
+.mapping-info .helper:last-child { margin-bottom: 0; }
+.mapping-view .table-wrap { border-top: 0; border-radius: 0 0 8px 8px; }
+.mapping-table { table-layout: fixed; width: 100%; min-width: 0; }
+.mapping-table th:first-child { width: 40%; }
+.mapping-table th:last-child { width: 80px; }
+.mapping-table td { vertical-align: top; overflow-wrap: anywhere; }
+.mapping-table .stream-name-button { text-align: left; overflow-wrap: anywhere; }
+.mapping-source-input { display: block; width: 100%; min-width: 0; padding: 9px 11px; color: var(--ink); border: 1px solid var(--line-strong); border-radius: 5px; background: white; font-size: 12px; }
+.mapping-source-input:disabled { opacity: 1; background: var(--surface-subtle); color: #53666a; cursor: default; }
+.mapping-state { display: inline-flex; align-items: center; gap: 5px; margin-top: 6px; color: var(--muted); font-size: 10px; }
+.mapping-state::before { content: ''; width: 5px; height: 5px; border-radius: 50%; background: #b7c4c1; }
+.mapping-state.is-mapped { color: var(--teal-dark); }
+.mapping-state.is-mapped::before { background: var(--teal); }
+.mapping-table .mapping-empty { text-align: center; padding: 35px 20px; color: var(--muted); }
+.inspector-mapping { margin-top: 22px; padding-top: 17px; border-top: 1px solid var(--line); }
+.inspector-mapping h3 { font-size: 12px; }
+.inspector-mapping dd { overflow-wrap: anywhere; }
+@media (max-width: 820px) {
+  .mapping-view { padding: 24px 16px 35px; }
+  .mapping-view .view-header { flex-wrap: wrap; gap: 14px; }
+}
+@media (max-width: 580px) {
+  .mapping-view { padding: 22px 12px 30px; }
+  .mapping-controls { padding: 16px; gap: 14px; }
+  .mapping-controls .field { min-width: 100%; }
+  .mapping-info { padding: 16px; }
+  .mapping-table thead { display: none; }
+  .mapping-table, .mapping-table tbody, .mapping-table tr, .mapping-table td { display: block; width: 100%; }
+  .mapping-table tr { padding: 15px 16px; border-bottom: 1px solid var(--line); }
+  .mapping-table tr:last-child { border-bottom: 0; }
+  .mapping-table td { padding: 0; border: 0; }
+  .mapping-table td:first-child { margin-bottom: 12px; }
+  .mapping-table td:first-child::before { content: 'Model Name'; display: block; margin-bottom: 5px; color: var(--muted); font-size: 10px; }
+  .mapping-table td:nth-child(2)::before { content: 'Source Name'; display: block; margin-bottom: 5px; color: var(--muted); font-size: 10px; }
+  .mapping-table td:last-child { margin-top: 5px; }
+  .mapping-table td.mapping-empty::before { display: none; }
+}
+@media print { .mapping-controls input, .mapping-table button[data-mapping-clear], #mapping-back { display: none; } }

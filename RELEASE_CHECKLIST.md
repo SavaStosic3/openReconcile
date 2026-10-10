@@ -31,6 +31,16 @@ Record: GitHub commit, Sites source commit, artifact/version ID, deployment URL,
 - [ ] Drag common equipment symbols, connect their ports, move units, and change a symbol. Confirm connection endpoints and properties survive saving and reopening.
 - [ ] Test an enabled schedule with an eligible browser session open; confirm a due run uses the publication and two sessions cannot claim the same occurrence. Confirm overdue reopening runs once, and unpublishing/deleting pauses the schedule. Record that unattended scheduling is not supported.
 
+## Data mapping
+
+- [ ] Open **Data Mapping** from the hamburger menu and confirm it lists only the selected model's items with their current **Model Name** and **Source Name**. Set, change, and clear a source name from both that page and a unit/stream's edit menu; confirm both interfaces show the same mapping.
+- [ ] Map a unit, a physical meter, a virtual meter, and an unmetered stream. Rename items and meters; mappings must remain attached to their stable IDs while Model Name updates. Delete an item and undo/redo the change; confirm its mapping follows the item without leaving a stale row.
+- [ ] Check mapping input validation and rendering of names containing punctuation or markup. Confirm invalid mapping metadata is rejected by model validation and the backend, and identifiers render as text.
+- [ ] Save, reopen, duplicate, and JSON-export/import mapped models. Confirm names are retained and mappings do not leak between models. Keep credentials and connection strings out of mapping fields and exported model data.
+- [ ] Exercise administrator/editor editing, operator/viewer read-only access, no model grant, and editing locks. Confirm the backend rejects unauthorized or stale mapping writes even if client controls are bypassed.
+- [ ] Edit a draft mapping while its publication and saved results remain unchanged. Publish changes and confirm the publication has the updated mapping; published mapping controls must be read-only and retained run snapshots must preserve their own mappings.
+- [ ] Confirm saving or clearing a mapping does not retrieve external data, overwrite manual readings, alter virtual formulas, or send results. Check that the interface and documentation describe connector execution as planned.
+
 ## Virtual meters
 
 - [ ] Open meter settings, switch between **Physical** and **Virtual**, name meters, and enter formulas using `[Meter name]`, arithmetic, parentheses, unary signs, and `^` exponentiation. Confirm exact, case-sensitive, trimmed name matching and read-only calculated virtual readings on Measurements.

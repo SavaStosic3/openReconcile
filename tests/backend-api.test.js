@@ -7,6 +7,7 @@ import { Repository } from '../backend/repository.js';
 import { permissions } from '../backend/policy.js';
 import { exampleModel, emptyModel, newStream } from '../public/model.js';
 import { reconcile } from '../public/solver.js';
+import { setItemDataMapping } from '../public/data-mapping.js';
 
 // Execute the production SQL against SQLite, matching D1's prepared/batch API.
 // Authorization tests therefore exercise WHERE guards rather than mocked calls.
@@ -540,4 +541,66 @@ test('API bounds and validates optional virtual-meter fields on imports and save
     assert.equal((await f.request(`/api/models/${created.entry.id}`, 'PATCH', { model, revision: 1 })).status, 400, `${field} save`);
   }
   assert.deepEqual((await f.request('/api/workspace')).body.catalog.models[0].model, exampleModel());
+});
+
+test('source mapping saves use editor permissions and editing locks for administrators and editors', async t => {
+  const f = fixture(t), created = await f.create(), id = created.entry.id;
+  const mapped = setItemDataMapping(exampleModel(), { kind: 'stream', id: 'f1', sourceName: 'Plant/Feed' });
+  await f.register(); await f.assign(id, 'viewer');
+  assert.equal((await f.request(`/api/models/${id}`, 'PATCH', { model: mapped, revision: 1 }, f.viewer)).status, 403);
+  await f.role('editor'); await f.assign(id, 'editor');
+  const saved = await f.request(`/api/models/${id}`, 'PATCH', { model: mapped, revision: 1 }, f.viewer);
+  assert.equal(saved.status, 200, JSON.stringify(saved.body)); assert.deepEqual(saved.body.entry.model, mapped);
+  assert.equal((await f.request(`/api/admin/models/${id}`, 'PATCH', { editLocked: true, revision: 2 })).status, 200);
+  const changed = setItemDataMapping(mapped, { kind: 'stream', id: 'f1', sourceName: 'Other/Feed' });
+  assert.equal((await f.request(`/api/models/${id}`, 'PATCH', { model: changed, revision: 3 }, f.viewer)).status, 403);
+  assert.equal((await f.request(`/api/models/${id}`, 'PATCH', { model: changed, revision: 3 })).status, 403);
+  assert.deepEqual((await f.request('/api/workspace')).body.catalog.models.find(entry => entry.id === id).model, mapped);
+});
+
+test('API validates mapping shapes for unit and meter imports and updates without persisting invalid data', async t => {
+  const f = fixture(t), created = await f.create();
+  for (const collection of ['nodes', 'streams']) {
+    for (const dataMapping of [null, [], {}, { sourceName: null }, { sourceName: '' }, { sourceName: '  ' }, { sourceName: ' Feed ' }, { sourceName: 'x'.repeat(201) }, { sourceName: 'Feed', modelName: 'Forged target' }, { sourceName: 'Feed', connectorId: 'unregistered' }]) {
+      const model = exampleModel(); model[collection][0].dataMapping = dataMapping;
+      assert.equal((await f.request('/api/models', 'POST', { model })).status, 400, `${collection}: mapping import`);
+      assert.equal((await f.request(`/api/models/${created.entry.id}`, 'PATCH', { model, revision: 1 })).status, 400, `${collection}: mapping save`);
+    }
+  }
+  assert.deepEqual((await f.request('/api/workspace')).body.catalog.models[0].model, exampleModel());
+});
+
+test('published, draft and scheduled run snapshots retain their own source mappings without fetching or overwriting readings', async t => {
+  const f = fixture(t);
+  let model = setItemDataMapping(virtualPlant(), { kind: 'node', id: 'mix', sourceName: 'Plant/Mixer' });
+  model = setItemDataMapping(model, { kind: 'stream', id: 'f1', sourceName: 'Plant/PhysicalFeed' });
+  model = setItemDataMapping(model, { kind: 'stream', id: 'f2', sourceName: 'Plant/CalculatedFeed' });
+  const created = await f.request('/api/models', 'POST', { model });
+  assert.equal(created.status, 201, JSON.stringify(created.body)); const id = created.body.entry.id;
+  const published = await f.request(`/api/models/${id}/publication`, 'PATCH', { published: true, revision: 1 });
+  assert.equal(published.status, 200); assert.deepEqual(published.body.entry.publishedModel, model);
+  let draft = setItemDataMapping(model, { kind: 'stream', id: 'f1', sourceName: 'NewPlant/Feed' });
+  draft = setItemDataMapping(draft, { kind: 'node', id: 'mix', sourceName: '' });
+  draft.nodes[1].name = 'Renamed mixer'; draft.streams[0].meterName = 'Renamed feed meter';
+  draft.streams[1].formula = '[Renamed feed meter]';
+  const saved = await f.request(`/api/models/${id}`, 'PATCH', { model: draft, revision: 2 });
+  assert.equal(saved.status, 200); assert.deepEqual(saved.body.entry.model, draft); assert.deepEqual(saved.body.entry.publishedModel, model);
+  const publishedRun = await f.request(`/api/models/${id}/runs`, 'POST', { trigger: 'manual', target: 'published' });
+  const draftRun = await f.request(`/api/models/${id}/runs`, 'POST', { trigger: 'manual', target: 'draft' });
+  for (const executed of [publishedRun, draftRun]) {
+    assert.equal(executed.status, 200, JSON.stringify(executed.body)); assert.equal(executed.body.run.error, null);
+    assert.equal(executed.body.run.modelSnapshot.streams[0].value, 100);
+    assert.equal(executed.body.run.modelSnapshot.streams[1].value, 100);
+    assert.deepEqual(executed.body.run.modelSnapshot.streams[1].dataMapping, { sourceName: 'Plant/CalculatedFeed' });
+  }
+  assert.deepEqual(publishedRun.body.run.modelSnapshot.nodes[1].dataMapping, { sourceName: 'Plant/Mixer' });
+  assert.deepEqual(publishedRun.body.run.modelSnapshot.streams[0].dataMapping, { sourceName: 'Plant/PhysicalFeed' });
+  assert.equal(Object.hasOwn(draftRun.body.run.modelSnapshot.nodes[1], 'dataMapping'), false);
+  assert.deepEqual(draftRun.body.run.modelSnapshot.streams[0].dataMapping, { sourceName: 'NewPlant/Feed' });
+  const scheduled = await f.request(`/api/models/${id}/schedule`, 'PATCH', { changes: { enabled: true, intervalMinutes: 1 }, revision: 3 });
+  assert.equal(scheduled.status, 200); f.advance(60_000);
+  const run = await f.request(`/api/models/${id}/runs`, 'POST', { trigger: 'scheduled' });
+  assert.equal(run.status, 200); assert.deepEqual(run.body.run.modelSnapshot, publishedRun.body.run.modelSnapshot);
+  const entry = (await f.request('/api/workspace')).body.catalog.models.find(entry => entry.id === id);
+  assert.deepEqual(entry.model, draft); assert.deepEqual(entry.publishedModel, model);
 });

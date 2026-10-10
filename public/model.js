@@ -1,5 +1,6 @@
 import { UNIT_SYMBOLS } from './unit-symbols.js';
 import { isVirtualMeter } from './virtual-meters.js';
+import { getModelItemName, validateDataMapping } from './data-mapping.js';
 
 export const NODE_TYPES = { ...Object.fromEntries(Object.entries(UNIT_SYMBOLS).map(([kind, symbol]) => [kind, symbol.label])), inlet: 'Inflow', outlet: 'Outflow' };
 export const METRICS = {
@@ -57,6 +58,7 @@ export function validateModel(model) {
   const ids = new Set();
   for (const n of model.nodes) {
     if (typeof n.id !== 'string' || ids.has(n.id) || !Object.hasOwn(NODE_TYPES,n.kind) || typeof n.name !== 'string' || n.name.length > 100 || !Number.isFinite(n.x) || !Number.isFinite(n.y) || Math.abs(n.x) > 1e6 || Math.abs(n.y) > 1e6) throw new Error('A process unit has invalid properties.');
+    validateDataMapping(n.dataMapping, getModelItemName(n, 'node'));
     ids.add(n.id);
   }
   const streams = new Set();
@@ -64,6 +66,7 @@ export function validateModel(model) {
     if (typeof s.id !== 'string' || streams.has(s.id) || !ids.has(s.source) || !ids.has(s.target) || s.source === s.target || typeof s.name !== 'string' || s.name.length > 100 || typeof s.material !== 'string' || s.material.length > 160 || typeof s.measured !== 'boolean') throw new Error('A flow connection has invalid properties.');
     if (!Object.hasOwn(METRICS,s.metric) || !METRICS[s.metric].units.includes(s.unit) || !['Liquid','Gas','Solid','Slurry','Mixed'].includes(s.phase) || !Number.isFinite(Number(s.density)) || Number(s.density) <= 0 || !Number.isFinite(Number(s.uncertainty)) || Number(s.uncertainty) <= 0 || !['absolute','percent'].includes(s.uncertaintyType)) throw new Error('A stream has invalid measurement or material settings.');
     if ((s.meterType !== undefined && !['physical', 'virtual'].includes(s.meterType)) || (s.meterName !== undefined && (typeof s.meterName !== 'string' || s.meterName.length > 100 || /[\[\]]/.test(s.meterName))) || (s.formula !== undefined && (typeof s.formula !== 'string' || s.formula.length > 1000))) throw new Error('A meter has invalid type, name, or formula settings.');
+    validateDataMapping(s.dataMapping, getModelItemName(s, 'stream'));
     const source = model.nodes.find(n => n.id === s.source), target = model.nodes.find(n => n.id === s.target);
     if (source.kind === 'outlet' || target.kind === 'inlet') throw new Error('Flows must run from inflows toward outflows.');
     // Incomplete formulas remain saveable drafts; reconciliation evaluates them
