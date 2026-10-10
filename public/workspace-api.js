@@ -228,10 +228,10 @@ export async function connectWorkspace(onError) {
         applyChange(id, result, 'schedule'); return result;
       });
     },
-    sources(id, sources) {
+    sources(id, sources, connectorType = null) {
       return enqueue(async () => {
         await drain();
-        const result = await request(`/api/models/${encodeURIComponent(id)}/sources`, 'PUT', { sources, revision: revision(id) });
+        const result = await request(`/api/models/${encodeURIComponent(id)}/sources`, 'PUT', { sources, revision: revision(id), ...(connectorType ? { connectorType } : {}) });
         applyChange(id, result, 'sources'); return result;
       });
     },
@@ -247,6 +247,8 @@ export async function connectWorkspace(onError) {
         return request(`/api/models/${encodeURIComponent(id)}/sources/preview`, 'POST', { source, revision: revision(id), target, ...(period ? { period } : {}) });
       });
     },
+    connectorTest(id, source) { return this.sqlTest(id, source); },
+    connectorPreview(id, source, target, period = null) { return this.sqlPreview(id, source, target, period); },
     publication(id, published) {
       return enqueue(async () => {
         await drain();

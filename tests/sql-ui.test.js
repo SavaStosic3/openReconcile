@@ -31,7 +31,7 @@ function setup(t) {
   }
   const node = selector => { if (!nodes.has(selector)) nodes.set(selector, new Node()); return nodes.get(selector); };
   const form = node('#sql-source-form');
-  form.elements = Object.fromEntries(Object.entries({ name: '', direction: 'input', connectionId: '', table: '', tagColumn: 'source_name', valueColumn: 'value', timestampColumn: 'recorded_at', aggregation: 'latest', maxAgeMinutes: '60', minCoveragePercent: '100', qualityColumn: '', goodQualityValues: 'Good', badQualityPolicy: 'reject', interpolation: 'step', gapPolicy: 'reject', totalizerReset: 'reject', rolloverValue: '' }).map(([name, value]) => [name, new Node(value)]));
+  form.elements = Object.fromEntries(Object.entries({ connectorType: 'sql', name: '', direction: 'input', connectionId: '', table: '', tagColumn: 'source_name', valueColumn: 'value', timestampColumn: 'recorded_at', aggregation: 'latest', maxAgeMinutes: '60', minCoveragePercent: '100', qualityColumn: '', goodQualityValues: 'Good', badQualityPolicy: 'reject', interpolation: 'step', gapPolicy: 'reject', totalizerReset: 'reject', rolloverValue: '' }).map(([name, value]) => [name, new Node(value)]));
   form.reset = () => { for (const field of Object.values(form.elements)) field.value = field.defaultValue; };
   form.querySelectorAll = () => [...Object.values(form.elements), node('#sql-save-source'), node('#sql-test-source'), node('#sql-preview-input')];
   node('#sql-preview-target').value = 'draft';
@@ -43,22 +43,22 @@ function setup(t) {
   const permissions = { 'model-a': { canEdit: true, published: true }, 'model-b': { canEdit: true, published: false } };
   const user = { role: 'admin', active: true };
   let refreshHandler = async () => {}, metadataHandler = async () => ({ configured: true, connections: [{ id: 'plant', name: 'Plant database', dialect: 'postgres', canRead: true, canWrite: true }] });
-  let testHandler = async () => ({ ok: true });
+  let testHandler = async () => ({ ok: true }), previewHandler = async () => ({ window: { start: '2026-10-10T00:00:00.000Z', end: '2026-10-10T01:00:00.000Z' }, readings: [{ modelName: 'Feed', sourceName: 'FEED', value: 100, unit: 'kg', timestamp: '2026-10-10T00:30:00.000Z' }] });
   const backend = {
     user, workspace,
     permission: id => permissions[id] || {},
     refresh: async () => { calls.push({ kind: 'refresh' }); return refreshHandler(); },
-    api: async path => { calls.push({ kind: 'metadata', path }); return metadataHandler(); },
-    sources: async (id, sources) => { calls.push({ kind: 'save', id, sources }); workspace.catalog.sources[id] = sources; for (const listener of listeners) listener(); return { schedulePaused: false }; },
+    api: async path => { calls.push({ kind: 'metadata', path }); return metadataHandler(path); },
+    sources: async (id, sources, connectorType = 'sql') => { calls.push({ kind: 'save', id, sources, connectorType }); workspace.catalog.sources[id] = workspace.catalog.sources[id].filter(source => source.type !== connectorType).concat(sources); for (const listener of listeners) listener(); return { schedulePaused: false }; },
     sqlTest: async (id, source) => { calls.push({ kind: 'test', id, source }); return testHandler(); },
-    sqlPreview: async (id, source, target, period) => { calls.push({ kind: 'preview', id, source, target, period }); return { window: { start: '2026-10-10T00:00:00.000Z', end: '2026-10-10T01:00:00.000Z' }, readings: [{ modelName: 'Feed', sourceName: 'FEED', value: 100, unit: 'kg', timestamp: '2026-10-10T00:30:00.000Z' }] }; },
+    sqlPreview: async (id, source, target, period) => { calls.push({ kind: 'preview', id, source, target, period }); return previewHandler(); },
     subscribe: listener => { listeners.add(listener); return () => listeners.delete(listener); }
   };
   const period = { start: '2026-10-10T00:00:00.000Z', end: '2026-10-10T01:00:00.000Z', kind: 'hour' };
   const ui = createSqlConnectors({ backend, beforeOpen: async () => {}, onToast: message => toasts.push(message), periodSelectorFactory: () => ({ refresh() {}, setEnabled() {}, value: () => period }) });
   return { ui, node, form, backend, permissions, calls, toasts,
     notify: () => { for (const listener of listeners) listener(); },
-    refreshWith: handler => { refreshHandler = handler; }, metadataWith: handler => { metadataHandler = handler; }, testWith: handler => { testHandler = handler; },
+    refreshWith: handler => { refreshHandler = handler; }, metadataWith: handler => { metadataHandler = handler; }, testWith: handler => { testHandler = handler; }, previewWith: handler => { previewHandler = handler; },
     validForm: () => { form.elements.name.value = 'Hourly input'; form.elements.table.value = 'mass_readings'; }
   };
 }
@@ -141,4 +141,93 @@ test('changing SQL configuration clears readings and verification messages from 
   assert.equal(f.node('#sql-message').textContent, '');
   assert.deepEqual(f.backend.workspace.catalog.sources['model-a'], []);
   assert.equal(f.calls.filter(call => call.kind === 'save').length, 0);
+});
+
+const piMetadata = () => ({ configured: true, connections: [{ id: 'historian', name: 'Plant historian', canRead: true, canWrite: true,
+  inputs: [{ sourceName: 'FEED', unit: 'kg' }], outputs: [{ sourceName: 'FEED', metric: 'mass', unit: 'kg' }] }] });
+async function selectPi(f) {
+  f.metadataWith(path => path === '/api/pi/connections' ? piMetadata() : { configured: true, connections: [{ id: 'plant', name: 'Plant database', dialect: 'postgres', canRead: true, canWrite: true }] });
+  f.form.elements.connectorType.value = 'pi'; await f.form.elements.connectorType.onchange();
+}
+
+test('PI source selection hides SQL identifiers, exposes safe aliases, and retains cached connections', async t => {
+  const f = setup(t); await f.ui.open(); await selectPi(f);
+  assert.equal(f.node('#sql-table-field').hidden, true);
+  assert.equal(f.node('#sql-input-column-fields').hidden, true);
+  assert.equal(f.node('#sql-quality-column-field').hidden, true);
+  assert.equal(f.form.elements.table.required, false);
+  assert.equal(f.form.elements.goodQualityValues.readOnly, true);
+  assert.match(f.node('#pi-bindings').innerHTML, /FEED/);
+  assert.match(f.node('#pi-bindings').innerHTML, /kg/);
+  assert.doesNotMatch(f.node('#pi-bindings').innerHTML, /password|bearer|\\\\/);
+  f.form.elements.direction.value = 'output'; f.form.elements.direction.onchange();
+  assert.equal(f.node('#pi-output-fields').hidden, false);
+  assert.equal(f.node('#sql-output-fields').hidden, true);
+  assert.equal(f.node('#sql-preview-input').hidden, true);
+  assert.match(f.node('#pi-bindings').innerHTML, /mass/);
+  f.form.elements.connectorType.value = 'sql'; await f.form.elements.connectorType.onchange();
+  assert.equal(f.form.elements.connectionId.value, 'plant');
+  assert.equal(f.node('#sql-table-field').hidden, false);
+  await selectPi(f);
+  assert.equal(f.calls.filter(call => call.path === '/api/pi/connections').length, 1);
+});
+
+test('saving PI and SQL sources sends only the selected connector kind and preserves the other registry', async t => {
+  const f = setup(t);
+  f.backend.workspace.catalog.sources['model-a'] = [{ id: 'sql-existing', name: 'SQL output', type: 'sql', direction: 'output', connectionId: 'plant', table: 'results' }];
+  await f.ui.open(); await selectPi(f);
+  f.form.elements.name.value = 'PI input';
+  f.form.elements.goodQualityValues.value = 'Bad';
+  await f.form.onsubmit({ preventDefault() {} });
+  const piSave = f.calls.find(call => call.kind === 'save');
+  assert.equal(piSave.connectorType, 'pi'); assert.equal(piSave.sources.length, 1);
+  assert.equal(piSave.sources[0].type, 'pi'); assert.equal(piSave.sources[0].quality.qualityColumn, 'piQuality');
+  assert.deepEqual(piSave.sources[0].quality.goodQualityValues, ['Good']);
+  assert.equal(f.backend.workspace.catalog.sources['model-a'].length, 2);
+  assert.match(f.node('#sql-source-list').innerHTML, /SQL output/);
+  assert.match(f.node('#sql-source-list').innerHTML, /PI input/);
+  f.form.elements.connectorType.value = 'sql'; await f.form.elements.connectorType.onchange();
+  f.validForm(); await f.form.onsubmit({ preventDefault() {} });
+  const sqlSave = f.calls.filter(call => call.kind === 'save').at(-1);
+  assert.equal(sqlSave.connectorType, 'sql'); assert.equal(sqlSave.sources.length, 2);
+  assert.ok(sqlSave.sources.every(source => source.type === 'sql'));
+  assert.equal(f.backend.workspace.catalog.sources['model-a'].filter(source => source.type === 'pi').length, 1);
+});
+
+test('unconfigured PI still allows choosing SQL, while locked and revoked access block PI actions', async t => {
+  const f = setup(t); await f.ui.open();
+  f.metadataWith(() => ({ configured: false, connections: [] }));
+  f.form.elements.connectorType.value = 'pi'; await f.form.elements.connectorType.onchange();
+  assert.equal(f.node('#pi-setup-note').hidden, false);
+  assert.equal(f.node('#sql-setup-note').hidden, true);
+  assert.equal(f.form.elements.connectorType.disabled, false);
+  assert.equal(f.node('#sql-test-source').disabled, true);
+  await f.node('#sql-test-source').onclick(); assert.equal(f.calls.filter(call => call.kind === 'test').length, 0);
+  f.metadataWith(() => piMetadata()); await f.node('#sql-refresh').onclick();
+  f.form.elements.name.value = 'PI input'; f.permissions['model-a'].canEdit = false; f.notify();
+  await f.node('#sql-preview-input').onclick(); assert.equal(f.calls.filter(call => call.kind === 'preview').length, 0);
+  assert.equal(f.form.elements.connectorType.disabled, true);
+  f.backend.user.role = 'operator'; f.notify(); assert.equal(f.ui.isOpen, false);
+});
+
+test('late PI preview cannot populate another model and reopening waits for pending operations', async t => {
+  const f = setup(t), gate = deferred(); await f.ui.open(); await selectPi(f);
+  f.form.elements.name.value = 'PI input'; f.previewWith(() => gate.promise);
+  const preview = f.node('#sql-preview-input').onclick();
+  await until(() => f.calls.some(call => call.kind === 'preview'));
+  f.node('#sql-model').value = 'model-b'; f.node('#sql-model').onchange();
+  gate.resolve({ window: { start: '2026-10-10T00:00:00.000Z', end: '2026-10-10T01:00:00.000Z' }, readings: [{ modelName: 'Late Feed', sourceName: 'FEED', value: 100, unit: 'kg', timestamp: '2026-10-10T00:30:00.000Z' }] });
+  await preview;
+  assert.equal(f.node('#sql-preview').innerHTML, ''); assert.equal(f.node('#sql-message').textContent, '');
+  assert.equal(f.node('#sql-model').value, 'model-b');
+});
+
+test('PI metadata loaded after closing the connector page is discarded', async t => {
+  const f = setup(t), gate = deferred(); await f.ui.open();
+  f.metadataWith(() => gate.promise);
+  f.form.elements.connectorType.value = 'pi'; const switching = f.form.elements.connectorType.onchange();
+  await until(() => f.calls.some(call => call.path === '/api/pi/connections'));
+  f.ui.leave(); gate.resolve(piMetadata()); await switching;
+  assert.equal(f.ui.isOpen, false);
+  assert.doesNotMatch(f.node('#pi-bindings').innerHTML, /FEED/);
 });

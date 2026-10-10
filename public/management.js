@@ -158,14 +158,14 @@ export function createManagement({ fallbackModel, beforeAction, onActivate, onRu
     for (const source of sources) {
       const key = source.adapterKey ?? source.adapter ?? source.type;
       const adapters = direction === 'input' ? inputAdapters : outputAdapters;
-      const supported = (backend && source.type === 'sql') || (Object.hasOwn(adapters, key) && typeof adapters[key] === 'function');
+      const supported = (backend && ['sql', 'pi'].includes(source.type)) || (Object.hasOwn(adapters, key) && typeof adapters[key] === 'function');
       const option = new Option(`${source.name}${supported ? '' : ' · adapter unavailable'}`, source.id);
       option.disabled = !supported;
       select.add(option);
     }
     select.value = selection || '';
     $(`#schedule-${direction}-help`).textContent = sources.length
-      ? 'SQL sources use the server’s configured gateway. Input fetches fresh batch readings; output writes reconciled results. These choices also apply to manual runs.'
+      ? 'Inputs fetch readings for the reporting period; outputs write reconciled results through the configured connection. These choices also apply to manual runs.'
       : direction === 'input' ? 'No input connector configured. Runs use the model’s saved readings.' : backend ? 'No output connector configured. Results are saved in the workspace run history.' : 'No output connector configured. Results are saved in this browser’s run history.';
   }
   function cadence(minutes) {

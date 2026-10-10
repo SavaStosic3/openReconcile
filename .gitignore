@@ -18,3 +18,6 @@ backups/
 deploy/.env
 deploy/.env.*
 !deploy/.env.example
+deploy/pi-connections.json
+deploy/pi-connections.*.json
+deploy/pi-ca.pem

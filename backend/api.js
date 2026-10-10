@@ -2,8 +2,9 @@ import { createCatalog, defaultSchedule, validateEditableModel, setSchedule, adv
 import { executeModelRun } from '../public/schedule-runner.js';
 import { ApiError, USER_ROLES, MODEL_LEVELS, fields, safeId, validateRevision, requireAdmin, requirePermission } from './policy.js';
 import { Repository } from './repository.js';
-import { validateSqlSource } from '../public/sql-sources.js';
-import { sqlConnections, testSqlSource, readSqlInput, sqlAdapters } from './sql-connectors.js';
+import { sqlConnections, testSqlSource, readSqlInput } from './sql-connectors.js';
+import { piConnections, testPiSource, readPiInput } from './pi-connectors.js';
+import { validateDataSource, connectorAdapters } from './connectors.js';
 import { resolveReportingPeriod } from '../public/reporting-periods.js';
 import { schedulingStatus, executeStandaloneManualRun } from './scheduled-runs.js';
 
@@ -59,6 +60,7 @@ function routeInfo(path) {
   if (path === '/api/audit/trends') return { kind: 'auditTrends', methods: ['GET'] };
   if (path === '/api/audit/settings') return { kind: 'auditSettings', methods: ['GET','PATCH'] };
   if (path === '/api/sql/connections') return { kind: 'sqlConnections', methods: ['GET'] };
+  if (path === '/api/pi/connections') return { kind: 'piConnections', methods: ['GET'] };
   if (path === '/api/models') return { kind: 'create', methods: ['POST'] };
   let sourceMatch = path.match(/^\/api\/models\/([^/]+)\/sources(?:\/(test|preview))?$/);
   if (sourceMatch) return { kind: sourceMatch[2] === 'test' ? 'sourceTest' : sourceMatch[2] === 'preview' ? 'sourcePreview' : 'sources', id: safeId(decodeURIComponent(sourceMatch[1])), methods: [sourceMatch[2] ? 'POST' : 'PUT'] };
@@ -121,9 +123,9 @@ export async function handleApi(request, env, identity) {
     if (route.kind === 'audit') { await repo.pruneAudit(); return response(await repo.audit(user,auditFilters(new URL(request.url)))); }
     if (route.kind === 'auditTrends') { await repo.pruneAudit(); return response(await repo.auditTrends(user,auditFilters(new URL(request.url),true))); }
     if (route.kind === 'auditSettings' && request.method === 'GET') return response({ settings: await repo.auditSettings(user) });
-    if (route.kind === 'sqlConnections') {
+    if (['sqlConnections', 'piConnections'].includes(route.kind)) {
       requireAdmin(await repo.user(user.id));
-      const data = await sqlConnections(env);
+      const data = await (route.kind === 'piConnections' ? piConnections(env) : sqlConnections(env));
       requireAdmin(await repo.user(user.id));
       return response(data);
     }
@@ -143,17 +145,22 @@ export async function handleApi(request, env, identity) {
       validateRevision(body.revision);
       if (model.revision !== body.revision) throw new ApiError(409, 'This model changed. Refresh the workspace before saving.');
       if (route.kind === 'sources') {
-        fields(body, ['sources', 'revision'], ['sources', 'revision']);
-        if (!Array.isArray(body.sources) || body.sources.length > 20) throw new ApiError(400, 'Choose at most 20 SQL sources per model.');
-        const sql = validated(() => body.sources.map(validateSqlSource));
-        const legacy = model.sources.filter(source => source.type !== 'sql');
-        const sources = [...legacy, ...sql];
+        fields(body, ['sources', 'revision', 'connectorType'], ['sources', 'revision']);
+        const connectorType = body.connectorType ?? 'sql';
+        if (!['sql', 'pi'].includes(connectorType)) throw new ApiError(400, 'Choose SQL or PI Web API sources.');
+        if (!Array.isArray(body.sources) || body.sources.length > 20) throw new ApiError(400, 'Choose at most 20 connector sources per model.');
+        const submitted = validated(() => body.sources.map(source => {
+          if (source?.type !== connectorType) throw new Error('Save one connector type at a time; other connector sources are preserved.');
+          return validateDataSource(source);
+        }));
+        const preserved = model.sources.filter(source => source.type !== connectorType);
+        const sources = [...preserved, ...submitted];
         if (sources.length > 20 || new Set(sources.map(source => source.id)).size !== sources.length) throw new ApiError(400, 'Choose at most 20 sources with distinct identifiers per model.');
         // Connection names/capabilities are server-owned, not supplied by the browser.
-        if (sql.length) {
-          const metadata = await sqlConnections(env);
-          if (!metadata.configured) throw new ApiError(503, 'SQL is not configured. Ask an administrator to connect the SQL gateway.');
-          if (sql.some(source => !metadata.connections.some(connection => connection.id === source.connectionId && connection[source.direction === 'input' ? 'canRead' : 'canWrite']))) throw new ApiError(400, 'Choose an available connection with permission for this source direction.');
+        if (submitted.length) {
+          const metadata = await (connectorType === 'pi' ? piConnections(env) : sqlConnections(env));
+          if (!metadata.configured) throw new ApiError(503, connectorType === 'pi' ? 'PI Web API is not configured. Ask an administrator to configure its server connections.' : 'SQL is not configured. Ask an administrator to connect the SQL gateway.');
+          if (submitted.some(source => !metadata.connections.some(connection => connection.id === source.connectionId && connection[source.direction === 'input' ? 'canRead' : 'canWrite']))) throw new ApiError(400, 'Choose an available connection with permission for this source direction.');
         }
         const schedule = { ...model.schedule }; let schedulePaused = false;
         for (const direction of ['input', 'output']) {
@@ -166,17 +173,17 @@ export async function handleApi(request, env, identity) {
         return response({ ...await repo.updateSources(user, route.id, sources, schedule, body.revision), schedulePaused });
       }
       fields(body, ['source', 'revision', ...(route.kind === 'sourcePreview' ? ['target', 'period'] : [])], ['source', 'revision']);
-      const source = validated(() => validateSqlSource(body.source));
+      const source = validated(() => validateDataSource(body.source));
       let data;
-      if (route.kind === 'sourceTest') data = await testSqlSource(env, source);
+      if (route.kind === 'sourceTest') data = await (source.type === 'pi' ? testPiSource(env, source, model.model) : testSqlSource(env, source));
       else {
         const target = body.target ?? 'draft';
         if (!['draft', 'published'].includes(target)) throw new ApiError(400, 'Choose the draft or published model for this preview.');
-        if (target === 'published' && (!model.published || !model.publishedModel)) throw new ApiError(403, 'Publish this model before previewing its published SQL inputs.');
+        if (target === 'published' && (!model.published || !model.publishedModel)) throw new ApiError(403, 'Publish this model before previewing its published connector inputs.');
         const snapshot = target === 'published' ? model.publishedModel : model.model;
         if (source.direction !== 'input') throw new ApiError(400, 'Only input sources have a readings preview.');
         const reportingPeriod = validated(() => resolveReportingPeriod(model.schedule.reporting, snapshot, clock(env)(), body.period ?? null));
-        data = { ...await readSqlInput(env, source, snapshot, { start: reportingPeriod.start, end: reportingPeriod.end }), reportingPeriod };
+        data = { ...await (source.type === 'pi' ? readPiInput(env, source, snapshot, { start: reportingPeriod.start, end: reportingPeriod.end }) : readSqlInput(env, source, snapshot, { start: reportingPeriod.start, end: reportingPeriod.end })), reportingPeriod };
       }
       requireAdmin(await repo.user(user.id));
       const fresh = await repo.accessibleModel(user, route.id, 'canEdit');
@@ -230,8 +237,20 @@ export async function handleApi(request, env, identity) {
         model = await repo.claimSchedule(user, model, catalog.schedules[route.id]);
         catalog = singleCatalog(model, target);
       }
+      const piOutputSelected = model.sources.some(source => source.id === model.schedule.outputSourceId && source.type === 'pi');
       const runOptions = { trigger: body.trigger, id: repo.uuid(), now: clock(env), target, period: { start: reportingPeriod.start, end: reportingPeriod.end, kind: reportingPeriod.kind }, publishedVersion: target === 'published' ? model.publishedVersion : null,
-        ...sqlAdapters(env), beforeOutput: async () => { await repo.accessibleModel(user, route.id, 'canRun'); await checkScheduledJob(); } };
+        ...connectorAdapters(env), beforeOutput: async () => {
+          const { model: fresh } = await repo.accessibleModel(user, route.id, 'canRun');
+          if (piOutputSelected) {
+            const snapshotUnchanged = target === 'published'
+              ? fresh.published && fresh.publishedVersion === model.publishedVersion && JSON.stringify(fresh.publishedModel) === JSON.stringify(model.publishedModel)
+              : JSON.stringify(fresh.model) === JSON.stringify(model.model);
+            if (!snapshotUnchanged || JSON.stringify(fresh.schedule) !== JSON.stringify(model.schedule) || JSON.stringify(fresh.sources) !== JSON.stringify(model.sources)) {
+              throw new ApiError(409, 'The model, publication, schedule, or data sources changed during this run. Review the changes before rerunning the period.');
+            }
+          }
+          await checkScheduledJob();
+        } };
       const durableManual = env.STANDALONE_SCHEDULER === true;
       const { run } = durableManual ? await executeStandaloneManualRun(env, repo, user, model, catalog, runOptions) : await executeModelRun(catalog, route.id, runOptions);
       if (!durableManual) {

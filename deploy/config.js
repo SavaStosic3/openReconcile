@@ -1,10 +1,30 @@
 import { resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { isIP } from 'node:net';
+import { open } from 'node:fs/promises';
 import { loadServerSecrets } from './accounts.js';
+import { validatePiConnections } from '../backend/pi-connectors.js';
 
 const ROOT = fileURLToPath(new URL('../', import.meta.url));
 const LOOPBACK_NAMES = new Set(['localhost', '127.0.0.1', '[::1]']);
+
+async function loadPiConnectionFile(path) {
+  let file;
+  try {
+    file = await open(resolve(path), 'r');
+    const info = await file.stat();
+    if (!info.isFile() || info.size > 1_000_000) throw new Error();
+    const buffer = new Uint8Array(1_000_001); let count = 0;
+    while (count < buffer.length) {
+      const { bytesRead } = await file.read(buffer, count, buffer.length - count, null);
+      if (!bytesRead) break;
+      count += bytesRead;
+    }
+    if (count > 1_000_000) throw new Error();
+    return validatePiConnections(JSON.parse(new TextDecoder('utf-8', { fatal: true }).decode(buffer.subarray(0, count))));
+  } catch { throw new Error('PI_CONNECTIONS_FILE must reference a readable JSON array of valid PI connections, no larger than 1 MB.'); }
+  finally { await file?.close(); }
+}
 
 export function validatePublicOrigin(value = 'http://localhost:8080') {
   let url;
@@ -44,6 +64,7 @@ export async function loadConfig({ env = process.env } = {}) {
     if (typeof env.SQL_GATEWAY_TOKEN !== 'string' || env.SQL_GATEWAY_TOKEN.length < 32 || env.SQL_GATEWAY_TOKEN.length > 512 || /\s/.test(env.SQL_GATEWAY_TOKEN)) throw new Error('SQL_GATEWAY_TOKEN must contain 32 to 512 non-whitespace characters.');
     Object.assign(backendEnv, { SQL_GATEWAY_URL: gateway.toString(), SQL_GATEWAY_TOKEN: env.SQL_GATEWAY_TOKEN, ...(local ? { SQL_GATEWAY_ALLOW_LOCAL: 'true' } : {}) });
   }
+  if (env.PI_CONNECTIONS_FILE) backendEnv.PI_CONNECTIONS = await loadPiConnectionFile(env.PI_CONNECTIONS_FILE);
   return {
     host, port: Number(portText), publicOrigin, dataDir,
     publicDir: resolve(ROOT, 'public'), migrationsDir: resolve(ROOT, 'drizzle'), backendEnv,

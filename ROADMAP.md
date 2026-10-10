@@ -29,7 +29,7 @@ Every API request enforces authentication and permissions. Content writes also c
 **Future organization and versioning:**
 
 - Add plant/workspace organization, browsable model versions, and restoration of a previous model version.
-- Extend the current administrator-only SQL configuration and model-run permissions with dedicated connector grants and broader publishing controls as those integrations grow.
+- Extend the current administrator-only connector configuration and model-run permissions with dedicated connector grants and broader publishing controls as those integrations grow.
 
 Revision checks, run snapshots, and separate working drafts and published snapshots are implemented. Publishing promotes the saved draft to a numbered publication; manual published runs and schedules use that copy while edits remain separate. A user-facing history for browsing or restoring every model version remains planned.
 
@@ -45,7 +45,7 @@ Known scope: geometry is fixed; inventory conversion is first order and uses com
 
 **Implemented mapping foundation:** the hamburger menu's **Data Mapping** page lists items in the selected model with their current **Model Name** and an optional **Source Name** for an external tag, column, or field. Source Name is also editable from a unit or stream's settings, including unmetered streams. Mappings attach to stable item IDs, survive renaming, saving, duplication, and JSON import/export, and follow existing draft editing permissions and locks. Published mappings remain read-only until draft changes are published.
 
-**Implemented SQL input:** an administrator can configure and inspect per-model SQL sources through **SQL Connectors**, test a server connection, and preview data without changing readings. Connection IDs refer to a separately deployed Node.js gateway using `mssql` for SQL Server, `pg` for PostgreSQL, or `mysql2` for MySQL. Database credentials remain in the gateway's server environment; the Workers app calls that gateway over authenticated HTTP.
+**Implemented SQL input:** an administrator can configure and inspect per-model SQL sources through **Data connectors**, test a server connection, and preview data without changing readings. Connection IDs refer to a separately deployed Node.js gateway using `mssql` for SQL Server, `pg` for PostgreSQL, or `mysql2` for MySQL. Database credentials remain in the gateway's server environment; the Workers app calls that gateway over authenticated HTTP.
 
 The input format is a tag/value/timestamp table, with an optional historian quality column, matched by each physical meter's distinct Source Name. A run reads its selected completed reporting period with configurable Latest, Sum, arithmetic Average, Time-weighted average, or Totalizer difference aggregation. Every physical meter requires a mapping and valid interval data. Values must already use the meter's configured unit; virtual meters then calculate from the fresh readings. Inputs are retained in the run snapshot rather than overwriting saved model readings. Current source configuration applies to subsequent selected-source runs, while diagram mappings come from the selected draft/publication snapshot. Changing or removing a selected source pauses its schedule pending explicit re-enabling.
 
@@ -53,28 +53,32 @@ The input format is a tag/value/timestamp table, with an optional historian qual
 
 Mapping names are model metadata rather than credentials. Saving a mapping alone does not fetch data or change readings. SQL requires explicit server connection setup and network access; an actual plant integration must be configured and validated separately.
 
+**Implemented PI Web API input:** server-owned HTTPS connection profiles expose allowlisted Source Names and configured units through the shared Data connectors page. Recorded numeric readings use the same completed periods, age/coverage/integration/totalizer policies, exact inventory boundaries, and detached run snapshots as SQL. PI flags are mandatory and strict: Good=true, Questionable=false, and Substituted=false. Administrators select rejection or exclusion with retained coverage barriers. Inputs and output destinations may use different connector types; SQL and PI source registries coexist. Native Windows integrated/Kerberos authentication remains outside the supplied client; Basic over HTTPS and a bearer-authenticated company proxy are supported. See [PI configuration](docs/pi-web-api.md).
+
 **Future connector capabilities:**
 
-- Obtain model readings from CSV files, ODBC sources, SAP, OSIsoft PI, HTTP APIs, and additional adapters; broaden SQL table formats and supported databases.
+- Obtain model readings from CSV files, ODBC sources, SAP, other HTTP APIs, and additional adapters; broaden SQL table formats and supported databases.
 - Extend item mappings with per-meter connector settings. Inventory endpoint mappings and unit/uncertainty configuration are implemented.
 - Add provider-specific quality-code decoding, engineering-range rules, calibration information, and time-varying measurement uncertainty beyond the current SQL source-wide quality policy.
 - Support credentials and plant-network connectivity through server-side integrations or gateways.
 
 ## 5. Output data connectors
 
-**Implemented SQL output:** administrators configure a per-model output source through **SQL Connectors** and select it in Model Management. The SQL gateway writes observable mapped stream results and mapped unit incoming/outgoing totals to a normalized result table, in kg per reporting batch, with run/model/item identifiers and available measurement, correction, uncertainty, and status fields. Unobservable values are skipped and counted. Bound inserts execute in one transaction. Database operation errors roll back output; reconciliation results and delivery failures remain in shared run history. A lost acknowledgement after commit needs destination inspection by run ID before replay. Internal installations pause the model's automatic schedule after uncertain manual or scheduled delivery until explicit re-enabling following review.
+**Implemented SQL output:** administrators configure a per-model output source through **Data connectors** and select it in Model Management. The SQL gateway writes observable mapped stream results and mapped unit incoming/outgoing totals to a normalized result table, in kg per reporting batch, with run/model/item identifiers and available measurement, correction, uncertainty, and status fields. Unobservable values are skipped and counted. Bound inserts execute in one transaction. Database operation errors roll back output; reconciliation results and delivery failures remain in shared run history. A lost acknowledgement after commit needs destination inspection by run ID before replay. Internal installations pause the model's automatic schedule after uncertain manual or scheduled delivery until explicit re-enabling following review.
 
 Administrators configure sources; permitted operators execute the model's selected workflow. Table allowlists and database credentials stay in the gateway. Source settings are current operational configuration; item mappings and run inputs come from the selected snapshot. The gateway and destination schema require separate setup and real database validation before plant use.
 
+**Implemented PI Web API output:** separate server-owned output bindings map each Source Name/result metric to a permitted destination. Every selected result must be observable before writing. Reconciled kg values convert to configured kg/t/g destinations or period-average kg/h/t/h throughput, using actual elapsed duration. Inventories and signed accumulation remain mass. Opening inventory is written at period start and other metrics at period end. Explicit reruns replace values at the same point/timestamp. Scalar writes are acknowledged independently, so there is no cross-tag transaction; partial or uncertain delivery requires destination review and pauses internal automatic scheduling until explicitly re-enabled. No automatic retries or PI point provisioning are included.
+
 **Future output capabilities:**
 
-- Deliver results through CSV, ODBC, SAP, OSIsoft PI, HTTP APIs, and additional adapters where the destination supports the required writes.
+- Deliver results through CSV, ODBC, SAP, other HTTP APIs, and additional adapters where the destination supports the required writes.
 - Add destination schema flexibility, separate input/output mappings, and additional quality/metadata fields.
 - Add dedicated publishing grants, delivery acknowledgement workflows, retries, and duplicate/revision handling.
 
 ## 6. Reusable plant data workflows
 
-**Implemented initial SQL workflow:** configure item mappings, per-model SQL sources, reporting periods, quality policies, and Model Management's input/output selections once; preview fresh data and run the same workflow manually or on a schedule. Internal servers execute schedules unattended; the hosted testing site retains browser triggering. Runs retain exact reporting boundaries, actual elapsed duration, input/quality snapshots, publication target, results, rerun provenance, and delivery status. Multiple model sources can refer to a server-configured connection ID without exposing its database credentials.
+**Implemented data workflow:** configure item mappings, per-model SQL or PI sources, reporting periods, quality policies, and Model Management's input/output selections once; preview fresh data and run the same workflow manually or on a schedule. Internal servers execute schedules unattended; the hosted testing site retains browser triggering. Runs retain exact reporting boundaries, actual elapsed duration, input/quality snapshots, publication target, results, rerun provenance, and delivery status. Multiple model sources can refer to a server-configured connection ID without exposing its database credentials.
 
 Further enhancements include independent input/output mappings, reusable configuration templates, explicit input review/approval before automatic output, and richer delivery provenance across connector types.
 

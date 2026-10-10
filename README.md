@@ -19,8 +19,8 @@ Build a plant flowsheet, reconcile measured and unmeasured material flows, and i
 | **Physical and virtual meters** | Enter readings with units and uncertainty, or calculate a virtual reading with arithmetic and references such as `[RAW FEED] + [WASH WATER]`. Shared-reference uncertainty is propagated into the reconciliation. |
 | **Tanks and storage** | Reconcile opening and closing inventories, net accumulation, and transfers. Use mass, volume, or level readings with configured density and geometry. |
 | **Drafts and published models** | Edit and test a working draft separately from its active publication. Show reconciled stream masses, unit throughput, inventories, and accumulation on the published diagram. |
-| **Reporting periods and data quality** | Select completed hours, days, shifts, or batches and rerun previous periods. Configure time zones, cutoffs, and late-data allowance; apply SQL reading-age, quality-flag, coverage, integration, and totalizer rules. |
-| **SQL input and output** | Map model items to source names and read/write SQL Server, PostgreSQL, or MySQL through the separately configured [SQL gateway](connectors/sql-gateway/README.md). |
+| **Reporting periods and data quality** | Select completed hours, days, shifts, or batches and rerun previous periods. Configure time zones, cutoffs, and late-data allowance; apply reading-age, quality-flag, coverage, integration, and totalizer rules to connected inputs. |
+| **SQL and PI input/output** | Read/write SQL Server, PostgreSQL, or MySQL through the [SQL gateway](connectors/sql-gateway/README.md), or connect to plant historian tags through [PI Web API](docs/pi-web-api.md). Map inputs and deliver observable reconciled results to configured destinations. |
 | **Models and permissions** | Manage multiple models with viewer, operator, editor, and administrator roles. Assign model access, lock editing or unpublishing, and control deletion/restoration. |
 | **Schedules and audit history** | Run published models automatically on an internal server, without an open browser. Configure frequency, reporting periods, and source selections; search recorded changes with configurable audit retention. |
 | **Portable models and results** | Import/export models as JSON and export reconciliation results as CSV. Start from supplied reference models with independently calculated expected results. |
@@ -64,7 +64,7 @@ Accounts, models, permissions, schedules, audit records, and retained results pe
 
 ### 4. Enable scheduled reconciliation
 
-Publish a model, open **☰ → Model Management**, choose its frequency, reporting period, and optional SQL input/output, then enable and save the schedule. The Docker server checks due schedules every five seconds by default and continues after you sign out or close the browser. It rechecks the configuring account's permissions for each run. On an upgraded installation, save existing enabled schedules once to authorize unattended execution. See [scheduling and recovery](docs/self-hosting.md#unattended-scheduling) for configuration and interrupted-run handling.
+Publish a model, open **☰ → Model Management**, choose its frequency, reporting period, and optional input/output sources, then enable and save the schedule. The Docker server checks due schedules every five seconds by default and continues after you sign out or close the browser. It rechecks the configuring account's permissions for each run. On an upgraded installation, save existing enabled schedules once to authorize unattended execution. See [scheduling and recovery](docs/self-hosting.md#unattended-scheduling) for configuration and interrupted-run handling.
 
 ## Run your first reconciliation
 
@@ -105,6 +105,7 @@ Read the [mathematical scope and assumptions](docs/user-guide.md#mathematical-sc
 | [Internal-server installation](docs/self-hosting.md) | Docker, HTTPS, account provisioning, SQL configuration, backups, restore, upgrades, and installation checks. |
 | [Using openReconcile](docs/user-guide.md) | Modeling, readings, inventories, virtual meters, publications, permissions, reporting periods, quality rules, and audit history. |
 | [SQL gateway](connectors/sql-gateway/README.md) | Driver setup, connection configuration, input/output schemas, boundary snapshots, and quality policies. |
+| [PI Web API](docs/pi-web-api.md) | Private server profiles, historian tag mappings, PI quality, boundary reads, and result delivery. |
 | [Filtration reference](examples/showcase-model.md) · [model JSON](examples/showcase-model.json) | A recycle network with physical, virtual, and inferred flows, plus an independent analytical solution. |
 | [Storage reference](examples/storage-showcase-model.md) · [model JSON](examples/storage-showcase-model.json) | Three accumulating tanks with independently calculated fitted inventories and transfers. |
 | [Storage mathematics](docs/storage-mathematics.md) | Conservation, conversions, covariance, uncertainty, and assumptions. |
@@ -114,9 +115,9 @@ Read the [mathematical scope and assumptions](docs/user-guide.md#mathematical-sc
 ## Current scope
 
 - **Total mass reconciliation.** Equipment symbols do not calculate pump curves, thermodynamics, component balances, or energy balances. Storage conversion assumptions are documented in the mathematics guide.
-- **Unattended scheduling for internal installations.** The standalone server runs schedules while the app service is running. The retained ChatGPT testing site continues to use browser-triggered schedules. Missed periods are not replayed automatically. Uncertain SQL delivery from a manual or scheduled run pauses that model's automatic schedule until you review the destination and explicitly enable it again.
+- **Unattended scheduling for internal installations.** The standalone server runs schedules while the app service is running. The retained ChatGPT testing site continues to use browser-triggered schedules. Missed periods are not replayed automatically. Uncertain connector delivery from a manual or scheduled run pauses that model's automatic schedule until you review the destination and explicitly enable it again.
 - **20 retained runs per model.** Use output connectors for long-term reconciliation results; audit retention is configured separately.
-- **SQL requires a separate gateway.** CSV result export and JSON model import are available. CSV connection-structure import and dedicated SAP, ODBC, or PI connectors remain on the roadmap.
+- **SQL requires a separate gateway.** CSV result export and JSON model import are available. PI Web API uses server-owned connection profiles and separate output bindings. CSV connection-structure import and dedicated SAP/ODBC connectors remain on the roadmap.
 - **One internal app instance with local SQLite storage.** High availability and multiple replicas are outside the supplied Docker deployment. Models are limited to 200 nodes and 500 streams.
 
 The reference models and automated checks provide reproducible verification. Validate your actual topology, readings, units, uncertainties, and source data against known company cases before using results for reporting.

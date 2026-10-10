@@ -3,7 +3,7 @@ import { ApiError } from './policy.js';
 import { createCatalog, advanceSchedule } from '../public/management-store.js';
 import { resolveReportingPeriod, defaultReportingSettings } from '../public/reporting-periods.js';
 import { executeModelRun } from '../public/schedule-runner.js';
-import { sqlAdapters } from './sql-connectors.js';
+import { connectorAdapters } from './connectors.js';
 
 const activeStates = "('claimed','running','output')";
 const changed = result => Number(result?.meta?.changes ?? 0) > 0;
@@ -167,7 +167,7 @@ export function createScheduledRunner(env, { now = typeof env.NOW === 'function'
     };
     try {
       await checkpoint(job,'running');
-      const adapters = sqlAdapters(env), inputAdapters = {};
+      const adapters = connectorAdapters(env), inputAdapters = {};
       for (const [key, adapter] of Object.entries(adapters.inputAdapters)) inputAdapters[key] = async (...args) => {
         const imported = await adapter(...args);
         try { await checkpoint(job,'running'); } catch (error) { invalidated=true; throw error; }

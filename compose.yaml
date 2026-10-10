@@ -29,6 +29,7 @@ services:
       SCHEDULER_POLL_SECONDS: ${SCHEDULER_POLL_SECONDS:-5}
       SQL_GATEWAY_URL: ${SQL_GATEWAY_URL:-}
       SQL_GATEWAY_TOKEN: ${SQL_GATEWAY_TOKEN:-}
+      PI_CONNECTIONS_FILE: ${PI_CONNECTIONS_FILE:-}
     volumes:
       - data:/data
     stop_grace_period: 30s

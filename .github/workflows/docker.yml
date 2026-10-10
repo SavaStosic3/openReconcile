@@ -16,7 +16,10 @@ on:
       - 'tests/standalone-scheduler.test.js'
       - 'tests/deployment-server.test.js'
       - 'tests/deployment-database.test.js'
+      - 'tests/pi-*.test.js'
+      - 'tests/helpers/pi-fixture.js'
       - 'docs/self-hosting.md'
+      - 'docs/pi-web-api.md'
       - 'README.md'
       - '.github/workflows/docker.yml'
   pull_request:
@@ -33,7 +36,10 @@ on:
       - 'tests/standalone-scheduler.test.js'
       - 'tests/deployment-server.test.js'
       - 'tests/deployment-database.test.js'
+      - 'tests/pi-*.test.js'
+      - 'tests/helpers/pi-fixture.js'
       - 'docs/self-hosting.md'
+      - 'docs/pi-web-api.md'
       - 'README.md'
       - '.github/workflows/docker.yml'
   workflow_dispatch:
@@ -59,5 +65,7 @@ jobs:
         run: node --test --test-isolation=none tests/standalone-scheduler.test.js tests/deployment-server.test.js tests/deployment-database.test.js
       - name: Build the internal-server image
         run: docker compose build --pull
+      - name: Verify PI connector contracts in the packaged image
+        run: docker compose run --rm --no-deps -v "${PWD}/tests:/app/tests:ro" app node --test --test-isolation=none tests/pi-connectors.test.js tests/pi-api.test.js tests/pi-config.test.js
       - name: Exercise login, unattended reconciliation, restart safety, and persistent storage
         run: node scripts/docker-smoke.mjs

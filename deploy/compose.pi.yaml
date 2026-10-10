@@ -1,0 +1,11 @@
+# Combine with compose.yaml; private connection profiles are mounted read-only.
+services:
+  app:
+    environment:
+      PI_CONNECTIONS_FILE: /run/secrets/pi_connections
+    secrets:
+      - pi_connections
+
+secrets:
+  pi_connections:
+    file: ${PI_CONNECTIONS_FILE_HOST:-./deploy/pi-connections.json}

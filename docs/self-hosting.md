@@ -11,7 +11,7 @@ The existing hosted site remains available for development and testing. Each int
 - Disk space for the application volume and separate backups. Choose storage and capacity for the company's expected model and audit data; this repository does not establish a plant-scale sizing guarantee.
 - For other users to access the server: internal DNS, an HTTPS reverse proxy, and a certificate trusted by those users' browsers.
 
-Only the Docker image build needs access to Docker Hub. Manual reconciliation has no external-service requirement after installation. SQL connectors additionally need access to the configured plant-side gateway.
+Only the Docker image build needs access to Docker Hub. Manual reconciliation has no external-service requirement after installation. SQL connectors need access to the configured plant-side gateway, and PI connectors need access to the configured PI Web API endpoint or company proxy.
 
 ## Install and create the administrator
 
@@ -173,7 +173,13 @@ docker compose ps
 
 For a specific reviewed release, check out its tag or commit instead of following `main`. Changing application code or pulling a newer Node base image requires a rebuild. Changes to `.env` require container recreation. Keep the volume and pepper through every upgrade.
 
-Confirm sign-in, model permissions, a known example's calculations, and SQL input/output where used. For recovery, stop the failed release, select the retained previous image, and restore its matching pre-upgrade backup into a fresh volume. Do not attempt a database downgrade by deleting migration records.
+Confirm sign-in, model permissions, a known example's calculations, and configured input/output integrations. For recovery, stop the failed release, select the retained previous image, and restore its matching pre-upgrade backup into a fresh volume. Do not attempt a database downgrade by deleting migration records.
+
+## PI Web API connectors
+
+The app server can read physical PI meters and exact tank inventories and write selected reconciled values to existing output points. Follow the [PI Web API installation and mapping guide](pi-web-api.md) to mount a private connection file, choose HTTPS Basic authentication or a Bearer-authenticated company proxy, and configure input/output allowlists. PI is unconfigured by default. Credentials and physical tag paths stay on the server; the UI exposes only mapping aliases and units.
+
+Connection tests and input previews do not write to PI. Test a known reporting period against the company's PI server, including quality flags, units, boundary timestamps, and a dedicated output point, before enabling automatic exports. The repository's PI tests use controlled HTTP fixtures and do not prove a connection to a plant historian.
 
 ## SQL connectors
 
@@ -195,7 +201,7 @@ Have an authorized database administrator provision least-privilege users, table
 The standalone server executes enabled schedules without a browser or an active login session. This applies to Docker installations and deployments using `npm run start:server`; it does not change the hosted testing site's browser-triggered scheduling.
 
 1. Publish the model and open **☰ → Model Management** with editor or administrator access.
-2. Choose the run frequency, completed reporting period, time zone, late-data allowance, and optional SQL input/output sources.
+2. Choose the run frequency, completed reporting period, time zone, late-data allowance, and optional SQL or PI input/output sources.
 3. Enable scheduled runs and save. The account saving the schedule authorizes it. The server checks that account's current status, role, model grant, and publication before execution; disabling the account or removing its scheduling permission blocks further runs. An administrator or eligible editor can save the schedule again to take responsibility for it.
 4. Review **Schedule overview** and **Recent runs** for running, failed, and interrupted executions. Results remain attached to the publication used for that run.
 
@@ -218,9 +224,9 @@ Run frequency remains elapsed time: one day means 24 hours. Reporting boundaries
 
 Manual and scheduled runs share durable job claims that prevent overlapping runs for the same model and duplicate scheduled execution. Claims have a two-minute lease refreshed while work is active. After a process exits unexpectedly, recovery waits for the lease to expire before marking its abandoned run interrupted. The interrupted occurrence is retained as a failed run; it is not automatically retried. If output delivery had not begun, a subsequent due occurrence uses the normal latest-period policy. If output delivery is uncertain, automatic scheduling for that model is paused instead. Unpublishing, deleting, or changing a selected source also pauses the schedule.
 
-SQL output is an external operation. A lost acknowledgement or process interruption after delivery begins may leave its outcome unknown. For either a manual or a scheduled run, the server records the failure or interruption and **pauses the model's automatic schedule**. It does not repeat that delivery or allow a later scheduled occurrence to export the same period while the outcome is unresolved. Check the destination for the run ID, decide whether a manual period rerun is needed, then explicitly enable and save the schedule in Model Management to resume automatic work. Manually rerunning creates a new run and can produce additional output rows. This is not an exactly-once delivery guarantee. Keep the gateway's permissions, timeouts, and destination procedures appropriate for the installation.
+SQL and PI output are external operations. A lost acknowledgement or process interruption after delivery begins may leave the outcome unknown. For either a manual or a scheduled run, the server records the failure or interruption and **pauses the model's automatic schedule**. It does not repeat that delivery or allow a later scheduled occurrence to export the same period while the outcome is unresolved. Check SQL rows for the run ID or PI output tags at the recorded event timestamps, decide whether a manual period rerun is needed, then explicitly enable and save the schedule in Model Management to resume automatic work. Manually rerunning creates a new run; SQL can produce additional rows, while PI replaces values at the same point and timestamp. This is not an exactly-once delivery guarantee. Keep destination permissions, timeouts, and recovery procedures appropriate for the installation.
 
-Keep the app container running with the supplied restart policy. Stopping the container or host stops execution until service returns. The scheduler does not require internet access unless the configured input or output gateway requires it.
+Keep the app container running with the supplied restart policy. Stopping the container or host stops execution until service returns. The scheduler does not require internet access unless a configured input or output endpoint requires it.
 
 ## Operation and current limits
 

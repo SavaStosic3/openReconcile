@@ -38,7 +38,7 @@ export function trendSegments(points = []) {
 
 export function auditTrendHtml(data) {
   const points = Array.isArray(data.points) ? data.points : [];
-  if (!points.length) return '<div class="audit-empty"><strong>No recorded reading changes</strong><p>Changes to saved physical meter readings will appear here. SQL previews, virtual calculations, and reconciliation results do not add reading points.</p></div>';
+  if (!points.length) return '<div class="audit-empty"><strong>No recorded reading changes</strong><p>Changes to saved physical meter readings will appear here. Connector previews, virtual calculations, and reconciliation results do not add reading points.</p></div>';
   const series = trendSegments(points);
   let chart = '';
   if (series.points.length) {
