@@ -15,7 +15,7 @@ CREATE TABLE public.reconciliation_results (
   item_type varchar(16) NOT NULL,
   source_name varchar(200) NOT NULL,
   metric varchar(32) NOT NULL,
-  value_kg double precision NOT NULL CHECK (value_kg >= 0),
+  value_kg double precision NOT NULL,
   raw_kg double precision NULL,
   correction_kg double precision NULL,
   uncertainty_kg double precision NULL,
@@ -25,8 +25,9 @@ CREATE TABLE public.reconciliation_results (
   finished_at timestamptz NOT NULL,
   PRIMARY KEY (run_id, item_type, item_id, metric),
   CHECK (batch_end > batch_start),
+  CHECK (value_kg >= 0 OR (item_type = 'unit' AND metric = 'accumulation')),
   CHECK ((item_type = 'stream' AND metric = 'mass' AND status IN ('measured', 'estimated'))
-    OR (item_type = 'unit' AND metric IN ('incoming_mass', 'outgoing_mass') AND status = 'reconciled'))
+    OR (item_type = 'unit' AND metric IN ('incoming_mass', 'outgoing_mass', 'opening_inventory', 'closing_inventory', 'accumulation') AND status = 'reconciled'))
 );
 -- Use a least-privilege account: SELECT on mass_readings/results (for tests),
 -- INSERT on reconciliation_results. No DDL, UPDATE, or DELETE permissions.

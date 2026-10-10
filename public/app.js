@@ -15,6 +15,9 @@ import { createDataMapping } from './mapping-ui.js';
 import { createSqlConnectors } from './sql-ui.js';
 import { createPeriodSelector, qualityAuditHtml } from './reporting-ui.js';
 import { createAuditHistory } from './audit-ui.js';
+import { isStorageNode } from './inventory.js';
+import { INVENTORY_UNITS, fillInventoryForm, inventoryFromForm, inventoryMassHtml, inventoryRowsHtml, inventoryResultsHtml } from './storage-ui.js';
+import { storageShowcaseModel, resetStorageShowcaseReadings } from './storage-showcase-model.js';
 
 const $ = (s, root = document) => root.querySelector(s);
 const $$ = (s, root = document) => [...root.querySelectorAll(s)];
@@ -26,6 +29,7 @@ function buildPalette() {
   const groups = [
     { label: 'Machinery', kinds: ['pump', 'compressor', 'conveyor'] },
     { label: 'Flow & separation', kinds: ['valve', 'filter', 'cyclone', 'mixer', 'splitter'] },
+    { label: 'Tanks & storage', kinds: ['tank', 'bulkStorage'] },
     { label: 'Process', kinds: ['heatExchanger', 'process'] }
   ];
   $('#equipment-palette').innerHTML = groups.map(group => `<div class="palette-section"><h3>${esc(group.label)}</h3>${group.kinds.map(kind => {
@@ -81,7 +85,7 @@ function refreshChrome() {
   if (admin?.isOpen && backend.user.role !== 'admin') { admin.leave(); switchTab('model'); }
   if (sqlPage?.isOpen && backend.user.role !== 'admin') { sqlPage.leave(); switchTab('model'); }
   if (document.activeElement !== $('#model-name')) $('#model-name').value = model.name;
-  const count = model.streams.filter(s => s.measured).length;
+  const count = model.streams.filter(s => s.measured).length + model.nodes.filter(isStorageNode).reduce((total, node) => total + ['opening', 'closing'].filter(endpoint => node.inventory?.[endpoint]?.measured).length, 0);
   $('#meter-count').textContent = count;
   $('#model-count').textContent = `${model.nodes.length} units · ${model.streams.length} streams`;
   $('#canvas-empty').classList.toggle('hidden', model.nodes.length > 0);
@@ -93,10 +97,10 @@ function refreshChrome() {
   $('#run-button').disabled = !permission.canRun || !available || runningWorkbench; $('#data-run-button').disabled = !permission.canRun || runningWorkbench;
   if (!runningWorkbench) $('#run-button').innerHTML = `<span aria-hidden="true">▶</span> ${viewMode === 'published' ? 'Run reconciliation' : 'Test draft reconciliation'}`;
   $$('.palette-item').forEach(button => { button.disabled = !editable; button.draggable = editable; });
-  $$('[data-field], #batch-period, #custom-hours, #sample-readings').forEach(input => input.disabled = !editable);
-  $$('.stream-name-button:not([data-mapping-inspect]), [data-add-meter], #inspect-edit-node, #inspect-edit-stream, #inspect-delete').forEach(button => button.disabled = !editable);
+  $$('[data-field], [data-inventory-field], #batch-period, #custom-hours, #sample-readings').forEach(input => input.disabled = !editable);
+  $$('.stream-name-button:not([data-mapping-inspect]):not([data-result-stream]):not([data-result-inventory]), [data-add-meter], #inspect-edit-node, #inspect-edit-stream, #inspect-delete').forEach(button => button.disabled = !editable);
   $$('[data-mode="connect"]').forEach(button => button.disabled = !editable);
-  for (const id of ['new-button', 'demo-button', 'import-button', 'empty-new-model', 'empty-import-legacy']) $(`#${id}`).disabled = !canCreate();
+  for (const id of ['new-button', 'demo-button', 'storage-demo-button', 'import-button', 'empty-new-model', 'empty-import-legacy']) $(`#${id}`).disabled = !canCreate();
   $('#export-button').disabled = !permission.canView;
   $('#auth-export-draft').hidden = backend.user.active !== false || !backend.failedDraft();
   $('#menu-admin').hidden = backend.user.role !== 'admin';
@@ -201,6 +205,8 @@ function refreshPageChrome() {
   $('#open-published-view').classList.toggle('active', published);
   $('#open-editing-view').classList.toggle('active', !published);
   $('#tab-data').hidden = published;
+  $('.template-menu').hidden = published;
+  if (published) $('.template-menu').open = false;
   for (const id of ['new-button', 'demo-button', 'import-button', 'undo-button', 'redo-button']) $(`#${id}`).hidden = published;
   $('[data-mode="connect"]').hidden = published;
   const entries = backend.workspace.catalog.models.filter(item => backend.permission(item.id).published && item.publishedModel);
@@ -345,7 +351,7 @@ document.addEventListener('keydown', event => {
 });
 $('#model-name').addEventListener('change', event => { if (!requireEdit()) return; model.name = event.target.value.trim() || 'Untitled plant'; commit(); });
 $('#model-name').addEventListener('input', event => { if (!requireEdit()) return; model.name = event.target.value.trim() || 'Untitled plant'; commit(); });
-function askReplace(title, action) { $('#confirm-title').textContent = title; confirmAction = action; $('#confirm-dialog').showModal(); }
+function askReplace(title, action, message = 'Your current model stays in the saved model list when you create or import another model.') { $('#confirm-title').textContent = title; $('#confirm-message').textContent = message; confirmAction = action; $('#confirm-dialog').showModal(); }
 $('#confirm-cancel').onclick = () => { confirmAction = null; $('#confirm-dialog').close(); };
 $('#confirm-ok').onclick = () => { $('#confirm-dialog').close(); const action = confirmAction; confirmAction = null; action?.(); };
 function flushVisibleDraft() {
@@ -356,6 +362,10 @@ function flushVisibleDraft() {
     for (const input of $$('[data-field]')) {
       const stream = model.streams.find(s => s.id === input.closest('tr').dataset.stream);
       if (stream) stream[input.dataset.field] = input.dataset.field === 'uncertaintyType' ? input.value : input.value === '' ? '' : Number(input.value);
+    }
+    for (const input of $$('[data-inventory-field]')) {
+      const row = input.closest('tr'), node = model.nodes.find(item => item.id === row.dataset.inventoryNode), reading = node?.inventory?.[row.dataset.inventoryEndpoint];
+      if (reading) reading[input.dataset.inventoryField] = input.dataset.inventoryField === 'measured' ? input.checked : input.dataset.inventoryField === 'uncertaintyType' ? input.value : input.value === '' ? '' : Number(input.value);
     }
     if ($('#batch-period').value === 'custom') {
       const hours = Number($('#custom-hours').value);
@@ -398,10 +408,11 @@ $('#view-live-button').onclick = () => openPage('published');
 $('#publish-draft-button').onclick = publishDraft;
 $('#new-button').onclick = () => askReplace('Start a new model?', () => replaceModel(emptyModel()));
 function templateForModel() {
-  return [showcaseModel(), exampleModel()].find(template => template.streams.every(preset => model.streams.some(stream => stream.id === preset.id && stream.source === preset.source && stream.target === preset.target)));
+  return [showcaseModel(), exampleModel(), storageShowcaseModel()].find(template => template.streams.every(preset => model.streams.some(stream => stream.id === preset.id && stream.source === preset.source && stream.target === preset.target)));
 }
-function loadDemo() { askReplace('Create the slurry filtration with recycle model?', () => { replaceModel(showcaseModel()); toast('Template loaded with 5 physical meters, 1 virtual meter, and 3 unmetered streams.'); }); }
+function loadDemo() { $('.template-menu').open = false; askReplace('Create the slurry filtration with recycle model?', () => { replaceModel(showcaseModel()); toast('Template loaded with 5 physical meters, 1 virtual meter, and 3 unmetered streams.'); }); }
 $('#demo-button').onclick = loadDemo; $('#empty-demo').onclick = loadDemo;
+$('#storage-demo-button').onclick = () => { $('.template-menu').open = false; askReplace('Create the tanks and storage model?', () => { replaceModel(storageShowcaseModel()); toast('Storage template loaded with opening and closing inventories.'); }); };
 $('#help-button').onclick = () => $('#help-dialog').showModal();
 $$('.close-dialog').forEach(button => button.addEventListener('click', () => button.closest('dialog').close()));
 $$('dialog').forEach(dialog => dialog.addEventListener('click', event => { if (event.target === dialog) { const box = dialog.getBoundingClientRect(); if (event.clientX < box.left || event.clientX > box.right || event.clientY < box.top || event.clientY > box.bottom) dialog.close(); } }));
@@ -411,8 +422,13 @@ function renderInspector() {
   const stream = selection?.kind === 'stream' ? model.streams.find(s => s.id === selection.id) : null;
   if (node) {
     const incoming = model.streams.filter(s => s.target === node.id), outgoing = model.streams.filter(s => s.source === node.id);
-    $('#inspector').innerHTML = `<p class="eyebrow">SELECTED UNIT</p><h2>${esc(node.name)}</h2><span class="pill">${esc(NODE_TYPES[node.kind])}</span><p class="helper">${['inlet','outlet'].includes(node.kind) ? 'A model boundary. Conservation is enforced at process units inside the model.' : 'All incoming mass equals all outgoing mass. No accumulation is assumed.'}</p><div class="inspector-stats"><div><strong>${incoming.length}</strong><span>incoming</span></div><div><strong>${outgoing.length}</strong><span>outgoing</span></div></div><button class="button secondary full-width" id="inspect-edit-node">Edit unit</button><button class="text-button danger" id="inspect-delete">Delete selection</button><hr><h3>Connected streams</h3>${[...incoming,...outgoing].map(s => `<button class="stream-list-item" data-inspect-stream="${esc(s.id)}"><span>${esc(s.name)}</span><small>${isVirtualMeter(s) ? 'Ⓥ Virtual' : s.measured ? 'Ⓜ Measured' : 'Unmetered'}</small></button>`).join('') || '<p class="helper">Use Connect or drag a port to another unit.</p>'}`;
+    $('#inspector').innerHTML = `<p class="eyebrow">SELECTED UNIT</p><h2>${esc(node.name)}</h2><span class="pill">${esc(NODE_TYPES[node.kind])}</span><p class="helper">${['inlet','outlet'].includes(node.kind) ? 'A model boundary. Conservation is enforced at process units inside the model.' : isStorageNode(node) ? 'Opening inventory + incoming mass − outgoing mass − closing inventory = 0. Inventories can increase or decrease across the period.' : 'All incoming mass equals all outgoing mass. No accumulation is assumed.'}</p><div class="inspector-stats"><div><strong>${incoming.length}</strong><span>incoming</span></div><div><strong>${outgoing.length}</strong><span>outgoing</span></div></div><button class="button secondary full-width" id="inspect-edit-node">Edit unit</button><button class="text-button danger" id="inspect-delete">Delete selection</button><hr><h3>Connected streams</h3>${[...incoming,...outgoing].map(s => `<button class="stream-list-item" data-inspect-stream="${esc(s.id)}"><span>${esc(s.name)}</span><small>${isVirtualMeter(s) ? 'Ⓥ Virtual' : s.measured ? 'Ⓜ Measured' : 'Unmetered'}</small></button>`).join('') || '<p class="helper">Use Connect or drag a port to another unit.</p>'}`;
     $('#inspect-edit-node').onclick = () => openNode(node.id);
+    if (isStorageNode(node) && viewMode === 'editing') {
+      const card = document.createElement('div'); card.className = 'published-unit-readout';
+      card.innerHTML = `<h3>Saved inventory readings</h3>${['opening', 'closing'].map(endpoint => `<p>${endpoint === 'opening' ? 'Opening' : 'Closing'} · ${esc(node.inventory.unit)}<span>${inventoryMassHtml(node.inventory, endpoint, node.name)}</span></p>`).join('')}<p class="helper">Reading units and density are configured in Edit unit. Enter fresh inventories for each reporting period.</p>`;
+      $('.inspector-stats').after(card);
+    }
     if (viewMode === 'published') {
       const summary = getPublishedUnitSummary(node, model, results);
       const card = document.createElement('div'); card.className = 'published-unit-readout';
@@ -436,7 +452,7 @@ function renderInspector() {
     $('#inspector').innerHTML = `<p class="eyebrow">MODEL SETUP</p><h2>Build your flowsheet</h2><p class="helper">Define process units, connect material streams, and add measurements to reconcile your mass balance.</p><ol class="mini-steps"><li><strong>Place units</strong><span>Drag from the toolbox.</span></li><li><strong>Connect flows</strong><span>Drag between connection ports.</span></li><li><strong>Add measurements</strong><span>Right-click a stream to add a meter.</span></li><li><strong>Enter data & run</strong><span>Review adjustments and inferred flows.</span></li></ol><div class="inspector-callout"><span class="boundary-glyph">▶</span><p>Red triangles mark where material enters and leaves your model.</p></div><button class="button secondary full-width" id="inspect-guide">Open quick guide</button><div class="scope-note">Changes are saved to your workspace.<br><span>Export your model for a portable copy.</span></div>`;
     $('#inspect-guide').onclick = () => $('#help-dialog').showModal();
     if (viewMode === 'published') {
-      $('#inspector').innerHTML = `<p class="eyebrow">PUBLISHED MODEL</p><h2>Reconciliation overview</h2><p class="helper">Each unit shows incoming and outgoing mass above its symbol. Lines show the reconciled value of each stream.</p><div class="published-unit-readout"><span>${esc(activeRun ? `Version ${currentEntry()?.publishedVersion} · ${activeRun.status}` : 'Awaiting reconciliation')}</span><p class="helper">${esc(activeRun?.result?.message || activeRun?.error || 'Run this published version to display reporting-period results.')}</p></div><p class="helper">All values are kg per reporting period. Inferred stream values are marked. A dash means the available measurements do not determine the value.</p><p class="helper">Select a unit or stream to inspect its results. Draft changes take effect when published.</p>`;
+      $('#inspector').innerHTML = `<p class="eyebrow">PUBLISHED MODEL</p><h2>Reconciliation overview</h2><p class="helper">Process units show incoming and outgoing mass. Tanks and storage silos show opening, closing, and signed inventory change above their symbols. Lines show reconciled stream mass.</p><div class="published-unit-readout"><span>${esc(activeRun ? `Version ${currentEntry()?.publishedVersion} · ${activeRun.status}` : 'Awaiting reconciliation')}</span><p class="helper">${esc(activeRun?.result?.message || activeRun?.error || 'Run this published version to display reporting-period results.')}</p></div><p class="helper">Stream totals and inventory changes are kg over the reporting period; opening/closing stocks are inventory quantities in kg. Inferred values are marked. A dash means the available measurements do not determine the value.</p><p class="helper">Select a unit or stream to inspect its results. Draft changes take effect when published.</p>`;
     }
   }
   if ($('#inspect-delete')) $('#inspect-delete').onclick = () => editor.deleteSelection();
@@ -452,6 +468,7 @@ function renderInspector() {
   if (item) {
     const mapping = getDataMapping(item), card = document.createElement('div'); card.className = 'inspector-mapping';
     card.innerHTML = `<h3>Data mapping</h3><dl class="properties-list"><dt>Model Name</dt><dd>${esc(getModelItemName(item, node ? 'node' : 'stream'))}</dd><dt>Source Name</dt><dd>${esc(mapping?.sourceName || 'Not mapped')}</dd></dl><button type="button" class="text-button">View all mappings →</button>`;
+    if (isStorageNode(node)) card.querySelector('dl').insertAdjacentHTML('beforeend', ['opening', 'closing'].map(endpoint => `<dt>${endpoint === 'opening' ? 'Opening' : 'Closing'} source</dt><dd>${esc(node.inventory[endpoint].dataMapping?.sourceName || 'Not mapped')}</dd>`).join(''));
     card.querySelector('button').onclick = () => switchTab('mapping');
     $('#inspector').append(card);
   }
@@ -534,8 +551,34 @@ streamForm.addEventListener('submit', event => {
 $('#delete-stream').onclick = () => { editor.select('stream',editingStream); editor.deleteSelection(); $('#stream-dialog').close(); if (activeTab === 'data') renderData(); };
 $('#hide-stream-line').onclick = () => { $('#stream-dialog').close(); hideLine(editingStream); };
 function updateNodeNote() {
-  const kind = $('#node-form').elements.kind.value;
-  $('#node-note').textContent = isBoundary(kind) ? 'Red triangles mark the model boundary. Its inflow or outflow direction stays fixed.' : `${UNIT_SYMBOLS[kind].description.replace(/\.$/, '')}. The symbol describes this unit; all incoming mass equals all outgoing mass, with no storage or equipment-specific equations. Changing a symbol keeps its connections and readings.`;
+  const kind = $('#node-form').elements.kind.value, storage = isStorageNode({ kind });
+  $('#inventory-settings').hidden = !storage;
+  $('#node-note').textContent = isBoundary(kind) ? 'Red triangles mark the model boundary. Its inflow or outflow direction stays fixed.' : storage ? 'Storage inventory changes across the reporting period. Opening + incoming − outgoing − closing = 0. Changing between tank and silo preserves inventory settings and connections.' : `${UNIT_SYMBOLS[kind].description.replace(/\.$/, '')}. Incoming mass equals outgoing mass at this unit; no accumulation is assumed. Connections stay in place when the symbol changes.`;
+  updateInventoryControls();
+}
+function updateInventoryControls() {
+  const form = $('#node-form'), fields = form.elements, storage = isStorageNode({ kind: fields.kind.value });
+  for (const field of $$('#inventory-settings input, #inventory-settings select, #inventory-settings textarea')) field.disabled = !storage;
+  if (!storage) return;
+  $('#inventory-density-fields').hidden = fields.inventoryBasis.value === 'mass';
+  $('#inventory-geometry-fields').hidden = fields.inventoryBasis.value !== 'level';
+  for (const field of $$('#inventory-density-fields input')) field.disabled = fields.inventoryBasis.value === 'mass';
+  fields.inventoryGeometry.disabled = fields.inventoryBasis.value !== 'level';
+  for (const [kind, id] of [['verticalCylinder', 'inventory-diameter-field'], ['constantArea', 'inventory-area-field'], ['calibration', 'inventory-calibration-field']]) {
+    const visible = fields.inventoryBasis.value === 'level' && fields.inventoryGeometry.value === kind;
+    $(`#${id}`).hidden = !visible;
+    for (const field of $$('#' + id + ' input, #' + id + ' textarea')) field.disabled = !visible;
+  }
+  for (const title of ['Opening', 'Closing']) {
+    const measured = fields[`inventory${title}Measured`].checked;
+    for (const key of ['Value', 'Uncertainty', 'UncertaintyType']) fields[`inventory${title}${key}`].disabled = !measured;
+  }
+  try {
+    const inventory = inventoryFromForm(form, model.nodes.find(node => node.id === editingNode)?.inventory);
+    for (const endpoint of ['opening', 'closing']) $(`#inventory-${endpoint}-preview`).innerHTML = inventoryMassHtml(inventory, endpoint, fields.name.value);
+  } catch (error) {
+    for (const endpoint of ['opening', 'closing']) $(`#inventory-${endpoint}-preview`).innerHTML = `<span class="reading-error">${esc(error.message)}</span>`;
+  }
 }
 function openNode(id) {
   if (!requireEdit()) return;
@@ -546,21 +589,36 @@ function openNode(id) {
   $('#node-error').classList.add('hidden');
   form.elements.kind.innerHTML = isBoundary(node.kind) ? `<option value="${node.kind}">${esc(NODE_TYPES[node.kind])}</option>` : Object.entries(UNIT_SYMBOLS).map(([kind, symbol]) => `<option value="${kind}">${esc(symbol.label)}</option>`).join('');
   form.elements.kind.value = node.kind; form.elements.kind.disabled = isBoundary(node.kind);
+  fillInventoryForm(form, node.inventory);
+  $('.inventory-advanced').open = false;
   updateNodeNote(); $('#node-dialog').showModal();
 }
 $('#node-form').elements.kind.onchange = updateNodeNote;
 $('#node-form').elements.name.oninput = event => { $('#node-mapping-model-name').value = event.target.value.trim(); };
+$('#node-form').elements.inventoryBasis.onchange = event => {
+  const select = $('#node-form').elements.inventoryUnit;
+  select.replaceChildren(...INVENTORY_UNITS[event.target.value].map(unit => new Option(unit, unit)));
+  updateInventoryControls();
+};
+$('#node-form').addEventListener('input', updateInventoryControls);
+$('#node-form').addEventListener('change', updateInventoryControls);
 $('#node-form').onsubmit = event => {
   event.preventDefault(); if (!requireEdit()) return;
   const node = model.nodes.find(n => n.id === editingNode); if (!node) return;
   const form = $('#node-form'), kind = form.elements.kind.value;
   const sourceName = form.elements.sourceName.value.trim();
-  try { validateDataMapping(sourceName ? { sourceName } : undefined, node.name); }
+  const next = { ...node, name: form.elements.name.value.trim() || NODE_TYPES[kind], kind };
+  try {
+    validateDataMapping(sourceName ? { sourceName } : undefined, next.name);
+    if (sourceName) next.dataMapping = { sourceName }; else delete next.dataMapping;
+    if (isStorageNode(next)) next.inventory = inventoryFromForm(form, node.inventory); else delete next.inventory;
+    validateEditableModel({ ...model, nodes: model.nodes.map(item => item.id === next.id ? next : item) });
+  }
   catch (error) { $('#node-error').textContent = error.message; $('#node-error').classList.remove('hidden'); return; }
-  if (sourceName) node.dataMapping = { sourceName }; else delete node.dataMapping;
-  if (!isBoundary(node.kind) && Object.hasOwn(UNIT_SYMBOLS, kind)) node.kind = kind;
-  node.name = form.elements.name.value.trim() || NODE_TYPES[node.kind];
-  $('#node-dialog').close(); editor.setModel(model); commit();
+  const save = () => { Object.assign(node, next); if (!next.dataMapping) delete node.dataMapping; if (!next.inventory) delete node.inventory; editor.setModel(model); commit(); if (activeTab === 'data') renderData(); };
+  $('#node-dialog').close();
+  if (isStorageNode(node) && !isStorageNode(next)) askReplace('Remove this unit’s inventories?', save, `Changing ${node.name} to ${NODE_TYPES[kind]} removes its opening/closing readings, inventory uncertainty, geometry, and boundary mappings. The unit will use zero accumulation. Connections remain in place; Undo can restore the change.`);
+  else save();
 };
 $('#delete-node').onclick = () => { editor.select('node',editingNode); editor.deleteSelection(); $('#node-dialog').close(); };
 
@@ -585,6 +643,10 @@ function refreshMeterReadouts() {
       $('.virtual-formula-error', row).textContent = reading?.error || '';
     }
   }
+  for (const row of $$('#inventory-rows [data-inventory-node]')) {
+    const node = model.nodes.find(item => item.id === row.dataset.inventoryNode);
+    if (node) $('.inventory-mass-summary', row).innerHTML = inventoryMassHtml(node.inventory, row.dataset.inventoryEndpoint, node.name);
+  }
 }
 function renderData() {
   $('#batch-period').value = [1,24].includes(Number(model.periodHours)) ? String(model.periodHours) : 'custom';
@@ -599,6 +661,22 @@ function renderData() {
   $$('[data-edit]').forEach(button => button.onclick = () => openStream(button.dataset.edit));
   $$('[data-add-meter]').forEach(button => button.onclick = () => { openStream(button.dataset.addMeter); streamForm.elements.measured.checked = true; updateMeterPreview(); });
   $$('[data-field]').forEach(input => { const update = () => { if (!requireEdit()) return; const row = input.closest('tr'), stream = model.streams.find(s => s.id === row.dataset.stream); stream[input.dataset.field] = input.dataset.field === 'uncertaintyType' ? input.value : input.value === '' ? '' : Number(input.value); commit(); refreshMeterReadouts(); }; input.addEventListener('input', update); input.addEventListener('change', update); });
+  $('#inventory-measurements').hidden = !model.nodes.some(isStorageNode);
+  $('#inventory-rows').innerHTML = inventoryRowsHtml(model);
+  $$('[data-edit-inventory]').forEach(button => button.onclick = () => openNode(button.dataset.editInventory));
+  $$('[data-inventory-field]').forEach(input => {
+    const update = () => {
+      if (!requireEdit()) return;
+      const row = input.closest('tr'), node = model.nodes.find(item => item.id === row.dataset.inventoryNode), endpoint = node?.inventory?.[row.dataset.inventoryEndpoint];
+      if (!endpoint) return;
+      const field = input.dataset.inventoryField;
+      endpoint[field] = field === 'measured' ? input.checked : field === 'uncertaintyType' ? input.value : input.value === '' ? '' : Number(input.value);
+      commit();
+      if (field === 'measured') { renderData(); refreshChrome(); } else refreshMeterReadouts();
+    };
+    input.addEventListener('input', update); input.addEventListener('change', update);
+  });
+  refreshChrome();
   if ($('#data-back')) $('#data-back').onclick = () => switchTab('model');
 }
 $('#batch-period').onchange = event => { if (!requireEdit()) return; if (event.target.value === 'custom') { $('#custom-hours-label').classList.remove('hidden'); $('#custom-hours').focus(); } else { model.periodHours = Number(event.target.value); commit(); renderData(); } };
@@ -607,6 +685,11 @@ $('#sample-readings').onclick = () => {
   if (!requireEdit()) return;
   const template = templateForModel();
   if (!template) return;
+  if (template.nodes.some(isStorageNode)) {
+    resetStorageShowcaseReadings(model);
+    editor.setModel(model); commit(); renderData(); toast('Matching template readings restored. Custom conversion settings and unmeasured inventories are preserved.');
+    return;
+  }
   for (const preset of template.streams.filter(stream => stream.measured && !isVirtualMeter(stream))) {
     const stream = model.streams.find(item => item.id === preset.id);
     if (stream && !isVirtualMeter(stream)) Object.assign(stream, { measured: true, metric: preset.metric, unit: preset.unit, value: preset.value, uncertainty: preset.uncertainty, uncertaintyType: preset.uncertaintyType });
@@ -639,7 +722,7 @@ function renderResults() {
   const good = ['ok','warning','underdetermined'].includes(results.status); const severe = ['invalid','infeasible'].includes(results.status); const warnings = results.warnings || []; const inferred = results.streams.filter(s => s.status === 'estimated').length; const unknown = results.streams.filter(s => s.status === 'unobservable').length;
   const balanced = results.balances.filter(b => b.reconciled !== null && Number.isFinite(b.reconciled)); const maxError = balanced.length ? Math.max(...balanced.map(b => Math.abs(b.reconciled))) : null;
   const heading = results.status === 'ok' ? 'Reconciliation complete' : results.status === 'underdetermined' ? 'Additional measurements required' : results.status === 'warning' ? 'Reconciliation needs review' : 'Review model and inputs';
-  $('#view-results').innerHTML = `<div class="view-header"><div><p class="eyebrow">STEP 03 / RECONCILIATION</p><h1>${esc(heading)}</h1><p class="muted">${esc(model.name)} · ${esc(activeRun?.reportingPeriod?.label || 'Reporting period unavailable')} · ${fmt(Number(activeRun?.reportingPeriod?.periodHours ?? model.periodHours))} elapsed ${Number(activeRun?.reportingPeriod?.periodHours ?? model.periodHours) === 1 ? 'hour' : 'hours'} · total mass in kg</p></div><div class="top-actions"><button class="button secondary" id="results-flowsheet">View on flowsheet</button>${good ? '<button class="button secondary" id="export-results">Export results ↓</button>' : ''}</div></div><div class="result-banner ${severe ? 'error' : results.status === 'ok' ? 'success' : 'warning'}"><span class="banner-icon">${severe ? '!' : results.status === 'ok' ? '✓' : '!'}</span><div><strong>${esc(results.message)}</strong>${warnings.length ? `<ul>${warnings.map(w => `<li>${esc(w)}</li>`).join('')}</ul>` : ''}</div></div>${good ? `<div class="summary-grid"><div class="summary-card"><span>Largest closing error</span><strong>${fmt(maxError)} <small>kg</small></strong><p>Across ${balanced.length} observable process units</p></div><div class="summary-card"><span>Weighted adjustment</span><strong>${fmt(results.objective)}</strong><p>Squared residuals weighted by uncertainty</p></div><div class="summary-card"><span>Inferred streams</span><strong>${inferred}<small> / ${model.streams.filter(s => !s.measured).length}</small></strong><p>${unknown ? `${unknown} unresolved stream${unknown === 1 ? '' : 's'}` : 'Unique estimates where observable'}</p></div></div><div class="table-heading"><h2>Stream results</h2><span class="helper">All values normalized to kg per reporting period</span></div><div class="table-wrap"><table class="data-table"><thead><tr><th>Stream / material</th><th>Input mass</th><th>Reconciled</th><th>Adjustment</th><th>Estimate uncertainty (1σ)</th><th>Status</th></tr></thead><tbody>${results.streams.map(s => {const original = model.streams.find(v => v.id === s.id); return `<tr><td><button class="stream-name-button" data-result-stream="${esc(s.id)}">${esc(original?.name || s.id)}</button><small>${esc(original?.material)}</small></td><td class="mono">${fmt(s.raw)}</td><td class="mono result-number">${fmt(s.value)}</td><td class="mono">${s.correction !== null && s.correction !== undefined && s.correction > 0 ? '+' : ''}${fmt(s.correction)}</td><td class="mono">${fmt(s.uncertainty)}${s.atBound ? '<small>At physical bound</small>' : ''}</td><td><span class="status-pill ${s.status}">${s.status === 'unobservable' ? 'Needs measurement' : s.atBound ? 'At zero bound' : s.status === 'estimated' ? 'Inferred' : 'Reconciled'}</span></td></tr>`;}).join('')}</tbody></table></div><div class="table-heading"><h2>Unit balance checks</h2><span class="helper">Incoming mass − outgoing mass</span></div><div class="table-wrap"><table class="data-table balance-table"><thead><tr><th>Process unit</th><th>Before reconciliation</th><th>After reconciliation</th></tr></thead><tbody>${results.balances.map(b => `<tr><td>${esc(b.name)}</td><td class="mono">${fmt(b.raw)} kg</td><td class="mono">${fmt(b.reconciled)} kg</td></tr>`).join('')}</tbody></table></div><div class="result-method"><strong>How this result is calculated</strong><p>Measurements are adjusted using nonnegative, constrained generalized least squares. Every process unit conserves total mass with zero accumulation. Missing flows are reported only when uniquely determined. Physical reading errors and each virtual meter's calculation error are assumed independent and unbiased. Shared meter references use first-order covariance propagation; conversion properties stay fixed. Active bounds limit the usual Gaussian uncertainty interpretation.</p><p>A closed balance does not prove instrument accuracy. Raw values are preserved; corrections and diagnostics should be reviewed before using results for reporting.</p></div>` : '<button class="button secondary" id="results-fix-data">Review measurements</button>'}`;
+  $('#view-results').innerHTML = `<div class="view-header"><div><p class="eyebrow">STEP 03 / RECONCILIATION</p><h1>${esc(heading)}</h1><p class="muted">${esc(model.name)} · ${esc(activeRun?.reportingPeriod?.label || 'Reporting period unavailable')} · ${fmt(Number(activeRun?.reportingPeriod?.periodHours ?? model.periodHours))} elapsed ${Number(activeRun?.reportingPeriod?.periodHours ?? model.periodHours) === 1 ? 'hour' : 'hours'} · total mass in kg</p></div><div class="top-actions"><button class="button secondary" id="results-flowsheet">View on flowsheet</button>${good ? '<button class="button secondary" id="export-results">Export results ↓</button>' : ''}</div></div><div class="result-banner ${severe ? 'error' : results.status === 'ok' ? 'success' : 'warning'}"><span class="banner-icon">${severe ? '!' : results.status === 'ok' ? '✓' : '!'}</span><div><strong>${esc(results.message)}</strong>${warnings.length ? `<ul>${warnings.map(w => `<li>${esc(w)}</li>`).join('')}</ul>` : ''}</div></div>${good ? `<div class="summary-grid"><div class="summary-card"><span>Largest closing error</span><strong>${fmt(maxError)} <small>kg</small></strong><p>Across ${balanced.length} observable process units</p></div><div class="summary-card"><span>Weighted adjustment</span><strong>${fmt(results.objective)}</strong><p>Squared residuals weighted by uncertainty</p></div><div class="summary-card"><span>Inferred streams</span><strong>${inferred}<small> / ${model.streams.filter(s => !s.measured).length}</small></strong><p>${unknown ? `${unknown} unresolved stream${unknown === 1 ? '' : 's'}` : 'Unique estimates where observable'}</p></div></div><div class="table-heading"><h2>Stream results</h2><span class="helper">All values normalized to kg per reporting period</span></div><div class="table-wrap"><table class="data-table"><thead><tr><th>Stream / material</th><th>Input mass</th><th>Reconciled</th><th>Adjustment</th><th>Estimate uncertainty (1σ)</th><th>Status</th></tr></thead><tbody>${results.streams.map(s => {const original = model.streams.find(v => v.id === s.id); return `<tr><td><button class="stream-name-button" data-result-stream="${esc(s.id)}">${esc(original?.name || s.id)}</button><small>${esc(original?.material)}</small></td><td class="mono">${fmt(s.raw)}</td><td class="mono result-number">${fmt(s.value)}</td><td class="mono">${s.correction !== null && s.correction !== undefined && s.correction > 0 ? '+' : ''}${fmt(s.correction)}</td><td class="mono">${fmt(s.uncertainty)}${s.atBound ? '<small>At physical bound</small>' : ''}</td><td><span class="status-pill ${s.status}">${s.status === 'unobservable' ? 'Needs measurement' : s.atBound ? 'At zero bound' : s.status === 'estimated' ? 'Inferred' : 'Reconciled'}</span></td></tr>`;}).join('')}</tbody></table></div>${inventoryResultsHtml(results.inventories)}<div class="table-heading"><h2>Unit balance checks</h2><span class="helper">Incoming − outgoing − accumulation; accumulation is zero for process units</span></div><div class="table-wrap"><table class="data-table balance-table"><thead><tr><th>Process unit</th><th>Before reconciliation</th><th>After reconciliation</th></tr></thead><tbody>${results.balances.map(b => `<tr><td>${esc(b.name)}</td><td class="mono">${fmt(b.raw)} kg</td><td class="mono">${fmt(b.reconciled)} kg</td></tr>`).join('')}</tbody></table></div><div class="result-method"><strong>How this result is calculated</strong><p>Measurements are adjusted using nonnegative, constrained generalized least squares. Process units conserve total mass with zero accumulation. Tanks and storage silos balance opening inventory + incoming mass − outgoing mass − closing inventory. Inventories are reconciled jointly with flow measurements; inventory changes can be positive or negative. Missing flows are reported only when uniquely determined. Physical stream reading errors and each virtual meter's calculation error are assumed independent and unbiased. Shared meter references and inventory density uncertainty use first-order covariance propagation. Opening/closing inventory reading-error correlation is configured per storage unit; shared density error is added separately. Density is uniform and constant across the period, and geometry is treated as exact. Calibrated level tables require fixed density and reject extrapolation. Stream conversion properties stay fixed. Active bounds limit the usual Gaussian uncertainty interpretation.</p><p>A closed balance does not prove instrument accuracy. Raw values are preserved; corrections and diagnostics should be reviewed before using results for reporting.</p></div>` : '<button class="button secondary" id="results-fix-data">Review measurements</button>'}`;
   if (activeRun?.reportingPeriod || activeRun?.sql || activeRun?.error && activeRun?.result) {
     const audit = document.createElement('div'); audit.className = 'sql-run-audit' + (activeRun.error ? ' is-error' : '');
     const input = activeRun.sql?.input, output = activeRun.sql?.output;
@@ -650,6 +733,7 @@ function renderResults() {
   if ($('#results-fix-data')) $('#results-fix-data').onclick = () => switchTab('data');
   if ($('#export-results')) $('#export-results').onclick = exportResults;
   $$('[data-result-stream]').forEach(b => b.onclick = () => { switchTab('model'); editor.select('stream', b.dataset.resultStream); });
+  $$('[data-result-inventory]').forEach(button => button.onclick = () => { switchTab('model'); editor.select('node', button.dataset.resultInventory); });
 }
 function download(filename, text, type) { const url = URL.createObjectURL(new Blob([text], { type })); const anchor = document.createElement('a'); anchor.href = url; anchor.download = filename; anchor.click(); setTimeout(() => URL.revokeObjectURL(url),1000); }
 function safeFilename() { return model.name.replace(/[^a-z0-9_-]+/gi,'-').slice(0,70) || 'plant-model'; }
@@ -660,6 +744,13 @@ $('#auth-export-draft').onclick = () => {
 };
 $('#import-button').onclick = () => $('#import-file').click();
 $('#import-file').onchange = async event => { const file = event.target.files[0]; event.target.value = ''; if (!file) return; try { if (file.size > 2e6) throw new Error('Choose a model file smaller than 2 MB.'); const loaded = validateEditableModel(JSON.parse(await file.text())); askReplace('Import this plant model?', () => { replaceModel(loaded); toast('Model imported.'); }); } catch (error) { toast(`Import failed: ${error.message}`); } };
-function exportResults() { const cell = value => { let text = String(value ?? ''); if (typeof value === 'string' && /^[=+\-@\t\r]/.test(text)) text = `'${text}`; return `"${text.replace(/"/g,'""')}"`; }; const rows = [['Stream','Material','Measured kg','Reconciled kg','Adjustment kg','Standard uncertainty kg','Status','Period start UTC','Period end UTC','Period type','Model time zone','Run ID','Rerun of']]; for (const s of results.streams) { const stream = model.streams.find(v => v.id === s.id); rows.push([stream?.name,stream?.material,s.raw,s.value,s.correction,s.uncertainty,s.status,activeRun?.reportingPeriod?.start,activeRun?.reportingPeriod?.end,activeRun?.reportingPeriod?.kind,activeRun?.reportingPeriod?.timeZone,activeRun?.id,activeRun?.rerunOf]); } download(`${safeFilename()}-results.csv`,rows.map(row=>row.map(cell).join(',')).join('\r\n'),'text/csv;charset=utf-8'); }
+function exportResults() {
+  const cell = value => { let text = String(value ?? ''); if (typeof value === 'string' && /^[=+\-@\t\r]/.test(text)) text = `'${text}`; return `"${text.replace(/"/g, '""')}"`; };
+  const rows = [['Item', 'Item type', 'Quantity', 'Material', 'Input kg', 'Reconciled kg', 'Adjustment kg', 'Standard uncertainty kg', 'Status', 'Period start UTC', 'Period end UTC', 'Period type', 'Model time zone', 'Run ID', 'Rerun of']];
+  const add = (name, type, quantity, material, value) => rows.push([name, type, quantity, material, value.raw, value.value, value.correction, value.uncertainty, value.status, activeRun?.reportingPeriod?.start, activeRun?.reportingPeriod?.end, activeRun?.reportingPeriod?.kind, activeRun?.reportingPeriod?.timeZone, activeRun?.id, activeRun?.rerunOf]);
+  for (const value of results.streams) { const stream = model.streams.find(item => item.id === value.id); add(stream?.name, 'stream', 'transferred_mass', stream?.material, value); }
+  for (const inventory of results.inventories || []) for (const endpoint of ['opening', 'closing', 'accumulation']) add(inventory.name, 'inventory', endpoint, '', inventory[endpoint] || {});
+  download(`${safeFilename()}-results.csv`, rows.map(row => row.map(cell).join(',')).join('\r\n'), 'text/csv;charset=utf-8');
+}
 activateManagedModel(management.current(), { view: viewMode });
 requestAnimationFrame(() => editor.fit());

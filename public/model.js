@@ -1,6 +1,7 @@
 import { UNIT_SYMBOLS } from './unit-symbols.js';
 import { isVirtualMeter } from './virtual-meters.js';
 import { getModelItemName, validateDataMapping } from './data-mapping.js';
+import { defaultInventory, isStorageNode, validateInventory } from './inventory.js';
 
 export const NODE_TYPES = { ...Object.fromEntries(Object.entries(UNIT_SYMBOLS).map(([kind, symbol]) => [kind, symbol.label])), inlet: 'Inflow', outlet: 'Outflow' };
 export const METRICS = {
@@ -11,7 +12,9 @@ export const METRICS = {
 };
 export const uid = () => crypto.randomUUID();
 export function newNode(kind, x = 400, y = 260, count = 1) {
-  return { id: uid(), kind, name: `${NODE_TYPES[kind] || 'Process unit'} ${count}`, x, y };
+  const node = { id: uid(), kind, name: `${NODE_TYPES[kind] || 'Process unit'} ${count}`, x, y };
+  if (isStorageNode(node)) node.inventory = defaultInventory(kind);
+  return node;
 }
 export function newStream(source, target, count = 1) {
   return { id: uid(), source, target, name: `F-${String(count).padStart(2, '0')}`, material: 'Process material', phase: 'Liquid', density: 1000, temperature: 20, pressure: 101.325, measured: false, metric: 'mass', unit: 'kg', value: '', uncertainty: 2, uncertaintyType: 'percent' };
@@ -59,6 +62,8 @@ export function validateModel(model) {
   for (const n of model.nodes) {
     if (typeof n.id !== 'string' || ids.has(n.id) || !Object.hasOwn(NODE_TYPES,n.kind) || typeof n.name !== 'string' || n.name.length > 100 || !Number.isFinite(n.x) || !Number.isFinite(n.y) || Math.abs(n.x) > 1e6 || Math.abs(n.y) > 1e6) throw new Error('A process unit has invalid properties.');
     validateDataMapping(n.dataMapping, getModelItemName(n, 'node'));
+    if (isStorageNode(n)) validateInventory(n.inventory, n.name);
+    else if (n.inventory !== undefined) throw new Error(`${n.name}: inventory settings require a tank or storage silo.`);
     ids.add(n.id);
   }
   const streams = new Set();

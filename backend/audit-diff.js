@@ -64,6 +64,33 @@ export function describeModelChanges(before, after) {
       const oldMapping = text(oldItem?.dataMapping?.sourceName), newMapping = text(newItem?.dataMapping?.sourceName);
       add('mapping', detail, 'sourceName', oldMapping, newMapping);
       if (oldMapping !== null || newMapping !== null) add('mapping', detail, 'modelName', oldMapping === null ? null : itemName(oldItem, kind), newMapping === null ? null : itemName(newItem, kind));
+      if (kind === 'node') {
+        const oldInventory = oldItem?.inventory, newInventory = newItem?.inventory;
+        const inventoryDetail = { ...detail, unit: text(newInventory?.unit), previousUnit: text(oldInventory?.unit), metric: text(newInventory?.basis), previousMetric: text(oldInventory?.basis) };
+        add('measurement', inventoryDetail, 'inventory.presence', Boolean(oldInventory), Boolean(newInventory));
+        for (const field of ['basis', 'unit', 'density', 'densityUncertainty', 'readingCorrelation', 'capacityMass']) {
+          const normalize = ['basis', 'unit'].includes(field) ? text : number;
+          add('measurement', inventoryDetail, `inventory.${field}`, normalize(oldInventory?.[field]), normalize(newInventory?.[field]));
+        }
+        for (const field of ['kind', 'diameter', 'area']) {
+          const normalize = field === 'kind' ? text : number;
+          add('measurement', inventoryDetail, `inventory.geometry.${field}`, normalize(oldInventory?.geometry?.[field]), normalize(newInventory?.geometry?.[field]));
+        }
+        const oldPoints = oldInventory?.geometry?.points ?? [], newPoints = newInventory?.geometry?.points ?? [];
+        for (let index = 0; index < Math.max(oldPoints.length, newPoints.length); index++) {
+          for (const field of ['level', 'volume']) add('measurement', inventoryDetail, `inventory.geometry.points[${index}].${field}`, number(oldPoints[index]?.[field]), number(newPoints[index]?.[field]));
+        }
+        for (const endpoint of ['opening', 'closing']) {
+          const oldReading = oldInventory?.[endpoint], newReading = newInventory?.[endpoint];
+          add('measurement', inventoryDetail, `inventory.${endpoint}.measured`, oldReading?.measured === true, newReading?.measured === true);
+          add('measurement', inventoryDetail, `inventory.${endpoint}.value`, oldReading?.measured === true ? enteredScalar(oldReading.value) : null, newReading?.measured === true ? enteredScalar(newReading.value) : null);
+          add('measurement', inventoryDetail, `inventory.${endpoint}.uncertainty`, enteredScalar(oldReading?.uncertainty), enteredScalar(newReading?.uncertainty));
+          add('measurement', inventoryDetail, `inventory.${endpoint}.uncertaintyType`, text(oldReading?.uncertaintyType), text(newReading?.uncertaintyType));
+          const oldSource = text(oldReading?.dataMapping?.sourceName), newSource = text(newReading?.dataMapping?.sourceName);
+          add('mapping', inventoryDetail, `inventory.${endpoint}.sourceName`, oldSource, newSource);
+          if (oldSource !== null || newSource !== null) add('mapping', inventoryDetail, `inventory.${endpoint}.modelName`, oldSource === null ? null : `${itemName(oldItem, kind)} · ${endpoint}`, newSource === null ? null : `${itemName(newItem, kind)} · ${endpoint}`);
+        }
+      }
       if (kind !== 'stream') continue;
       const oldType = meterType(oldItem), newType = meterType(newItem), metered = oldType !== null || newType !== null;
       add('measurement', detail, 'measured', oldType !== null, newType !== null);

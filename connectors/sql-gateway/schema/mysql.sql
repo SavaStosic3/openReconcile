@@ -15,7 +15,7 @@ CREATE TABLE production.reconciliation_results (
   item_type varchar(16) NOT NULL,
   source_name varchar(200) NOT NULL,
   metric varchar(32) NOT NULL,
-  value_kg double NOT NULL CHECK (value_kg >= 0),
+  value_kg double NOT NULL,
   raw_kg double NULL,
   correction_kg double NULL,
   uncertainty_kg double NULL,
@@ -25,8 +25,9 @@ CREATE TABLE production.reconciliation_results (
   finished_at datetime(3) NOT NULL,
   PRIMARY KEY (run_id, item_type, item_id, metric),
   CHECK (batch_end > batch_start),
+  CHECK (value_kg >= 0 OR (item_type = 'unit' AND metric = 'accumulation')),
   CHECK ((item_type = 'stream' AND metric = 'mass' AND status IN ('measured', 'estimated'))
-    OR (item_type = 'unit' AND metric IN ('incoming_mass', 'outgoing_mass') AND status = 'reconciled'))
+    OR (item_type = 'unit' AND metric IN ('incoming_mass', 'outgoing_mass', 'opening_inventory', 'closing_inventory', 'accumulation') AND status = 'reconciled'))
 ) ENGINE = InnoDB;
 -- Use a least-privilege account with SELECT on both tables (for tests), INSERT
 -- on results only. Use InnoDB to guarantee output transaction rollback.

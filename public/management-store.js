@@ -1,5 +1,6 @@
 import { validateModel } from './model.js';
 import { validateReportingSettings } from './reporting-periods.js';
+import { isStorageNode, validateInventory } from './inventory.js';
 
 export const CATALOG_VERSION = 1;
 export const MAX_RUN_HISTORY = 100;
@@ -53,7 +54,12 @@ export function validateEditableModel(model) {
   for (const stream of draft.streams) {
     if (!record(stream) || typeof stream.measured !== 'boolean' || ![stream.value, stream.uncertainty].every(value => value === null || typeof value === 'string' || typeof value === 'number')) throw new Error('A flow connection has an invalid editable measurement.');
   }
-  validateModel({ ...draft, streams: draft.streams.map(stream => ({ ...stream, measured: false, uncertainty: 1 })) });
+  const nodes = (draft.nodes || []).map(node => {
+    if (!isStorageNode(node)) return node;
+    validateInventory(node.inventory, node.name, { allowDraftReadings: true });
+    return { ...node, inventory: { ...node.inventory, opening: { ...node.inventory.opening, measured: false, value: '', uncertainty: 1 }, closing: { ...node.inventory.closing, measured: false, value: '', uncertainty: 1 } } };
+  });
+  validateModel({ ...draft, nodes, streams: draft.streams.map(stream => ({ ...stream, measured: false, uncertainty: 1 })) });
   return draft;
 }
 

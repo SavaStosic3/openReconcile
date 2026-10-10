@@ -6,6 +6,7 @@ import { reconcile } from '../public/solver.js';
 import { UNIT_SYMBOLS, appendUnitSymbol, portPosition, unitBounds } from '../public/unit-symbols.js';
 
 const EQUIPMENT = ['process', 'mixer', 'splitter', 'pump', 'compressor', 'valve', 'heatExchanger', 'filter', 'cyclone', 'conveyor'];
+const GLYPHS = [...EQUIPMENT, 'tank', 'bulkStorage'];
 
 test('equipment symbols survive model export/import and editable catalog persistence', () => {
   for (const kind of EQUIPMENT) {
@@ -38,7 +39,7 @@ test('choosing an equipment symbol preserves conservation, estimates, and measur
 });
 
 test('ports stay on the same flow axis, independent of equipment type or negative coordinates', () => {
-  for (const kind of EQUIPMENT) for (const [x, y] of [[360, 240], [-500, -120]]) {
+  for (const kind of GLYPHS) for (const [x, y] of [[360, 240], [-500, -120]]) {
     const node = { kind, x, y, name: 'Equipment' };
     const input = portPosition(node, 'in'), output = portPosition(node, 'out');
     assert.deepEqual(input, { x: x - 56, y });
@@ -63,10 +64,10 @@ test('every equipment symbol renders a distinct visible SVG glyph without text o
     createElementNS(namespace, tag) { assert.equal(namespace, 'http://www.w3.org/2000/svg'); return new Element(tag); }
   } });
   t.after(() => original ? Object.defineProperty(globalThis, 'document', original) : delete globalThis.document);
-  assert.deepEqual(Object.keys(UNIT_SYMBOLS).sort(), [...EQUIPMENT].sort());
+  assert.deepEqual(Object.keys(UNIT_SYMBOLS).sort(), [...GLYPHS].sort());
   const glyphs = new Set();
   const geometry = new Set(['d', 'points', 'x', 'y', 'cx', 'cy', 'r', 'width', 'height', 'rx']);
-  for (const kind of EQUIPMENT) {
+  for (const kind of GLYPHS) {
     const group = new Element('g');
     appendUnitSymbol(kind, group, { stroke: '#123456' });
     assert.ok(group.children.length >= 2, `${kind} needs a body and flow connections`);

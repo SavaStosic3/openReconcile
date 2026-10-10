@@ -7,6 +7,25 @@ const leads = halfWidth => path(`M -56 0 H -${halfWidth} M ${halfWidth} 0 H 56`)
 // These are compact diagram glyphs, not a claim of compliance with a P&ID standard.
 // All internal units use the same two connection positions, independent of the glyph.
 export const UNIT_SYMBOLS = {
+  tank: {
+    label: 'Tank',
+    description: 'Liquid inventory & accumulation',
+    primitives: [
+      leads(29),
+      primitive('path', { d: 'M -29 -24 V 24 C -29 38 29 38 29 24 V -24 Z' }),
+      primitive('ellipse', { cx: 0, cy: -24, rx: 29, ry: 10 }),
+      path('M -29 10 C -20 18 20 18 29 10 M -15 -2 H 15'),
+    ],
+  },
+  bulkStorage: {
+    label: 'Storage silo',
+    description: 'Bulk inventory & accumulation',
+    primitives: [
+      leads(27),
+      primitive('polygon', { points: '-27,-22 0,-34 27,-22 27,13 10,31 -10,31 -27,13' }),
+      path('M -27 -22 H 27 M -27 13 H 27 M -10 31 V 36 H 10 V 31 M -17 1 H 17'),
+    ],
+  },
   process: {
     label: 'Process unit',
     description: 'Any balanced operation',
@@ -101,6 +120,7 @@ export const UNIT_SYMBOLS = {
 };
 
 const glyphSize = {
+  tank: [29, 35], bulkStorage: [27, 36],
   process: [32, 28], mixer: [28, 28], splitter: [28, 28],
   pump: [28, 33], compressor: [28, 33], valve: [27, 31],
   heatExchanger: [29, 29], filter: [32, 26], cyclone: [26, 34], conveyor: [44, 27],

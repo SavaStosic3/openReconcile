@@ -15,7 +15,7 @@ CREATE TABLE dbo.reconciliation_results (
   item_type nvarchar(16) NOT NULL,
   source_name nvarchar(200) NOT NULL,
   metric nvarchar(32) NOT NULL,
-  value_kg float NOT NULL CHECK (value_kg >= 0),
+  value_kg float NOT NULL,
   raw_kg float NULL,
   correction_kg float NULL,
   uncertainty_kg float NULL,
@@ -25,8 +25,9 @@ CREATE TABLE dbo.reconciliation_results (
   finished_at datetime2(3) NOT NULL,
   PRIMARY KEY (run_id, item_type, item_id, metric),
   CHECK (batch_end > batch_start),
+  CHECK (value_kg >= 0 OR (item_type = 'unit' AND metric = 'accumulation')),
   CHECK ((item_type = 'stream' AND metric = 'mass' AND status IN ('measured', 'estimated'))
-    OR (item_type = 'unit' AND metric IN ('incoming_mass', 'outgoing_mass') AND status = 'reconciled'))
+    OR (item_type = 'unit' AND metric IN ('incoming_mass', 'outgoing_mass', 'opening_inventory', 'closing_inventory', 'accumulation') AND status = 'reconciled'))
 );
 -- Grant SELECT on both tables (including output schema tests), INSERT only
 -- on results; no DDL, UPDATE, or DELETE. Use encrypted TCP SQL authentication.

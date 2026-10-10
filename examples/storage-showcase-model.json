@@ -1,0 +1,281 @@
+{
+  "version": 1,
+  "name": "Three-tank transfer",
+  "periodHours": 1,
+  "nodes": [
+    {
+      "id": "supply",
+      "kind": "inlet",
+      "name": "Water supply",
+      "x": 70,
+      "y": 300
+    },
+    {
+      "id": "buffer-a",
+      "kind": "tank",
+      "name": "Buffer A · mass",
+      "x": 300,
+      "y": 300,
+      "dataMapping": {
+        "sourceName": "TANKS.BUFFER-A"
+      },
+      "inventory": {
+        "basis": "mass",
+        "unit": "kg",
+        "density": 1000,
+        "densityUncertainty": 0,
+        "readingCorrelation": 0,
+        "geometry": {
+          "kind": "verticalCylinder",
+          "diameter": 2
+        },
+        "capacityMass": 10000,
+        "opening": {
+          "measured": true,
+          "value": 2000,
+          "uncertainty": 5,
+          "uncertaintyType": "absolute",
+          "dataMapping": {
+            "sourceName": "TANKS.BUFFER-A.OPENING"
+          }
+        },
+        "closing": {
+          "measured": true,
+          "value": 2200,
+          "uncertainty": 5,
+          "uncertaintyType": "absolute",
+          "dataMapping": {
+            "sourceName": "TANKS.BUFFER-A.CLOSING"
+          }
+        }
+      }
+    },
+    {
+      "id": "transfer-pump",
+      "kind": "pump",
+      "name": "Transfer pump",
+      "x": 520,
+      "y": 300
+    },
+    {
+      "id": "buffer-b",
+      "kind": "tank",
+      "name": "Buffer B · volume",
+      "x": 740,
+      "y": 300,
+      "dataMapping": {
+        "sourceName": "TANKS.BUFFER-B"
+      },
+      "inventory": {
+        "basis": "volume",
+        "unit": "m³",
+        "density": 1000,
+        "densityUncertainty": 0,
+        "readingCorrelation": 0,
+        "geometry": {
+          "kind": "verticalCylinder",
+          "diameter": 2
+        },
+        "capacityMass": 10000,
+        "opening": {
+          "measured": true,
+          "value": 3,
+          "uncertainty": 0.005,
+          "uncertaintyType": "absolute",
+          "dataMapping": {
+            "sourceName": "TANKS.BUFFER-B.OPENING"
+          }
+        },
+        "closing": {
+          "measured": true,
+          "value": 3.2,
+          "uncertainty": 0.005,
+          "uncertaintyType": "absolute",
+          "dataMapping": {
+            "sourceName": "TANKS.BUFFER-B.CLOSING"
+          }
+        }
+      }
+    },
+    {
+      "id": "transfer-valve",
+      "kind": "valve",
+      "name": "Transfer valve",
+      "x": 960,
+      "y": 300
+    },
+    {
+      "id": "dispatch",
+      "kind": "tank",
+      "name": "Dispatch · level",
+      "x": 1180,
+      "y": 300,
+      "dataMapping": {
+        "sourceName": "TANKS.DISPATCH"
+      },
+      "inventory": {
+        "basis": "level",
+        "unit": "m",
+        "density": 1000,
+        "densityUncertainty": 0,
+        "readingCorrelation": 0,
+        "geometry": {
+          "kind": "constantArea",
+          "area": 2
+        },
+        "capacityMass": 10000,
+        "opening": {
+          "measured": true,
+          "value": 2,
+          "uncertainty": 0.0025,
+          "uncertaintyType": "absolute",
+          "dataMapping": {
+            "sourceName": "TANKS.DISPATCH.OPENING"
+          }
+        },
+        "closing": {
+          "measured": true,
+          "value": 2.05,
+          "uncertainty": 0.0025,
+          "uncertaintyType": "absolute",
+          "dataMapping": {
+            "sourceName": "TANKS.DISPATCH.CLOSING"
+          }
+        }
+      }
+    },
+    {
+      "id": "delivery",
+      "kind": "outlet",
+      "name": "Water delivery",
+      "x": 1400,
+      "y": 300
+    }
+  ],
+  "streams": [
+    {
+      "id": "supply-flow",
+      "source": "supply",
+      "target": "buffer-a",
+      "name": "F-01 · Supply",
+      "material": "Water",
+      "phase": "Liquid",
+      "density": 1000,
+      "temperature": 20,
+      "pressure": 200,
+      "metric": "massFlow",
+      "unit": "kg/h",
+      "measured": true,
+      "value": 1010,
+      "uncertainty": 10,
+      "uncertaintyType": "absolute",
+      "dataMapping": {
+        "sourceName": "TANKS.SUPPLY_FLOW"
+      },
+      "meterType": "physical",
+      "meterName": "WATER SUPPLY"
+    },
+    {
+      "id": "pump-suction",
+      "source": "buffer-a",
+      "target": "transfer-pump",
+      "name": "F-02 · Pump suction",
+      "material": "Water",
+      "phase": "Liquid",
+      "density": 1000,
+      "temperature": 20,
+      "pressure": 200,
+      "metric": "massFlow",
+      "unit": "kg/h",
+      "measured": false,
+      "value": "",
+      "uncertainty": 10,
+      "uncertaintyType": "absolute",
+      "dataMapping": {
+        "sourceName": "TANKS.PUMP_SUCTION"
+      }
+    },
+    {
+      "id": "pump-discharge",
+      "source": "transfer-pump",
+      "target": "buffer-b",
+      "name": "F-03 · Pump discharge",
+      "material": "Water",
+      "phase": "Liquid",
+      "density": 1000,
+      "temperature": 20,
+      "pressure": 200,
+      "metric": "massFlow",
+      "unit": "kg/h",
+      "measured": false,
+      "value": "",
+      "uncertainty": 10,
+      "uncertaintyType": "absolute",
+      "dataMapping": {
+        "sourceName": "TANKS.PUMP_DISCHARGE"
+      }
+    },
+    {
+      "id": "valve-inlet",
+      "source": "buffer-b",
+      "target": "transfer-valve",
+      "name": "F-04 · Valve inlet",
+      "material": "Water",
+      "phase": "Liquid",
+      "density": 1000,
+      "temperature": 20,
+      "pressure": 200,
+      "metric": "massFlow",
+      "unit": "kg/h",
+      "measured": false,
+      "value": "",
+      "uncertainty": 10,
+      "uncertaintyType": "absolute",
+      "dataMapping": {
+        "sourceName": "TANKS.VALVE_INLET"
+      }
+    },
+    {
+      "id": "valve-outlet",
+      "source": "transfer-valve",
+      "target": "dispatch",
+      "name": "F-05 · Valve outlet",
+      "material": "Water",
+      "phase": "Liquid",
+      "density": 1000,
+      "temperature": 20,
+      "pressure": 200,
+      "metric": "massFlow",
+      "unit": "kg/h",
+      "measured": false,
+      "value": "",
+      "uncertainty": 10,
+      "uncertaintyType": "absolute",
+      "dataMapping": {
+        "sourceName": "TANKS.VALVE_OUTLET"
+      }
+    },
+    {
+      "id": "delivery-flow",
+      "source": "dispatch",
+      "target": "delivery",
+      "name": "F-06 · Delivery",
+      "material": "Water",
+      "phase": "Liquid",
+      "density": 1000,
+      "temperature": 20,
+      "pressure": 200,
+      "metric": "massFlow",
+      "unit": "kg/h",
+      "measured": true,
+      "value": 500,
+      "uncertainty": 10,
+      "uncertaintyType": "absolute",
+      "dataMapping": {
+        "sourceName": "TANKS.DELIVERY_FLOW"
+      },
+      "meterType": "physical",
+      "meterName": "WATER DELIVERY"
+    }
+  ]
+}

@@ -1,7 +1,8 @@
 import { aggregateQualityReadings, InputQualityError, validateInputQuality } from '../../../public/input-quality.js';
 
 export const MAX_ROWS = 10_000;
-export const MAX_WRITE_ROWS = 900;
+// 500 streams and five exported totals/inventory values for each of 200 units.
+export const MAX_WRITE_ROWS = 1500;
 export const OUTPUT_COLUMNS = Object.freeze([
   'run_id', 'model_id', 'model_name', 'published_version', 'item_id', 'item_type',
   'source_name', 'metric', 'value_kg', 'raw_kg', 'correction_kg', 'uncertainty_kg',
@@ -56,8 +57,9 @@ export function validateRead(body, connection) {
   const tags = body.tags.map(tag => stringField(tag, 'Source tag'));
   if (new Set(tags).size !== tags.length) fail('Source tags must be unique.');
   const start = dateField(body.start, 'Batch start'), end = dateField(body.end, 'Batch end');
-  if (start >= end || Date.parse(end) - Date.parse(start) > 366 * 86_400_000) fail('Select a nonempty batch window of at most 366 days.');
-  if (!['latest', 'sum', 'average', 'timeWeightedAverage', 'totalizerDelta'].includes(body.aggregation)) fail('Select a supported input aggregation.');
+  const boundary = body.aggregation === 'inventoryBoundary';
+  if (boundary ? start !== end : start >= end || Date.parse(end) - Date.parse(start) > 366 * 86_400_000) fail(boundary ? 'Inventory snapshots require one exact boundary timestamp.' : 'Select a nonempty batch window of at most 366 days.');
+  if (!['latest', 'sum', 'average', 'timeWeightedAverage', 'totalizerDelta', 'inventoryBoundary'].includes(body.aggregation)) fail('Select a supported input aggregation.');
   let quality;
   if (Object.hasOwn(body, 'quality') || ['timeWeightedAverage', 'totalizerDelta'].includes(body.aggregation)) {
     try { quality = validateInputQuality(body.quality); } catch (error) { fail(error.message); }
@@ -73,6 +75,12 @@ export function readQuery(connection, input) {
   const top = dialect === 'sqlserver' ? `TOP (${MAX_ROWS + 1}) ` : '';
   const limit = dialect === 'sqlserver' ? '' : ` LIMIT ${MAX_ROWS + 1}`;
   const qualitySelection = input.quality?.qualityColumn ? `, ${q(input.quality.qualityColumn)} AS ${q('quality_value')}` : '';
+  if (input.aggregation === 'inventoryBoundary') {
+    return {
+      sql: `SELECT ${top}${q(input.tagColumn)} AS ${q('source_name')}, ${q(input.valueColumn)} AS ${q('value')}, ${q(input.timestampColumn)} AS ${q('timestamp')}${qualitySelection} FROM ${quoteIdentifier(input.table, dialect, true)} WHERE ${q(input.tagColumn)} IN (${input.tags.map((_, i) => placeholder(i)).join(', ')}) AND ${q(input.timestampColumn)} = ${placeholder(input.tags.length)} ORDER BY ${q(input.timestampColumn)} DESC${limit}`,
+      params: [...input.tags, new Date(input.start)],
+    };
+  }
   if (['timeWeightedAverage', 'totalizerDelta'].includes(input.aggregation)) {
     // Read only one boundary timestamp per tag before start, retaining ties so
     // conflicting baseline values fail rather than being selected arbitrarily.
@@ -110,6 +118,36 @@ export function testQuery(connection, input) {
 export function aggregateReadings(rawRows, input) {
   if (!Array.isArray(rawRows) || rawRows.length > MAX_ROWS) throw new GatewayError('TOO_MANY_ROWS', 'The batch contains more than 10,000 source rows. Use a smaller window.', 422);
   const grouped = new Map(input.tags.map(tag => [tag, []]));
+  if (input.aggregation === 'inventoryBoundary') {
+    // Inventory is an instantaneous state at a boundary. A period aggregate,
+    // stale carry, or interpolation would change the accumulation equation.
+    for (const row of rawRows) {
+      if (typeof row.source_name !== 'string' || !grouped.has(row.source_name)) throw new GatewayError('INVALID_SOURCE_DATA', 'The source returned an unexpected inventory tag.', 422);
+      let timestamp = row.timestamp;
+      if (timestamp instanceof Date) {
+        if (!Number.isFinite(timestamp.getTime())) throw new GatewayError('INVALID_SOURCE_DATA', 'The source returned an invalid inventory timestamp.', 422);
+        timestamp = timestamp.toISOString();
+      }
+      try { timestamp = dateField(timestamp, 'Inventory timestamp'); } catch { throw new GatewayError('INVALID_SOURCE_DATA', 'The source returned an invalid inventory timestamp.', 422); }
+      if (timestamp !== input.start) throw new GatewayError('INVALID_SOURCE_DATA', `${row.source_name}: an inventory reading is not exactly at its reporting boundary.`, 422);
+      const flag = typeof row.quality_value === 'number' && Number.isFinite(row.quality_value) && Number.isInteger(row.quality_value) ? String(row.quality_value) : row.quality_value;
+      const good = !input.quality?.qualityColumn || typeof flag === 'string' && input.quality.goodQualityValues.includes(flag);
+      if (!good && input.quality.badQualityPolicy === 'reject') throw new GatewayError('BAD_SOURCE_QUALITY', `${row.source_name}: an inventory reading has an unaccepted quality flag.`, 422);
+      let value = null;
+      if (good) {
+        try { value = numberField(row.value, 'Inventory reading'); } catch { throw new GatewayError('INVALID_SOURCE_DATA', `${row.source_name}: an inventory reading is missing, negative, or not numeric.`, 422); }
+      }
+      grouped.get(row.source_name).push({ good, value });
+    }
+    const readings = input.tags.map(sourceName => {
+      const rows = grouped.get(sourceName);
+      if (new Set(rows.map(row => JSON.stringify([row.good, row.value]))).size > 1) throw new GatewayError('AMBIGUOUS_SOURCE_DATA', `${sourceName}: different inventory values or quality states share the boundary timestamp.`, 422);
+      const accepted = rows.filter(row => row.good);
+      if (!accepted.length) throw new GatewayError('MISSING_SOURCE_DATA', `${sourceName}: no accepted reading exists exactly at the inventory boundary.`, 422);
+      return { sourceName, value: accepted[0].value, timestamp: input.start, ...(input.quality ? { quality: { coveragePercent: 100, sampleCount: 1, rejectedCount: rows.length - accepted.length, latestTimestamp: input.start, resetCount: 0, warnings: [] } } : {}) };
+    });
+    return { readings, window: { start: input.start, end: input.end } };
+  }
   if (input.quality || ['timeWeightedAverage', 'totalizerDelta'].includes(input.aggregation)) {
     for (const row of rawRows) {
       if (typeof row.source_name !== 'string' || !grouped.has(row.source_name)) throw new GatewayError('INVALID_SOURCE_DATA', 'The source returned an unexpected tag.', 422);
@@ -158,7 +196,7 @@ export function aggregateReadings(rawRows, input) {
 }
 export function validateWrite(body, connection) {
   authorizeTable(connection, body.table, 'output');
-  if (!Array.isArray(body.rows) || body.rows.length < 1 || body.rows.length > MAX_WRITE_ROWS) fail('Write between 1 and 900 result rows.');
+  if (!Array.isArray(body.rows) || body.rows.length < 1 || body.rows.length > MAX_WRITE_ROWS) fail('Write between 1 and 1500 result rows.');
   const keys = new Set();
   const rows = body.rows.map(row => {
     if (!row || typeof row !== 'object' || Array.isArray(row)) fail('A result row must be an object.');
@@ -168,13 +206,14 @@ export function validateWrite(body, connection) {
     result.source_name = stringField(row.source_name, 'source_name');
     if (!['stream', 'unit'].includes(row.item_type)) fail('item_type must be stream or unit.');
     result.item_type = row.item_type;
-    const metrics = row.item_type === 'stream' ? ['mass'] : ['incoming_mass', 'outgoing_mass'];
+    const metrics = row.item_type === 'stream' ? ['mass'] : ['incoming_mass', 'outgoing_mass', 'opening_inventory', 'closing_inventory', 'accumulation'];
     if (!metrics.includes(row.metric)) fail('The result metric does not match its item type.');
     result.metric = row.metric;
     if (row.published_version !== null && (!Number.isInteger(row.published_version) || row.published_version < 1)) fail('published_version must be null or a positive integer.');
     result.published_version = row.published_version;
-    result.value_kg = numberField(row.value_kg, 'value_kg');
-    result.raw_kg = numberField(row.raw_kg, 'raw_kg', true);
+    const signed = row.item_type === 'unit' && row.metric === 'accumulation';
+    result.value_kg = numberField(row.value_kg, 'value_kg', false, signed);
+    result.raw_kg = numberField(row.raw_kg, 'raw_kg', true, signed);
     result.correction_kg = numberField(row.correction_kg, 'correction_kg', true, true);
     result.uncertainty_kg = numberField(row.uncertainty_kg, 'uncertainty_kg', true);
     if (!(row.item_type === 'stream' ? ['measured', 'estimated'] : ['reconciled']).includes(row.status)) fail('Only observable reconciled results can be exported.');

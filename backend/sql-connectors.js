@@ -2,6 +2,8 @@ import { ApiError } from './policy.js';
 import { validateSqlSource, getSqlInputMappings } from '../public/sql-sources.js';
 import { timeToEpoch } from '../public/management-store.js';
 import { validateInputQuality } from '../public/input-quality.js';
+import { isStorageNode } from '../public/inventory.js';
+import { isVirtualMeter } from '../public/virtual-meters.js';
 
 const MAX_BYTES = 1_000_000;
 const safeId = value => typeof value === 'string' && /^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$/.test(value) && !['constructor', 'prototype', '__proto__'].includes(value);
@@ -104,31 +106,71 @@ export function sqlBatchWindow(model, end) {
   return { start: new Date(start).toISOString(), end };
 }
 
+export function getSqlInventoryMappings(model, flowMappings = []) {
+  const tags = new Map(flowMappings.map(mapping => [mapping.sourceName, null]));
+  const mappings = [];
+  for (const node of model.nodes ?? []) {
+    if (!isStorageNode(node) || !node.inventory) continue;
+    for (const endpoint of ['opening', 'closing']) {
+      const reading = node.inventory[endpoint];
+      if (!reading?.measured) continue;
+      const sourceName = reading.dataMapping?.sourceName, modelName = `${node.name} · ${endpoint === 'opening' ? 'Opening' : 'Closing'} inventory`;
+      if (typeof sourceName !== 'string' || !sourceName.trim() || sourceName !== sourceName.trim() || sourceName.length > 200) throw new ApiError(400, `${modelName}: set a Source Name in Data Mapping before using SQL input.`);
+      // One tank may read its sensor at two different boundary instants. A tag
+      // shared by different tanks or a flow would duplicate a physical input.
+      if (tags.has(sourceName) && tags.get(sourceName) !== node.id) throw new ApiError(400, 'Physical inventories on different units and physical flow meters need distinct Source Names for SQL input.');
+      tags.set(sourceName, node.id);
+      mappings.push({ itemId: node.id, itemKind: 'inventory', endpoint, modelName, sourceName, unit: node.inventory.unit });
+    }
+  }
+  return mappings;
+}
+
+async function readInventoryBoundary(env, source, mappings, boundary) {
+  const { connectionId, table, tagColumn, valueColumn, timestampColumn } = source;
+  const data = await callSqlGateway(env, 'read', { connectionId, table, tagColumn, valueColumn, timestampColumn, tags: mappings.map(mapping => mapping.sourceName), start: boundary, end: boundary, aggregation: 'inventoryBoundary', ...(source.quality ? { quality: source.quality } : {}) });
+  if (!exact(data, ['readings', 'window']) || !Array.isArray(data.readings) || data.readings.length !== mappings.length || !exact(data.window, ['start', 'end']) || data.window.start !== boundary || data.window.end !== boundary) throw new ApiError(502, 'The SQL gateway returned incomplete inventory readings or a different boundary.');
+  const byName = new Map();
+  for (const reading of data.readings) {
+    if (!exact(reading, ['sourceName', 'value', 'timestamp', ...(source.quality ? ['quality'] : [])]) || !finite(reading.value) || reading.value < 0 || reading.timestamp !== boundary || typeof reading.sourceName !== 'string' || byName.has(reading.sourceName) || !mappings.some(mapping => mapping.sourceName === reading.sourceName) || source.quality && (!qualityAudit(reading.quality) || reading.quality.latestTimestamp !== boundary || reading.quality.coveragePercent !== 100 || reading.quality.sampleCount < 1 || reading.quality.resetCount !== 0)) throw new ApiError(502, 'The SQL gateway returned missing, duplicate, invalid, or non-boundary inventory readings.');
+    byName.set(reading.sourceName, reading);
+  }
+  return mappings.map(mapping => ({ ...mapping, ...byName.get(mapping.sourceName) }));
+}
+
 export async function readSqlInput(env, source, model, window) {
   source = validateSqlSource(source);
   if (source.direction !== 'input') throw new Error('Choose an input SQL source.');
   let mappings;
-  try { mappings = getSqlInputMappings(model); } catch (error) { throw new ApiError(400, error.message); }
+  try { mappings = model.streams?.some(stream => stream.measured && !isVirtualMeter(stream)) ? getSqlInputMappings(model) : []; } catch (error) { throw new ApiError(400, error.message); }
+  const inventoryMappings = getSqlInventoryMappings(model, mappings);
+  if (!mappings.length && !inventoryMappings.length) throw new ApiError(400, 'Add at least one physical meter or measured inventory before using SQL input.');
   const { connectionId, table, tagColumn, valueColumn, timestampColumn, aggregation } = source;
   const advanced = ['timeWeightedAverage', 'totalizerDelta'].includes(aggregation);
   const quality = source.quality || (advanced ? validateInputQuality() : null);
   if (aggregation === 'timeWeightedAverage' && mappings.some(mapping => !mapping.unit.endsWith('/h'))) throw new ApiError(400, 'Time-weighted flow requires every mapped physical meter to use a rate unit per hour.');
   if (aggregation === 'totalizerDelta' && mappings.some(mapping => mapping.unit.endsWith('/h'))) throw new ApiError(400, 'Totalizer differences require cumulative mass or volume units, without a rate denominator.');
   if (!timestamp(window?.start) || !timestamp(window?.end) || Date.parse(window.start) >= Date.parse(window.end) || Date.parse(window.end) - Date.parse(window.start) > 366 * 86_400_000) throw new Error('Choose a nonempty SQL input window of at most 366 days.');
-  const data = await callSqlGateway(env, 'read', { connectionId, table, tagColumn, valueColumn, timestampColumn, tags: mappings.map(mapping => mapping.sourceName), start: window.start, end: window.end, aggregation, ...(quality ? { quality } : {}) });
+  const data = mappings.length ? await callSqlGateway(env, 'read', { connectionId, table, tagColumn, valueColumn, timestampColumn, tags: mappings.map(mapping => mapping.sourceName), start: window.start, end: window.end, aggregation, ...(quality ? { quality } : {}) }) : { readings: [], window: { ...window } };
   if (!exact(data, ['readings', 'window']) || !Array.isArray(data.readings) || data.readings.length !== mappings.length || !exact(data.window, ['start', 'end']) || data.window.start !== window.start || data.window.end !== window.end) throw new ApiError(502, 'The SQL gateway returned incomplete readings or a different batch window.');
   const byName = new Map();
   for (const reading of data.readings) {
     if (!exact(reading, ['sourceName', 'value', 'timestamp', ...(quality ? ['quality'] : [])]) || (quality && (!qualityAudit(reading.quality) || reading.quality.latestTimestamp !== reading.timestamp || reading.quality.coveragePercent + 1e-8 < quality.minCoveragePercent || Date.parse(window.end) - Date.parse(reading.timestamp) > quality.maxAgeMinutes * 60_000)) || typeof reading.sourceName !== 'string' || byName.has(reading.sourceName) || !mappings.some(mapping => mapping.sourceName === reading.sourceName) || !finite(reading.value) || reading.value < 0 || !timestamp(reading.timestamp) || Date.parse(reading.timestamp) < Date.parse(window.start) - (advanced && quality ? quality.maxAgeMinutes * 60_000 : 0) || Date.parse(reading.timestamp) > Date.parse(window.end) || (!advanced && Date.parse(reading.timestamp) === Date.parse(window.end))) throw new ApiError(502, 'The SQL gateway returned missing, duplicate, invalid, or out-of-window readings.');
     byName.set(reading.sourceName, reading);
   }
-  return { readings: mappings.map(mapping => ({ ...mapping, ...byName.get(mapping.sourceName) })), window: { ...window } };
+  const readings = mappings.map(mapping => ({ ...mapping, ...byName.get(mapping.sourceName) }));
+  for (const endpoint of ['opening', 'closing']) {
+    const selected = inventoryMappings.filter(mapping => mapping.endpoint === endpoint);
+    if (selected.length) readings.push(...await readInventoryBoundary(env, source, selected, endpoint === 'opening' ? window.start : window.end));
+  }
+  return { readings, window: { ...window } };
 }
 
 export function sqlOutputRows(run, window) {
   if (!run?.modelSnapshot || !Array.isArray(run.result?.streams)) throw new Error('SQL output requires reconciliation results.');
   if (!timestamp(window?.start) || !timestamp(window?.end) || Date.parse(window.start) >= Date.parse(window.end)) throw new Error('Choose a valid batch duration for SQL output.');
   const results = new Map(run.result.streams.map(item => [item.id, item]));
+  const inventories = new Map((run.result.inventories ?? []).map(item => [item.id, item]));
   const rows = []; let skipped = 0;
   const base = (item, kind, metric, result) => ({ run_id: run.id, model_id: run.modelId, model_name: run.modelName, published_version: run.publishedVersion ?? null, item_id: item.id, item_type: kind, source_name: item.dataMapping.sourceName, metric,
     value_kg: result.value, raw_kg: finite(result.raw) ? result.raw : null, correction_kg: finite(result.correction) ? result.correction : null, uncertainty_kg: finite(result.uncertainty) ? result.uncertainty : null, status: result.status,
@@ -149,6 +191,12 @@ export function sqlOutputRows(run, window) {
       if (!finite(total) || (raw !== null && !finite(raw))) { skipped++; continue; }
       rows.push(base(item, 'unit', metric, { value: total, raw, correction: raw === null ? null : total - raw, uncertainty: null, status: 'reconciled' }));
     }
+    const inventory = inventories.get(item.id);
+    if (inventory) for (const [metric, field] of [['opening_inventory', 'opening'], ['closing_inventory', 'closing'], ['accumulation', 'accumulation']]) {
+      const result = inventory[field];
+      if (!result || result.status === 'unobservable' || !finite(result.value) || metric !== 'accumulation' && result.value < 0) { skipped++; continue; }
+      rows.push(base(item, 'unit', metric, { ...result, status: 'reconciled' }));
+    }
   }
   if (!rows.length) throw new Error('Map at least one observable stream or process unit to use SQL output.');
   return { rows, skipped };
@@ -159,9 +207,10 @@ export function sqlAdapters(env) {
     inputAdapters: { sql: async (source, model, context) => {
       context.recordInputAudit({ source: validateSqlSource(source), window: { ...context.window }, readings: [] });
       const data = await readSqlInput(env, source, model, context.window);
-      const readings = data.readings.map(reading => ({ ...reading, originalValue: model.streams.find(stream => stream.id === reading.itemId).value }));
+      const target = (value, reading) => reading.itemKind === 'inventory' ? value.nodes.find(node => node.id === reading.itemId).inventory[reading.endpoint] : value.streams.find(stream => stream.id === reading.itemId);
+      const readings = data.readings.map(reading => ({ ...reading, originalValue: target(model, reading).value }));
       const next = structuredClone(model);
-      for (const reading of readings) next.streams.find(stream => stream.id === reading.itemId).value = reading.value;
+      for (const reading of readings) target(next, reading).value = reading.value;
       context.recordInputAudit({ source: validateSqlSource(source), ...data, readings });
       return next;
     } },

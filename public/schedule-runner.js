@@ -23,6 +23,13 @@ export function runMatchesModelInputs(run, model) {
   if (run.sql?.input) {
     if (!Array.isArray(run.sql.input.readings)) return false;
     for (const reading of run.sql.input.readings) {
+      if (reading.itemKind === 'inventory') {
+        if (!['opening', 'closing'].includes(reading.endpoint)) return false;
+        const node = baseline.nodes?.find(item => item.id === reading.itemId);
+        if (!node?.inventory?.[reading.endpoint] || !Object.hasOwn(reading, 'originalValue')) return false;
+        node.inventory[reading.endpoint].value = reading.originalValue;
+        continue;
+      }
       const stream = baseline.streams.find(item => item.id === reading.itemId);
       if (!stream || !Object.hasOwn(reading, 'originalValue')) return false;
       stream.value = reading.originalValue;

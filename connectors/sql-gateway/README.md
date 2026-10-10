@@ -64,9 +64,19 @@ An observed decrease fails under `totalizerReset: "reject"`. Explicit `"restart"
 
 Upgrade the deployed gateway and app together when enabling quality or advanced aggregations. The gateway remains a separately operated plant-side service; publishing the app does not update it.
 
+## Inventory boundary snapshots
+
+The app automatically requests `inventoryBoundary` for measured storage endpoints, independently of the source's flow aggregation. A request has equal `start` and `end`, and the gateway queries exactly that timestamp with bound parameters. Opening reads the reporting-period start; closing reads its end. This special snapshot request does not permit an ordinary empty aggregation window.
+
+Source values use the endpoint's configured mass, volume, or level unit. Opening and closing have separate mappings; the same tank sensor tag may serve both boundaries. The app rejects reuse of one inventory source across different storage units or physical flow meters to avoid treating duplicate evidence as independent. Reads use up to three groups per run: flows, opening snapshots, and closing snapshots.
+
+Missing, conflicting, invalid, or rejected-quality boundary data fails. Identical acceptable duplicate records represent one sample. Configured quality flags apply at that instant; snapshot coverage is 100% only when an accepted exact sample exists. Bad flags cannot be bridged by interpolation. Inventory input never sums, averages, integrates, interpolates, carries forward stale readings, or falls back to saved manual readings. The app applies snapshots only to its detached run input and retains original values in input provenance.
+
+Upgrade the app and gateway together for this contract. A previous gateway cannot supply the new snapshot mode. Existing normalized output tables need to admit the new metric strings and negative accumulation; review any plant-specific CHECK constraints before enabling storage output.
+
 ## Output data
 
-Output is an append-only transaction with one row for each observable mapped stream and two rows (incoming/outgoing mass) for each observable mapped process unit. All mass fields are kilograms. The canonical result table requires these columns:
+Output is an append-only transaction with one row for each observable mapped stream and incoming/outgoing mass rows for each observable mapped process unit. Mapped storage units additionally include observable opening inventory, closing inventory, and signed accumulation. All mass fields are kilograms; inventories are boundary quantities, not flow rates. The canonical result table requires these columns:
 
 | Column | Meaning |
 | --- | --- |
@@ -74,13 +84,13 @@ Output is an append-only transaction with one row for each observable mapped str
 | `published_version` | Publication number, or null for a draft run |
 | `item_id`, `item_type` | Stable item ID; `stream` or `unit` |
 | `source_name` | Model item’s mapped external name |
-| `metric` | `mass` for streams; `incoming_mass` or `outgoing_mass` for units |
+| `metric` | `mass` for streams; `incoming_mass`, `outgoing_mass`, `opening_inventory`, `closing_inventory`, or `accumulation` for units |
 | `value_kg` | Reconciled mass |
 | `raw_kg`, `correction_kg`, `uncertainty_kg` | Available source mass, adjustment, and 1σ uncertainty; otherwise null |
-| `status` | `measured` or `estimated` for streams; `reconciled` for units |
+| `status` | `measured` or `estimated` for streams; `reconciled` for unit throughput and inventories |
 | `batch_start`, `batch_end`, `finished_at` | UTC batch and completion timestamps |
 
-The request must contain 1–900 rows from one consistent model run. Unobservable values are not fabricated or exported. A unique key on `(run_id, item_type, item_id, metric)` prevents duplicate insertion of the same result. Statements are parameterized, sequential, and enclosed in a database transaction. A statement failure triggers rollback. Communication failure during/after `COMMIT` can leave a committed result without an acknowledgement; the app records output failure separately from the successful reconciliation. Before any manual replay, inspect destination rows by `run_id`. There is no automatic output retry, upsert, update, or delete endpoint.
+The request must contain 1–1,500 rows from one consistent model run. Only `accumulation` can be negative. Unobservable values are not fabricated or exported. A unique key on `(run_id, item_type, item_id, metric)` prevents duplicate insertion of the same result. Statements are parameterized, sequential, and enclosed in a database transaction. A statement failure triggers rollback. Communication failure during/after `COMMIT` can leave a committed result without an acknowledgement; the app records output failure separately from the successful reconciliation. Before any manual replay, inspect destination rows by `run_id`. There is no automatic output retry, upsert, update, or delete endpoint.
 
 The **Test connection** operation performs `SELECT ... WHERE 1 = 0` against input columns or the complete output schema. It proves connectivity and column accessibility, without inserting dummy results. It cannot prove INSERT permissions, output constraints, transactional engine behavior, or future availability; validate those with a real approved batch before operational use.
 

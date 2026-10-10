@@ -351,6 +351,34 @@ h3 { font-size: 14px; line-height: 1.4; font-weight: 650; }
 .dialog-footer > .text-button { margin-right: auto; }
 .dialog-footer > .helper { margin-right: auto; }
 .small-dialog { width: min(430px, calc(100vw - 32px)); }
+.node-dialog { width: min(760px, calc(100vw - 32px)); }
+.template-menu { position: relative; }
+.template-menu > summary { list-style: none; cursor: pointer; }
+.template-menu > summary::-webkit-details-marker { display: none; }
+.template-menu-panel { position: absolute; z-index: 30; right: 0; top: calc(100% + 8px); min-width: 240px; padding: 7px; border: 1px solid var(--line); border-radius: 6px; background: var(--surface); box-shadow: 0 8px 22px #172c3a15; }
+.template-menu-panel button { display: block; width: 100%; padding: 8px 9px; text-align: left; }
+.template-menu-panel button:hover { background: var(--surface-subtle); }
+.inventory-endpoint-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 12px; margin: 18px 0 10px; }
+.inventory-endpoint { min-width: 0; border: 1px solid var(--line); border-radius: 6px; padding: 13px 14px; margin: 0; background: var(--surface-subtle); }
+.inventory-endpoint legend { color: var(--ink); font-size: 12px; font-weight: 650; padding: 0 5px; }
+.inventory-endpoint .checkbox-field { margin-top: 4px; }
+.inventory-endpoint .field { margin-bottom: 11px; }
+.inventory-endpoint .field-grid { gap: 10px; }
+.inventory-preview { color: var(--teal-dark); font-size: 12px; font-variant-numeric: tabular-nums; }
+.inventory-preview small { display: block; margin-top: 3px; color: var(--muted); font-size: 10px; }
+.inventory-advanced { margin: 15px 0; font-size: 11px; }
+.inventory-advanced summary { padding: 7px 0; cursor: pointer; color: var(--teal-dark); font-weight: 600; }
+.inventory-advanced .field-grid { margin-top: 9px; }
+.inventory-period-help { max-width: 850px; margin-bottom: 13px; }
+.inventory-measured-toggle { display: inline-flex; align-items: center; gap: 6px; font-size: 11px; }
+.inventory-measurements { margin-top: 25px; }
+.inventory-measurements .table-heading { margin-bottom: 6px; }
+.inventory-results-table .helper, .inventory-results-table small { max-width: 230px; white-space: normal; }
+@media (max-width: 600px) {
+  .inventory-endpoint-grid { grid-template-columns: 1fr; }
+  .node-dialog .field-grid { grid-template-columns: 1fr; }
+  .node-dialog .field-grid .full { grid-column: auto; }
+}
 .connection-summary { margin-bottom: 20px; padding: 11px 13px; border: 1px solid var(--line); border-radius: 5px; background: var(--surface-subtle); font-size: 12px; color: #657775; }
 .form-section-title { margin: 4px 0 13px !important; padding-top: 16px; border-top: 1px solid var(--line); font-size: 11px; }
 .optional { color: #9ba6a1; font-size: 9px; font-weight: 400; }

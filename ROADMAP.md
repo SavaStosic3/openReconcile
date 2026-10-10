@@ -1,6 +1,6 @@
 # Feature roadmap
 
-Current capabilities and planned enhancements for openReconcile, a standalone, open-source mass balance reconciliation tool. Browser-triggered scheduling, completed reporting periods, SQL input quality controls, authenticated shared models, administrator/model permissions, data mapping, SQL input/output through a server gateway, virtual meters, line visibility/crossing bridges, published results, audit history, and the initial process-unit symbol library are implemented as described below. Other items describe planned behavior.
+Current capabilities and planned enhancements for openReconcile, a standalone, open-source mass balance reconciliation tool. Browser-triggered scheduling, completed reporting periods, SQL input quality controls, authenticated shared models, administrator/model permissions, data mapping, SQL input/output through a server gateway, virtual meters, tanks and storage, line visibility/crossing bridges, published results, audit history, and the process-unit symbol library are implemented as described below. Other items describe planned behavior.
 
 ## 1. Scheduled reconciliation
 
@@ -35,10 +35,11 @@ Revision checks, run snapshots, and separate working drafts and published snapsh
 
 ## 3. Tanks and storage units
 
-- Add tanks and other storage units with opening and closing inventory for each reporting interval.
-- Reconcile the accumulation balance: incoming mass minus outgoing mass equals closing inventory minus opening inventory.
-- Support inventory measurements and uncertainty, including appropriate level/volume-to-mass conversions, and distinguish inventory from throughput in the interface and results.
-- Report missing or unobservable inventories and account for shared measurement inputs rather than assuming every derived value is independent.
+**Implemented:** tank and bulk-storage symbols with opening/closing inventories, accumulation balances, measured or inferred endpoints, optional known mass capacity, and mass/volume/level conversion. Level supports cylinders, constant area, and zero-origin monotonic calibration tables without extrapolation. Endpoint reading correlation and a common density error enter the same joint weighted fit as flow measurements; accumulation is derived, without double-counting inventory evidence. The UI and published results distinguish throughput from stocks and signed accumulation. Unobservable absolute stocks remain unresolved even when net accumulation is identifiable.
+
+Endpoint mappings integrate with exact start/end SQL snapshots, quality validation, detached run inputs, signed storage output, permissions, publication snapshots, and audit changes. A separate [three-tank analytical example](examples/storage-showcase-model.md) preserves the existing filtration template.
+
+Known scope: geometry is fixed; inventory conversion is first order and uses common density at both endpoints. Calibrated levels require zero density uncertainty. Cross-tank shared errors, changing boundary density, uncertain geometry, and dynamic simulation remain extensions. See [storage math and assumptions](docs/storage-mathematics.md).
 
 ## 4. Input data connectors
 
@@ -55,7 +56,7 @@ Mapping names are model metadata rather than credentials. Saving a mapping alone
 **Future connector capabilities:**
 
 - Obtain model readings from CSV files, ODBC sources, SAP, OSIsoft PI, HTTP APIs, and additional adapters; broaden SQL table formats and supported databases.
-- Extend item mappings with per-meter connector settings, units and uncertainty; add inventory mappings when storage units are supported.
+- Extend item mappings with per-meter connector settings. Inventory endpoint mappings and unit/uncertainty configuration are implemented.
 - Add provider-specific quality-code decoding, engineering-range rules, calibration information, and time-varying measurement uncertainty beyond the current SQL source-wide quality policy.
 - Support credentials and plant-network connectivity through server-side integrations or gateways.
 
@@ -118,11 +119,11 @@ Further enhancements:
 
 ## 12. Process-unit symbols
 
-**Implemented initial library:** ten internal symbols represent pumps, compressors, valves, heat exchangers, filters, cyclones, conveyors, mixers, splitters, and generic process units. The toolbox and flowsheet use the same SVG artwork. Red inflow/outflow triangles remain distinct boundaries.
+**Implemented library:** twelve internal symbols represent pumps, compressors, valves, heat exchangers, filters, cyclones, conveyors, mixers, splitters, generic process units, tanks, and bulk storage. The toolbox and flowsheet use the same SVG artwork. Red inflow/outflow triangles remain distinct boundaries.
 
 Each internal unit has consistent left input and right output ports; each accepts multiple streams. Clear names, selection targets, keyboard controls, movement, and connection behavior remain available. Double-click a unit to change its symbol while preserving its identity, position, connections, and readings. The choice is saved with the model and retained in JSON import/export and undo/redo. Boundary direction remains fixed, and existing edit permissions and locks apply.
 
-Symbols are diagram labels: all internal units retain the existing total-mass conservation equation without accumulation or equipment-specific physics. Additional materials leaving a filter or cyclone must be modeled as explicit streams. Tanks and their inventory/accumulation behavior remain part of the planned tank/storage feature.
+Ordinary equipment symbols use zero accumulation without equipment-specific physics. Additional materials leaving a filter or cyclone must be modeled as explicit streams. Tanks and bulk storage use opening/closing inventory balances; converting them to an ordinary unit requires confirmation to remove inventory configuration.
 
 **Future symbol capabilities:** expand the library and add additional port arrangements where they improve diagram readability.
 
