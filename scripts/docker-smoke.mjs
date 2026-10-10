@@ -32,7 +32,9 @@ let cookie = '';
 async function api(path, { method = 'GET', body, expected = 200, headers = {} } = {}) {
   const response = await fetch(`${origin}${path}`, {
     method, signal: AbortSignal.timeout(30_000),
-    headers: { Origin: origin, ...(cookie ? { Cookie: cookie } : {}), ...(body === undefined ? {} : { 'Content-Type': 'application/json' }), ...headers },
+    // Container recreation deliberately closes the old process. Do not reuse
+    // a pooled connection after synchronous Docker commands replace it.
+    headers: { Origin: origin, Connection: 'close', ...(cookie ? { Cookie: cookie } : {}), ...(body === undefined ? {} : { 'Content-Type': 'application/json' }), ...headers },
     ...(body === undefined ? {} : { body: JSON.stringify(body) }),
   });
   assert.equal(response.status, expected, `${method} ${path}: expected ${expected}, received ${response.status}`);
@@ -46,7 +48,8 @@ try {
   const setup = "import {readFileSync} from 'node:fs'; import {setupAdmin,addUser} from './deploy/accounts.js'; const {password}=JSON.parse(readFileSync(0,'utf8')); await setupAdmin({dataDir:'/data',username:'SmokeAdmin',password}); await addUser({dataDir:'/data',username:'SmokeViewer',password,role:'viewer'});";
   compose(['run', '--rm', '-T', 'app', 'node', '--input-type=module', '-e', setup], { input: JSON.stringify({ password }) });
   compose(['up', '-d', '--no-build', '--wait', '--wait-timeout', '90', 'app']);
-  const page = await fetch(origin, { signal: AbortSignal.timeout(10_000) });
+  console.info('Container initialized and healthy.');
+  const page = await fetch(origin, { headers: { Connection: 'close' }, signal: AbortSignal.timeout(10_000) });
   assert.ok(page.ok); assert.match(await page.text(), /name="openreconcile-auth-mode" content="password"/);
   await api('/healthz');
   await api('/api/workspace', { expected: 401, headers: { 'oai-authenticated-user-id': 'spoof', 'oai-authenticated-user-email': 'admin@example.test', 'CF-Connecting-IP': '1.2.3.4' } });
@@ -78,10 +81,12 @@ try {
     }
   }
   await api('/api/auth/login', { method: 'POST', body: { username: 'SmokeViewer', password } });
+  console.info('Both analytical showcase reconciliations passed.');
   assert.equal((await api('/api/session')).user.role,'viewer');
   await api('/api/admin', { expected: 403 });
   await api(`/api/models/${ids[0]}/runs`, { method: 'POST', body: { trigger:'manual',target:'published' }, expected: 403 });
   assert.equal((await api('/api/workspace')).catalog.models.length,0);
+  console.info('Restricted-user permissions passed.');
   await api('/api/auth/login', { method: 'POST', body: { username: 'SmokeAdmin', password } });
   const before = await api('/api/workspace');
   compose(['exec','-T','app','node','deploy/cli.mjs','backup','--output','/data/backups/smoke']);
@@ -89,6 +94,7 @@ try {
   const after = await api('/api/workspace');
   assert.deepEqual(after.catalog.models,before.catalog.models);
   assert.deepEqual(after.catalog.runs,before.catalog.runs);
+  console.info('Container recreation preserved models, runs, and sessions.');
   compose(['stop','app']);
   const restore = "import {readFileSync,writeFileSync} from 'node:fs'; import {createHash} from 'node:crypto'; const dir='/source/backups/smoke/'; const manifest=JSON.parse(readFileSync(dir+'backup-manifest.json','utf8')); for(const name of ['app.sqlite','server-secrets.json']) { const bytes=readFileSync(dir+name); if(createHash('sha256').update(bytes).digest('hex')!==manifest.files[name]) throw Error('Invalid backup'); writeFileSync('/data/'+name,bytes,{flag:'wx',mode:0o600}); }";
   compose(['run','--rm','-T','--volume',`${volume}:/source:ro`,'app','node','--input-type=module','-e',restore],{restored:true});
