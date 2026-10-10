@@ -1,6 +1,6 @@
 # Feature roadmap
 
-Current capabilities and planned enhancements for openReconcile, a standalone, open-source mass balance reconciliation tool. Browser-triggered scheduling, authenticated shared models, administrator/model permissions, and the initial process-unit symbol library are implemented as described in sections 1, 2, and 12. Remaining items describe planned behavior. Basic reconciled-value labels already exist on the visual diagram.
+Current capabilities and planned enhancements for openReconcile, a standalone, open-source mass balance reconciliation tool. Browser-triggered scheduling, authenticated shared models, administrator/model permissions, virtual meters, line visibility/crossing bridges, published results, and the initial process-unit symbol library are implemented as described below. Other items describe planned behavior.
 
 ## 1. Scheduled reconciliation
 
@@ -61,10 +61,13 @@ Revision checks, run snapshots, and separate working drafts and published snapsh
 
 ## 7. Virtual meters
 
-- Create meters calculated from engineering equations or empirical relationships instead of a physical instrument.
-- Configure named input readings, formulas, parameters, units, and uncertainty; distinguish virtual meters visually from physical meters and flows inferred by reconciliation.
-- Evaluate dependencies in a defined order and report missing inputs, invalid calculations, or dependency cycles.
-- Propagate uncertainty and account for shared inputs and calibration error so calculated readings do not falsely add independent measurement evidence.
+**Implemented initial arithmetic formulas:** select **Virtual** in a stream's meter settings, name its meter, and enter a formula referencing physical or virtual meters as `[Meter name]`. An empty meter name uses the stream name. Names are case-sensitive and trimmed. Basic arithmetic, parentheses, unary signs, and `^` exponentiation support calculations such as `[Feed meter] - [Waste meter]`. Virtual readings are calculated and read-only on Measurements.
+
+References use original readings in each meter's configured unit; the output uses the virtual meter's configured unit. Explicit conversion factors are required where units differ. Manual and scheduled runs evaluate formulas freshly on the server using the selected snapshot. Dependency cycles, missing or ambiguous references, invalid syntax, and invalid output readings block a run with a meter-specific error. Drafts can retain incomplete formulas while being edited; formulas survive saving, publication, and JSON import/export.
+
+First-order propagation includes reference uncertainty and shared-input covariance in reconciliation. Each virtual meter also requires positive independent calculation/model error. Physical instrument errors remain independent; arbitrary instrument correlation is not configurable. Nonlinear propagation is approximate, fixed density is retained, and a formula supplies a calculated input reading rather than an exact constraint on reconciled flows.
+
+**Future formula capabilities:** add a documented engineering-function library, dimensional validation, parameter management, and calibration models as those capabilities are designed and validated.
 
 ## 8. Line-crossing bridges
 

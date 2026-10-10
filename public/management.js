@@ -1,5 +1,5 @@
 import { createCatalog, validateCatalog, getModelEntry, addModel, updateModel, duplicateModel, setActiveModel, setSchedule, dueSchedules, advanceSchedule, appendRun, frequencyToMinutes } from './management-store.js';
-import { executeModelRun } from './schedule-runner.js';
+import { executeModelRun, sameRunInputs } from './schedule-runner.js';
 
 const CATALOG_KEY = 'openreconcile-model-library-v1';
 const LEGACY_KEY = 'massflow-model-v1';
@@ -157,13 +157,13 @@ export function createManagement({ fallbackModel, beforeAction, onActivate, onRu
     if (!backend) return 'draft';
     // The first publication can adopt a legacy run only when its exact model
     // snapshot matches. Untagged runs never become results for an edited draft.
-    if (entry.publishedVersion === 1 && entry.publishedModel && JSON.stringify(run.modelSnapshot) === JSON.stringify(entry.publishedModel)) return 'published';
+    if (entry.publishedVersion === 1 && entry.publishedModel && sameRunInputs(run.modelSnapshot, entry.publishedModel)) return 'published';
     return null;
   }
   function matchesRun(entry, run, target) {
     if (runTarget(entry, run) !== target) return false;
     const snapshot = target === 'published' ? entry.publishedModel : entry.model;
-    if (!snapshot || JSON.stringify(run.modelSnapshot) !== JSON.stringify(snapshot)) return false;
+    if (!snapshot || !sameRunInputs(run.modelSnapshot, snapshot)) return false;
     return target !== 'published' || run.publishedVersion === entry.publishedVersion || (run.target === undefined && entry.publishedVersion === 1);
   }
   function render(form = false) {

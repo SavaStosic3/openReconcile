@@ -7,6 +7,8 @@ import { createAdmin } from './admin.js';
 import { UNIT_SYMBOLS, appendUnitSymbol } from './unit-symbols.js';
 import { getPublishedUnitSummary } from './published-results.js';
 import { createLineVisibility } from './line-visibility.js';
+import { getMeterName, isVirtualMeter, evaluateMeterReadings, evaluateMeterDetails } from './virtual-meters.js';
+import { sameRunInputs } from './schedule-runner.js';
 
 const $ = (s, root = document) => root.querySelector(s);
 const $$ = (s, root = document) => [...root.querySelectorAll(s)];
@@ -346,7 +348,7 @@ function activateManagedModel(entry, options = {}) {
   window.history.replaceState({}, '', url);
 }
 function acceptManagedRun(record) {
-  if (record.modelId !== editingModelId || record.target !== (viewMode === 'published' ? 'published' : 'draft') || JSON.stringify(record.modelSnapshot) !== JSON.stringify(model)) return;
+  if (record.modelId !== editingModelId || record.target !== (viewMode === 'published' ? 'published' : 'draft') || !sameRunInputs(record.modelSnapshot, model)) return;
   if (viewMode === 'published' && record.publishedVersion !== currentEntry()?.publishedVersion) return;
   activeRun = record; results = runResult(record); editor.setResults(results); refreshChrome(); renderInspector();
   if (activeTab === 'results' && !management.isOpen) renderResults();
@@ -370,7 +372,7 @@ function renderInspector() {
   const stream = selection?.kind === 'stream' ? model.streams.find(s => s.id === selection.id) : null;
   if (node) {
     const incoming = model.streams.filter(s => s.target === node.id), outgoing = model.streams.filter(s => s.source === node.id);
-    $('#inspector').innerHTML = `<p class="eyebrow">SELECTED UNIT</p><h2>${esc(node.name)}</h2><span class="pill">${esc(NODE_TYPES[node.kind])}</span><p class="helper">${['inlet','outlet'].includes(node.kind) ? 'A model boundary. Conservation is enforced at process units inside the model.' : 'All incoming mass equals all outgoing mass. No accumulation is assumed.'}</p><div class="inspector-stats"><div><strong>${incoming.length}</strong><span>incoming</span></div><div><strong>${outgoing.length}</strong><span>outgoing</span></div></div><button class="button secondary full-width" id="inspect-edit-node">Edit unit</button><button class="text-button danger" id="inspect-delete">Delete selection</button><hr><h3>Connected streams</h3>${[...incoming,...outgoing].map(s => `<button class="stream-list-item" data-inspect-stream="${esc(s.id)}"><span>${esc(s.name)}</span><small>${s.measured ? 'Ⓜ Measured' : 'Unmetered'}</small></button>`).join('') || '<p class="helper">Use Connect or drag a port to another unit.</p>'}`;
+    $('#inspector').innerHTML = `<p class="eyebrow">SELECTED UNIT</p><h2>${esc(node.name)}</h2><span class="pill">${esc(NODE_TYPES[node.kind])}</span><p class="helper">${['inlet','outlet'].includes(node.kind) ? 'A model boundary. Conservation is enforced at process units inside the model.' : 'All incoming mass equals all outgoing mass. No accumulation is assumed.'}</p><div class="inspector-stats"><div><strong>${incoming.length}</strong><span>incoming</span></div><div><strong>${outgoing.length}</strong><span>outgoing</span></div></div><button class="button secondary full-width" id="inspect-edit-node">Edit unit</button><button class="text-button danger" id="inspect-delete">Delete selection</button><hr><h3>Connected streams</h3>${[...incoming,...outgoing].map(s => `<button class="stream-list-item" data-inspect-stream="${esc(s.id)}"><span>${esc(s.name)}</span><small>${isVirtualMeter(s) ? 'Ⓥ Virtual' : s.measured ? 'Ⓜ Measured' : 'Unmetered'}</small></button>`).join('') || '<p class="helper">Use Connect or drag a port to another unit.</p>'}`;
     $('#inspect-edit-node').onclick = () => openNode(node.id);
     if (viewMode === 'published') {
       const summary = getPublishedUnitSummary(node, model, results);
@@ -380,7 +382,8 @@ function renderInspector() {
     }
   } else if (stream) {
     const source = model.nodes.find(n => n.id === stream.source), target = model.nodes.find(n => n.id === stream.target); const rec = results?.streams.find(s => s.id === stream.id);
-    $('#inspector').innerHTML = `<p class="eyebrow">SELECTED STREAM</p><h2>${esc(stream.name)}</h2><p class="connection-mini">${esc(source?.name)}<br><span>↓</span><br>${esc(target?.name)}</p><span class="pill">${stream.measured ? 'Ⓜ Measured' : 'Unmetered'}</span><dl class="properties-list"><dt>Material</dt><dd>${esc(stream.material)}</dd><dt>Phase</dt><dd>${esc(stream.phase)}</dd><dt>Density</dt><dd>${fmt(Number(stream.density))} kg/m³</dd><dt>Reading</dt><dd>${stream.measured ? `${stream.value === '' ? 'Not entered' : esc(stream.value)} ${esc(stream.unit)}` : 'To be inferred'}</dd>${rec ? `<dt>Reconciled</dt><dd>${fmt(rec.value)} kg</dd>` : ''}</dl><button class="button secondary full-width" id="inspect-edit-stream">Edit stream & meter</button><button class="text-button danger" id="inspect-delete">Delete selection</button>`;
+    const virtual = isVirtualMeter(stream), reading = virtual ? evaluateMeterReadings(model).get(stream.id) : null;
+    $('#inspector').innerHTML = `<p class="eyebrow">SELECTED STREAM</p><h2>${esc(stream.name)}</h2><p class="connection-mini">${esc(source?.name)}<br><span>↓</span><br>${esc(target?.name)}</p><span class="pill">${virtual ? 'Ⓥ Virtual meter' : stream.measured ? 'Ⓜ Measured' : 'Unmetered'}</span><dl class="properties-list"><dt>Material</dt><dd>${esc(stream.material)}</dd><dt>Phase</dt><dd>${esc(stream.phase)}</dd><dt>Density</dt><dd>${fmt(Number(stream.density))} kg/m³</dd>${stream.measured ? `<dt>Meter</dt><dd>${esc(getMeterName(stream))}</dd>` : ''}${virtual ? `<dt>Formula</dt><dd>${esc(stream.formula || 'Not entered')}</dd>` : ''}<dt>Reading</dt><dd>${virtual ? reading?.error ? esc(reading.error) : `${fmt(reading?.value)} ${esc(stream.unit)}` : stream.measured ? `${stream.value === '' ? 'Not entered' : esc(stream.value)} ${esc(stream.unit)}` : 'To be inferred'}</dd>${rec ? `<dt>Reconciled</dt><dd>${fmt(rec.value)} kg</dd>` : ''}</dl><button class="button secondary full-width" id="inspect-edit-stream">Edit stream & meter</button><button class="text-button danger" id="inspect-delete">Delete selection</button>`;
     $('#inspect-edit-stream').onclick = () => openStream(stream.id);
     const hide = document.createElement('button'); hide.type = 'button'; hide.className = 'button secondary full-width'; hide.id = 'inspect-line-visibility';
     const hidden = lineVisibility.snapshot().hiddenIds.includes(stream.id);
@@ -409,24 +412,57 @@ function renderInspector() {
 const streamForm = $('#stream-form');
 for (const [key, metric] of Object.entries(METRICS)) streamForm.elements.metric.add(new Option(metric.label, key));
 function updateUnits(preferred) { const select = streamForm.elements.unit; select.replaceChildren(); for (const unit of METRICS[streamForm.elements.metric.value].units) select.add(new Option(unit,unit)); if (preferred && METRICS[streamForm.elements.metric.value].units.includes(preferred)) select.value = preferred; }
-streamForm.elements.metric.onchange = () => updateUnits();
-streamForm.elements.measured.onchange = () => { $('#meter-fields').hidden = !streamForm.elements.measured.checked; };
+function streamFromForm(current) {
+  const next = { ...current };
+  for (const key of ['name','material','phase','metric','unit','uncertaintyType','meterType','meterName','formula']) next[key] = streamForm.elements[key].value.trim();
+  for (const key of ['density','temperature','pressure','uncertainty']) next[key] = streamForm.elements[key].value === '' ? null : Number(streamForm.elements[key].value);
+  next.measured = streamForm.elements.measured.checked;
+  next.value = next.meterType === 'virtual' ? '' : streamForm.elements.value.value === '' ? '' : Number(streamForm.elements.value.value);
+  return next;
+}
+function updateMeterPreview() {
+  const current = model.streams.find(stream => stream.id === editingStream); if (!current) return;
+  const virtual = streamForm.elements.meterType.value === 'virtual', enabled = streamForm.elements.measured.checked;
+  $('#meter-fields').hidden = !enabled; $('#virtual-meter-fields').hidden = !virtual;
+  $('#physical-reading-field').hidden = virtual; streamForm.elements.value.disabled = virtual || !enabled;
+  $('#meter-uncertainty-label').textContent = virtual ? 'Calculation uncertainty (1σ)' : 'Uncertainty (1σ)';
+  $('#meter-uncertainty-help').hidden = !virtual;
+  streamForm.elements.meterName.placeholder = streamForm.elements.name.value || current.name;
+  if (!virtual || !enabled) return;
+  const next = streamFromForm(current), preview = $('#formula-preview');
+  if (!next.formula) { preview.dataset.state = 'pending'; preview.textContent = 'Enter a formula to preview the calculated reading. You can save an incomplete formula and finish it later.'; return; }
+  const readings = evaluateMeterReadings({ ...model, streams: model.streams.map(stream => stream.id === current.id ? next : stream) });
+  const reading = readings.get(current.id);
+  preview.dataset.state = reading?.error ? 'error' : 'ok';
+  preview.textContent = reading?.error ? `${reading.error} Reconciliation needs a valid formula.` : `Calculated reading: ${fmt(reading?.value)} ${next.unit}`;
+}
+streamForm.elements.metric.onchange = () => { updateUnits(); updateMeterPreview(); };
+streamForm.elements.measured.onchange = updateMeterPreview;
+streamForm.elements.meterType.onchange = updateMeterPreview;
+streamForm.addEventListener('input', updateMeterPreview);
+streamForm.addEventListener('change', updateMeterPreview);
 function openStream(id) {
   if (!requireEdit()) return;
   const stream = model.streams.find(s => s.id === id); if (!stream) return;
   editingStream = id;
   for (const key of ['name','material','phase','density','temperature','pressure','metric','value','uncertainty','uncertaintyType']) streamForm.elements[key].value = stream[key] ?? '';
-  updateUnits(stream.unit); streamForm.elements.measured.checked = stream.measured; $('#meter-fields').hidden = !stream.measured;
+  streamForm.elements.meterType.value = stream.meterType || 'physical'; streamForm.elements.meterName.value = stream.meterName || ''; streamForm.elements.formula.value = stream.formula || '';
+  updateUnits(stream.unit); streamForm.elements.measured.checked = stream.measured;
+  $('#formula-reference-list').innerHTML = model.streams.filter(other => other.measured && other.id !== id).map(other => `<button type="button" class="formula-reference" data-reference-id="${esc(other.id)}"><span>[${esc(getMeterName(other))}]</span><small>${esc(other.unit)}</small></button>`).join('') || '<p class="helper">Add another meter to reference its reading, or use a constant formula.</p>';
+  $$('[data-reference-id]').forEach(button => button.onclick = () => {
+    const other = model.streams.find(item => item.id === button.dataset.referenceId); if (!other) return;
+    const field = streamForm.elements.formula, start = field.selectionStart, end = field.selectionEnd, reference = `[${getMeterName(other)}]`;
+    if (field.value.length - (end - start) + reference.length > field.maxLength) return;
+    field.setRangeText(reference, start, end, 'end'); field.focus(); updateMeterPreview();
+  });
+  $('.formula-references').open = false; updateMeterPreview();
   $('#stream-connection').textContent = `${model.nodes.find(n => n.id === stream.source)?.name} → ${model.nodes.find(n => n.id === stream.target)?.name}`;
   $('#stream-error').classList.add('hidden'); $('#stream-dialog').showModal();
 }
 streamForm.addEventListener('submit', event => {
   event.preventDefault(); if (!requireEdit()) return; const current = model.streams.find(s => s.id === editingStream); if (!current) return;
-  const next = { ...current };
-  for (const key of ['name','material','phase','metric','unit','uncertaintyType']) next[key] = streamForm.elements[key].value.trim();
-  for (const key of ['density','temperature','pressure','uncertainty']) next[key] = streamForm.elements[key].value === '' ? null : Number(streamForm.elements[key].value);
-  next.value = streamForm.elements.value.value === '' ? '' : Number(streamForm.elements.value.value); next.measured = streamForm.elements.measured.checked;
-  try { if (next.measured && next.value !== '') measurementToMass(next, model.periodHours); }
+  const next = streamFromForm(current);
+  try { validateEditableModel({ ...model, streams: model.streams.map(stream => stream.id === current.id ? next : stream) }); if (next.measured && !isVirtualMeter(next) && next.value !== '') measurementToMass(next, model.periodHours); }
   catch (error) { $('#stream-error').textContent = error.message; $('#stream-error').classList.remove('hidden'); return; }
   Object.assign(current,next); $('#stream-dialog').close(); editor.setModel(model); commit(); if (activeTab === 'data') renderData(); toast(`${next.name} saved${next.measured ? ' · meter added' : ''}.`);
 });
@@ -456,33 +492,56 @@ $('#node-form').onsubmit = event => {
 };
 $('#delete-node').onclick = () => { editor.select('node',editingNode); editor.deleteSelection(); $('#node-dialog').close(); };
 
-function massSummary(stream) { if (!stream.measured) return '<span class="muted">Inferred after run</span>'; try { const m = measurementToMass(stream, model.periodHours); return `<strong>${fmt(m.value)} kg</strong><small>σ ${fmt(m.sigma)} kg</small>`; } catch (error) { return `<span class="reading-error" title="${esc(error.message)}">${stream.value === '' ? 'Reading needed' : 'Check input'}</span>`; } }
+function massSummary(stream, readings = evaluateMeterDetails(model)) {
+  if (!stream.measured) return '<span class="muted">Inferred after run</span>';
+  try {
+    const virtual = isVirtualMeter(stream), reading = readings.get(stream.id);
+    if (virtual && reading?.error) throw new Error(reading.error);
+    const m = measurementToMass(virtual ? { ...stream, value: reading?.value } : stream, model.periodHours);
+    const sigma = virtual ? reading?.sigma === null ? null : reading?.sigma * m.factor : m.sigma;
+    return `<strong>${fmt(m.value)} kg</strong><small>${sigma === null ? 'Check source uncertainty' : `σ ${fmt(sigma)} kg${virtual ? ' · propagated' : ''}`}</small>`;
+  } catch (error) { return `<span class="reading-error" title="${esc(error.message)}">${isVirtualMeter(stream) ? 'Check formula / inputs' : stream.value === '' ? 'Reading needed' : 'Check input'}</span>`; }
+}
+function refreshMeterReadouts() {
+  const readings = evaluateMeterDetails(model);
+  for (const row of $$('#measurement-rows [data-stream]')) {
+    const stream = model.streams.find(item => item.id === row.dataset.stream); if (!stream) continue;
+    $('.mass-summary', row).innerHTML = massSummary(stream, readings);
+    if (isVirtualMeter(stream)) {
+      const reading = readings.get(stream.id);
+      $('.virtual-reading', row).textContent = `${fmt(reading?.value)} ${stream.unit}`;
+      $('.virtual-formula-error', row).textContent = reading?.error || '';
+    }
+  }
+}
 function renderData() {
   $('#batch-period').value = [1,24].includes(Number(model.periodHours)) ? String(model.periodHours) : 'custom';
   $('#custom-hours-label').classList.toggle('hidden', [1,24].includes(Number(model.periodHours))); $('#custom-hours').value = model.periodHours;
   $('#sample-readings').hidden = !['f1','f3','f4'].every(id => model.streams.some(s => s.id === id));
+  const readings = evaluateMeterDetails(model);
   $('#measurement-rows').innerHTML = model.streams.map(stream => {
     const source = model.nodes.find(n => n.id === stream.source), target = model.nodes.find(n => n.id === stream.target);
-    return `<tr data-stream="${esc(stream.id)}"><td><button class="stream-name-button" data-edit="${esc(stream.id)}">${stream.measured ? '<span class="meter-dot">M</span>' : '<span class="unmetered-dot">·</span>'}${esc(stream.name)}</button><small>${esc(stream.material)}</small></td><td>${esc(source?.name)}<small>→ ${esc(target?.name)}</small></td><td>${stream.measured ? `${esc(METRICS[stream.metric]?.label)}<small>${esc(stream.unit)}</small>` : `<button class="button secondary compact" data-add-meter="${esc(stream.id)}">+ Add meter</button>`}</td><td>${stream.measured ? `<input class="number-input" type="number" step="any" min="0" value="${esc(stream.value)}" data-field="value" aria-label="${esc(stream.name)} reading" placeholder="Enter value">` : '<span class="muted">Unmeasured</span>'}</td><td>${stream.measured ? `<div class="uncertainty-input"><input class="number-input" type="number" step="any" min="0.000001" value="${esc(stream.uncertainty)}" data-field="uncertainty" aria-label="${esc(stream.name)} uncertainty"><select data-field="uncertaintyType" aria-label="${esc(stream.name)} uncertainty format"><option value="percent" ${stream.uncertaintyType === 'percent' ? 'selected' : ''}>%</option><option value="absolute" ${stream.uncertaintyType === 'absolute' ? 'selected' : ''}>${esc(stream.unit)}</option></select></div>` : '—'}</td><td class="mass-summary">${massSummary(stream)}</td></tr>`;
+    const virtual = isVirtualMeter(stream), reading = readings.get(stream.id);
+    return `<tr data-stream="${esc(stream.id)}"><td><button class="stream-name-button" data-edit="${esc(stream.id)}">${stream.measured ? `<span class="meter-dot">${virtual ? 'V' : 'M'}</span>` : '<span class="unmetered-dot">·</span>'}${esc(stream.name)}</button><small>${esc(stream.material)}${stream.measured && getMeterName(stream) !== stream.name ? ` · ${esc(getMeterName(stream))}` : ''}</small></td><td>${esc(source?.name)}<small>→ ${esc(target?.name)}</small></td><td>${stream.measured ? `${esc(METRICS[stream.metric]?.label)}<small>${esc(stream.unit)}${virtual ? ' · Virtual' : ''}</small>` : `<button class="button secondary compact" data-add-meter="${esc(stream.id)}">+ Add meter</button>`}</td><td>${virtual ? `<output class="virtual-reading" aria-label="${esc(getMeterName(stream))} calculated reading">${fmt(reading?.value)} ${esc(stream.unit)}</output><small class="virtual-formula">${esc(stream.formula || 'Formula needed')}</small><div class="reading-error virtual-formula-error">${esc(reading?.error)}</div>` : stream.measured ? `<input class="number-input" type="number" step="any" min="0" value="${esc(stream.value)}" data-field="value" aria-label="${esc(stream.name)} reading" placeholder="Enter value">` : '<span class="muted">Unmeasured</span>'}</td><td>${stream.measured ? `<div class="uncertainty-input"><input class="number-input" type="number" step="any" min="0.000001" value="${esc(stream.uncertainty)}" data-field="uncertainty" aria-label="${esc(stream.name)} ${virtual ? 'calculation uncertainty' : 'uncertainty'}"><select data-field="uncertaintyType" aria-label="${esc(stream.name)} uncertainty format"><option value="percent" ${stream.uncertaintyType === 'percent' ? 'selected' : ''}>%</option><option value="absolute" ${stream.uncertaintyType === 'absolute' ? 'selected' : ''}>${esc(stream.unit)}</option></select></div>${virtual ? '<small>Independent calculation error</small>' : ''}` : '—'}</td><td class="mass-summary">${massSummary(stream, readings)}</td></tr>`;
   }).join('') || '<tr><td colspan="6"><div class="empty-state"><h2>No streams yet.</h2><p>Connect units on the Flowsheet tab, then add meters to the streams you measure.</p><button class="button secondary" id="data-back">Build a flowsheet</button></div></td></tr>';
   $$('[data-edit]').forEach(button => button.onclick = () => openStream(button.dataset.edit));
-  $$('[data-add-meter]').forEach(button => button.onclick = () => { openStream(button.dataset.addMeter); streamForm.elements.measured.checked = true; $('#meter-fields').hidden = false; });
-  $$('[data-field]').forEach(input => { const update = () => { if (!requireEdit()) return; const row = input.closest('tr'), stream = model.streams.find(s => s.id === row.dataset.stream); stream[input.dataset.field] = input.dataset.field === 'uncertaintyType' ? input.value : input.value === '' ? '' : Number(input.value); commit(); $('.mass-summary', row).innerHTML = massSummary(stream); }; input.addEventListener('input', update); input.addEventListener('change', update); });
+  $$('[data-add-meter]').forEach(button => button.onclick = () => { openStream(button.dataset.addMeter); streamForm.elements.measured.checked = true; updateMeterPreview(); });
+  $$('[data-field]').forEach(input => { const update = () => { if (!requireEdit()) return; const row = input.closest('tr'), stream = model.streams.find(s => s.id === row.dataset.stream); stream[input.dataset.field] = input.dataset.field === 'uncertaintyType' ? input.value : input.value === '' ? '' : Number(input.value); commit(); refreshMeterReadouts(); }; input.addEventListener('input', update); input.addEventListener('change', update); });
   if ($('#data-back')) $('#data-back').onclick = () => switchTab('model');
 }
 $('#batch-period').onchange = event => { if (!requireEdit()) return; if (event.target.value === 'custom') { $('#custom-hours-label').classList.remove('hidden'); $('#custom-hours').focus(); } else { model.periodHours = Number(event.target.value); commit(); renderData(); } };
 $('#custom-hours').onchange = event => { if (!requireEdit()) return; const n = Number(event.target.value); if (Number.isFinite(n) && n > 0) { model.periodHours = n; commit(); renderData(); } else { toast('Batch duration must be greater than zero.'); event.target.value = model.periodHours; } };
-$('#sample-readings').onclick = () => { if (!requireEdit()) return; for (const [id,value,uncertainty] of [['f1',100,1],['f3',60,2],['f4',35,2]]) { const stream = model.streams.find(s => s.id === id); if (stream) Object.assign(stream,{measured:true,metric:'mass',unit:'kg',value,uncertainty,uncertaintyType:'absolute'}); } editor.setModel(model); commit(); renderData(); toast('Example readings restored.'); };
+$('#sample-readings').onclick = () => { if (!requireEdit()) return; for (const [id,value,uncertainty] of [['f1',100,1],['f3',60,2],['f4',35,2]]) { const stream = model.streams.find(s => s.id === id); if (stream && !isVirtualMeter(stream)) Object.assign(stream,{measured:true,metric:'mass',unit:'kg',value,uncertainty,uncertaintyType:'absolute'}); } editor.setModel(model); commit(); renderData(); toast('Example physical readings restored.'); };
 
 async function run() {
   if (!backend.permission(editingModelId).canRun || (viewMode === 'published' && !hasPublishedModel())) { toast('Your account cannot run this model.'); return; }
   if ($('dialog[open]')) return;
   flushVisibleDraft();
-  const targetId = editingModelId, target = viewMode === 'published' ? 'published' : 'draft', snapshot = JSON.stringify(model), version = target === 'published' ? currentEntry()?.publishedVersion : null;
+  const targetId = editingModelId, target = viewMode === 'published' ? 'published' : 'draft', snapshot = clone(model), version = target === 'published' ? currentEntry()?.publishedVersion : null;
   runningWorkbench = true; $('#run-button').disabled = true; $('#data-run-button').disabled = true; $('#run-button').textContent = 'Reconciling…';
   try {
     const record = await management.run(targetId, { target });
-    if (editingModelId === targetId && (viewMode === 'published' ? 'published' : 'draft') === target && JSON.stringify(model) === snapshot && JSON.stringify(record.modelSnapshot) === snapshot && (target !== 'published' || record.publishedVersion === version)) {
+    if (editingModelId === targetId && (viewMode === 'published' ? 'published' : 'draft') === target && sameRunInputs(model, snapshot) && sameRunInputs(record.modelSnapshot, snapshot) && (target !== 'published' || record.publishedVersion === version)) {
       activeRun = record; results = runResult(record);
       editor.setResults(results); switchTab(target === 'published' ? 'model' : 'results'); renderInspector(); editor.fit();
     }
@@ -496,7 +555,7 @@ function renderResults() {
   const good = ['ok','warning','underdetermined'].includes(results.status); const severe = ['invalid','infeasible'].includes(results.status); const warnings = results.warnings || []; const inferred = results.streams.filter(s => s.status === 'estimated').length; const unknown = results.streams.filter(s => s.status === 'unobservable').length;
   const balanced = results.balances.filter(b => b.reconciled !== null && Number.isFinite(b.reconciled)); const maxError = balanced.length ? Math.max(...balanced.map(b => Math.abs(b.reconciled))) : null;
   const heading = results.status === 'ok' ? 'Your mass balance is reconciled.' : results.status === 'underdetermined' ? 'Some flows need more information.' : results.status === 'warning' ? 'Balanced, with items to review.' : 'Check your model and inputs.';
-  $('#view-results').innerHTML = `<div class="view-header"><div><p class="eyebrow">STEP 03 / RECONCILIATION</p><h1>${esc(heading)}</h1><p class="muted">${esc(model.name)} · ${fmt(Number(model.periodHours))}-hour batch · total mass in kg</p></div><div class="top-actions"><button class="button secondary" id="results-flowsheet">View on flowsheet</button>${good ? '<button class="button secondary" id="export-results">Export results ↓</button>' : ''}</div></div><div class="result-banner ${severe ? 'error' : results.status === 'ok' ? 'success' : 'warning'}"><span class="banner-icon">${severe ? '!' : results.status === 'ok' ? '✓' : '!'}</span><div><strong>${esc(results.message)}</strong>${warnings.length ? `<ul>${warnings.map(w => `<li>${esc(w)}</li>`).join('')}</ul>` : ''}</div></div>${good ? `<div class="summary-grid"><div class="summary-card"><span>Largest closing error</span><strong>${fmt(maxError)} <small>kg</small></strong><p>Across ${balanced.length} observable process units</p></div><div class="summary-card"><span>Weighted adjustment</span><strong>${fmt(results.objective)}</strong><p>Sum of squared corrections / variances</p></div><div class="summary-card"><span>Inferred streams</span><strong>${inferred}<small> / ${model.streams.filter(s => !s.measured).length}</small></strong><p>${unknown ? `${unknown} unresolved stream${unknown === 1 ? '' : 's'}` : 'Unique estimates where observable'}</p></div></div><div class="table-heading"><h2>Stream results</h2><span class="helper">All values normalized to kg per batch</span></div><div class="table-wrap"><table class="data-table"><thead><tr><th>Stream / material</th><th>Measured</th><th>Reconciled</th><th>Adjustment</th><th>Estimate uncertainty (1σ)</th><th>Status</th></tr></thead><tbody>${results.streams.map(s => {const original = model.streams.find(v => v.id === s.id); return `<tr><td><button class="stream-name-button" data-result-stream="${esc(s.id)}">${esc(original?.name || s.id)}</button><small>${esc(original?.material)}</small></td><td class="mono">${fmt(s.raw)}</td><td class="mono result-number">${fmt(s.value)}</td><td class="mono">${s.correction !== null && s.correction !== undefined && s.correction > 0 ? '+' : ''}${fmt(s.correction)}</td><td class="mono">${fmt(s.uncertainty)}${s.atBound ? '<small>At physical bound</small>' : ''}</td><td><span class="status-pill ${s.status}">${s.status === 'unobservable' ? 'Needs measurement' : s.atBound ? 'At zero bound' : s.status === 'estimated' ? 'Inferred' : 'Reconciled'}</span></td></tr>`;}).join('')}</tbody></table></div><div class="table-heading"><h2>Unit balance checks</h2><span class="helper">Incoming mass − outgoing mass</span></div><div class="table-wrap"><table class="data-table balance-table"><thead><tr><th>Process unit</th><th>Before reconciliation</th><th>After reconciliation</th></tr></thead><tbody>${results.balances.map(b => `<tr><td>${esc(b.name)}</td><td class="mono">${fmt(b.raw)} kg</td><td class="mono">${fmt(b.reconciled)} kg</td></tr>`).join('')}</tbody></table></div><div class="result-method"><strong>How this result is calculated</strong><p>Measurements are adjusted using nonnegative, constrained weighted least squares. Every process unit conserves total mass with zero accumulation. Missing flows are reported only when uniquely determined. Uncertainty assumes independent, unbiased measurement errors and fixed conversion properties. Active bounds limit the usual Gaussian uncertainty interpretation.</p><p>A closed balance does not prove instrument accuracy. Raw values are preserved; corrections and diagnostics should be reviewed before using results for reporting.</p></div>` : '<button class="button secondary" id="results-fix-data">Review measurements</button>'}`;
+  $('#view-results').innerHTML = `<div class="view-header"><div><p class="eyebrow">STEP 03 / RECONCILIATION</p><h1>${esc(heading)}</h1><p class="muted">${esc(model.name)} · ${fmt(Number(model.periodHours))}-hour batch · total mass in kg</p></div><div class="top-actions"><button class="button secondary" id="results-flowsheet">View on flowsheet</button>${good ? '<button class="button secondary" id="export-results">Export results ↓</button>' : ''}</div></div><div class="result-banner ${severe ? 'error' : results.status === 'ok' ? 'success' : 'warning'}"><span class="banner-icon">${severe ? '!' : results.status === 'ok' ? '✓' : '!'}</span><div><strong>${esc(results.message)}</strong>${warnings.length ? `<ul>${warnings.map(w => `<li>${esc(w)}</li>`).join('')}</ul>` : ''}</div></div>${good ? `<div class="summary-grid"><div class="summary-card"><span>Largest closing error</span><strong>${fmt(maxError)} <small>kg</small></strong><p>Across ${balanced.length} observable process units</p></div><div class="summary-card"><span>Weighted adjustment</span><strong>${fmt(results.objective)}</strong><p>Squared residuals weighted by uncertainty</p></div><div class="summary-card"><span>Inferred streams</span><strong>${inferred}<small> / ${model.streams.filter(s => !s.measured).length}</small></strong><p>${unknown ? `${unknown} unresolved stream${unknown === 1 ? '' : 's'}` : 'Unique estimates where observable'}</p></div></div><div class="table-heading"><h2>Stream results</h2><span class="helper">All values normalized to kg per batch</span></div><div class="table-wrap"><table class="data-table"><thead><tr><th>Stream / material</th><th>Input mass</th><th>Reconciled</th><th>Adjustment</th><th>Estimate uncertainty (1σ)</th><th>Status</th></tr></thead><tbody>${results.streams.map(s => {const original = model.streams.find(v => v.id === s.id); return `<tr><td><button class="stream-name-button" data-result-stream="${esc(s.id)}">${esc(original?.name || s.id)}</button><small>${esc(original?.material)}</small></td><td class="mono">${fmt(s.raw)}</td><td class="mono result-number">${fmt(s.value)}</td><td class="mono">${s.correction !== null && s.correction !== undefined && s.correction > 0 ? '+' : ''}${fmt(s.correction)}</td><td class="mono">${fmt(s.uncertainty)}${s.atBound ? '<small>At physical bound</small>' : ''}</td><td><span class="status-pill ${s.status}">${s.status === 'unobservable' ? 'Needs measurement' : s.atBound ? 'At zero bound' : s.status === 'estimated' ? 'Inferred' : 'Reconciled'}</span></td></tr>`;}).join('')}</tbody></table></div><div class="table-heading"><h2>Unit balance checks</h2><span class="helper">Incoming mass − outgoing mass</span></div><div class="table-wrap"><table class="data-table balance-table"><thead><tr><th>Process unit</th><th>Before reconciliation</th><th>After reconciliation</th></tr></thead><tbody>${results.balances.map(b => `<tr><td>${esc(b.name)}</td><td class="mono">${fmt(b.raw)} kg</td><td class="mono">${fmt(b.reconciled)} kg</td></tr>`).join('')}</tbody></table></div><div class="result-method"><strong>How this result is calculated</strong><p>Measurements are adjusted using nonnegative, constrained generalized least squares. Every process unit conserves total mass with zero accumulation. Missing flows are reported only when uniquely determined. Physical reading errors and each virtual meter's calculation error are assumed independent and unbiased. Shared meter references use first-order covariance propagation; conversion properties stay fixed. Active bounds limit the usual Gaussian uncertainty interpretation.</p><p>A closed balance does not prove instrument accuracy. Raw values are preserved; corrections and diagnostics should be reviewed before using results for reporting.</p></div>` : '<button class="button secondary" id="results-fix-data">Review measurements</button>'}`;
   if ($('#results-flowsheet')) $('#results-flowsheet').onclick = () => { switchTab('model'); editor.fit(); };
   if ($('#results-fix-data')) $('#results-fix-data').onclick = () => switchTab('data');
   if ($('#export-results')) $('#export-results').onclick = exportResults;

@@ -225,6 +225,18 @@ h3 { font-size: 14px; line-height: 1.4; font-weight: 650; }
 .field input::placeholder, textarea::placeholder { color: #9aa6a5; }
 .field input:disabled, .field select:disabled { background: var(--surface-subtle); color: var(--muted); }
 .field textarea { min-height: 85px; resize: vertical; }
+.field textarea[name="formula"] { min-height: 68px; font-family: ui-monospace, SFMono-Regular, Consolas, monospace; line-height: 1.6; }
+.formula-references { margin: -3px 0 12px; font-size: 11px; color: var(--muted); }
+.formula-references summary { cursor: pointer; padding: 5px 0; }
+#formula-reference-list { display: flex; flex-wrap: wrap; gap: 6px; max-height: 130px; overflow: auto; padding: 8px 0; }
+.formula-reference { border: 1px solid var(--line); border-radius: 4px; background: var(--surface-subtle); padding: 5px 8px; text-align: left; font-size: 11px; color: var(--ink); }
+.formula-reference small { margin-left: 6px; color: var(--muted); }
+.formula-preview { padding: 10px 12px; border-radius: 5px; background: #edf5f0; color: var(--teal-dark); font-size: 11px; line-height: 1.6; overflow-wrap: anywhere; margin: 0 0 14px; }
+.formula-preview[data-state="error"] { background: var(--warning-soft); color: #865c21; }
+.formula-preview[data-state="pending"] { background: var(--surface-subtle); color: var(--muted); }
+.virtual-reading { display: block; font-variant-numeric: tabular-nums; font-weight: 600; }
+.data-table small.virtual-formula { max-width: 220px; white-space: normal; overflow-wrap: anywhere; font-family: ui-monospace, SFMono-Regular, Consolas, monospace; }
+.virtual-formula-error { max-width: 220px; white-space: normal; line-height: 1.5; }
 .field-grid { display: grid; grid-template-columns: 1fr 1fr; column-gap: 12px; }
 .field-grid .full { grid-column: 1 / -1; }
 .checkbox-field { display: flex; align-items: flex-start; gap: 8px; font-size: 12px; margin: 14px 0; }

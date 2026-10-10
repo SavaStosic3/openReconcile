@@ -462,3 +462,82 @@ test('new equipment kinds persist through authenticated saves and reconcile as o
   for (const stream of executed.body.run.result.streams) assert.ok(Math.abs(stream.value - 99) < 1e-8);
   for (const balance of executed.body.run.result.balances) assert.ok(Math.abs(balance.reconciled) < 1e-8);
 });
+
+function virtualPlant() {
+  const model = exampleModel();
+  model.streams[0].meterName = 'Feed meter';
+  Object.assign(model.streams[1], { measured: true, meterType: 'virtual', meterName: 'Internal meter', formula: '[Feed meter]', value: 9999, uncertainty: 1, uncertaintyType: 'absolute' });
+  Object.assign(model.streams[2], { meterType: 'virtual', meterName: 'Product meter', formula: '[Internal meter] * 0.6', value: -9999 });
+  Object.assign(model.streams[3], { meterType: 'virtual', formula: '[Internal meter] - [Product meter]', value: '' });
+  return model;
+}
+
+test('server computes nested virtual meters for draft, published and scheduled runs while preserving version snapshots', async t => {
+  const f = fixture(t), model = virtualPlant();
+  const created = await f.request('/api/models', 'POST', { model });
+  assert.equal(created.status, 201, JSON.stringify(created.body));
+  const id = created.body.entry.id;
+  const published = await f.request(`/api/models/${id}/publication`, 'PATCH', { published: true, revision: 1 });
+  assert.equal(published.status, 200);
+  assert.deepEqual(published.body.entry.publishedModel, model);
+  const draft = structuredClone(model); draft.streams[0].value = 120;
+  draft.streams[2].formula = '[Internal meter] * 0.5';
+  draft.streams[1].value = 123456; draft.streams[2].value = 123456; draft.streams[3].value = 123456;
+  assert.equal((await f.request(`/api/models/${id}`, 'PATCH', { model: draft, revision: 2 })).status, 200);
+  const publishedRun = await f.request(`/api/models/${id}/runs`, 'POST', { trigger: 'manual', target: 'published' });
+  const draftRun = await f.request(`/api/models/${id}/runs`, 'POST', { trigger: 'manual', target: 'draft' });
+  for (const result of [publishedRun, draftRun]) {
+    assert.equal(result.status, 200, JSON.stringify(result.body));
+    assert.equal(result.body.run.status, 'warning');
+    assert.equal(result.body.run.error, null);
+  }
+  assert.equal(publishedRun.body.run.publishedVersion, 1);
+  assert.deepEqual(publishedRun.body.run.modelSnapshot.streams.map(stream => stream.value), [100, 100, 60, 40]);
+  assert.deepEqual(draftRun.body.run.modelSnapshot.streams.map(stream => stream.value), [120, 120, 60, 60]);
+  assert.equal(publishedRun.body.run.modelSnapshot.streams[2].formula, '[Internal meter] * 0.6');
+  assert.equal(draftRun.body.run.modelSnapshot.streams[2].formula, '[Internal meter] * 0.5');
+  assert.equal((await f.request(`/api/models/${id}/schedule`, 'PATCH', { changes: { enabled: true, intervalMinutes: 1 }, revision: 3 })).status, 200);
+  f.advance(60_000);
+  const scheduled = await f.request(`/api/models/${id}/runs`, 'POST', { trigger: 'scheduled' });
+  assert.equal(scheduled.status, 200, JSON.stringify(scheduled.body));
+  assert.equal(scheduled.body.run.target, 'published'); assert.equal(scheduled.body.run.publishedVersion, 1);
+  assert.deepEqual(scheduled.body.run.modelSnapshot, publishedRun.body.run.modelSnapshot);
+  const workspace = (await f.request('/api/workspace')).body.catalog;
+  const entry = workspace.models.find(item => item.id === id);
+  assert.deepEqual(entry.model, draft); assert.deepEqual(entry.publishedModel, model);
+  assert.equal(workspace.runs[id].length, 3);
+  assert.deepEqual(workspace.runs[id].find(run => run.id === draftRun.body.run.id).modelSnapshot, draftRun.body.run.modelSnapshot);
+});
+
+test('editable virtual formula errors save but server execution fails without accepting forged cached readings', async t => {
+  const f = fixture(t);
+  for (const formula of ['', '2 +', '[Unknown meter]', '[Product meter]']) {
+    const model = virtualPlant(); model.streams[1].formula = formula;
+    const created = await f.request('/api/models', 'POST', { model });
+    assert.equal(created.status, 201, JSON.stringify(created.body));
+    const id = created.body.entry.id;
+    const executed = await f.request(`/api/models/${id}/runs`, 'POST', { trigger: 'manual', target: 'draft' });
+    assert.equal(executed.status, 200, JSON.stringify(executed.body));
+    assert.equal(executed.body.run.status, 'failed'); assert.equal(executed.body.run.result, null);
+    assert.match(executed.body.run.error, /Internal meter/);
+    assert.equal(executed.body.run.modelSnapshot.streams[1].value, null);
+    assert.equal(executed.body.run.modelSnapshot.streams[1].formula, formula);
+    const workspace = (await f.request('/api/workspace')).body.catalog;
+    assert.deepEqual(workspace.models.find(item => item.id === id).model, model);
+    assert.equal(workspace.runs[id][0].status, 'failed');
+  }
+});
+
+test('API bounds and validates optional virtual-meter fields on imports and saves', async t => {
+  const f = fixture(t), created = await f.create();
+  for (const [field, value] of [
+    ['meterType', 'javascript'], ['meterType', null],
+    ['meterName', {}], ['meterName', 'x'.repeat(101)],
+    ['formula', 123], ['formula', 'x'.repeat(1001)]
+  ]) {
+    const model = virtualPlant(); model.streams[1][field] = value;
+    assert.equal((await f.request('/api/models', 'POST', { model })).status, 400, `${field} import`);
+    assert.equal((await f.request(`/api/models/${created.entry.id}`, 'PATCH', { model, revision: 1 })).status, 400, `${field} save`);
+  }
+  assert.deepEqual((await f.request('/api/workspace')).body.catalog.models[0].model, exampleModel());
+});

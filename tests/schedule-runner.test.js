@@ -2,7 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { exampleModel } from '../public/model.js';
 import { createCatalog, addModel, appendRun, registerSource, setSchedule, updateModel } from '../public/management-store.js';
-import { executeModelRun } from '../public/schedule-runner.js';
+import { executeModelRun, sameRunInputs } from '../public/schedule-runner.js';
 
 const start = Date.parse('2026-10-09T12:00:00.000Z');
 const clone = value => structuredClone(value);
@@ -21,6 +21,15 @@ function withSources() {
   let value = registerSource(catalog(), 'model-a', { id: 'readings', name: 'Test readings', direction: 'input', type: 'test-input' });
   value = registerSource(value, 'model-a', { id: 'report', name: 'Test report', direction: 'output', type: 'test-output' });
   return setSchedule(value, 'model-a', { inputSourceId: 'readings', outputSourceId: 'report' }, start);
+}
+
+function virtualModel() {
+  const model = exampleModel();
+  reading(model, 'f1').meterName = 'Feed meter';
+  Object.assign(reading(model, 'f2'), { measured: true, meterType: 'virtual', meterName: 'Internal meter', formula: '[Feed meter]', value: 9999, uncertainty: 1, uncertaintyType: 'absolute' });
+  Object.assign(reading(model, 'f3'), { meterType: 'virtual', meterName: 'Product meter', formula: '[Internal meter] * 0.6', value: -9999 });
+  Object.assign(reading(model, 'f4'), { meterType: 'virtual', formula: '[Internal meter] - [Product meter]', value: '' });
+  return model;
 }
 
 test('manual saved-measurement run preserves the analytical example and can be appended by the host', async () => {
@@ -163,7 +172,7 @@ test('invalid solver results preserve raw inputs and are withheld from output ad
   }));
   assert.equal(run.status, 'invalid');
   assert.equal(run.result.status, 'invalid');
-  assert.match(run.error, /nonnegative measurement/);
+  assert.match(run.error, /nonnegative (?:physical meter reading|measurement)/);
   assert.equal(reading(run.modelSnapshot, 'f1').value, '');
   assert.equal(outputs, 0);
   assert.equal(appendRun(saved, 'model-a', run).runs['model-a'][0].status, 'invalid');
@@ -210,4 +219,64 @@ test('unknown models and invalid execution options reject before running adapter
   await assert.rejects(executeModelRun(saved, 'model-a', options({ trigger: 'other' })), /trigger/);
   await assert.rejects(executeModelRun(saved, 'model-a', options({ id: '__proto__' })), /safe run ID/);
   await assert.rejects(executeModelRun(saved, 'model-a', options({ now: start })), /clock must be a function/);
+});
+
+test('virtual readings are computed after input adapters and audit snapshots retain formulas without editing the saved model', async () => {
+  const model = virtualModel();
+  let saved = createCatalog(model, { id: 'model-a', now: start });
+  saved = registerSource(saved, 'model-a', { id: 'readings', name: 'Test readings', direction: 'input', type: 'test-input' });
+  saved = registerSource(saved, 'model-a', { id: 'report', name: 'Test report', direction: 'output', type: 'test-output' });
+  saved = setSchedule(saved, 'model-a', { enabled: true, intervalMinutes: 1, inputSourceId: 'readings', outputSourceId: 'report' }, start);
+  const before = clone(saved);
+  let outputSnapshot;
+  const { run } = await executeModelRun(freeze(saved), 'model-a', options({
+    trigger: 'scheduled',
+    inputAdapters: { 'test-input': (_source, snapshot) => { reading(snapshot, 'f1').value = 120; return snapshot; } },
+    outputAdapters: { 'test-output': (_source, output) => { outputSnapshot = output.modelSnapshot; } }
+  }));
+  assert.equal(run.status, 'warning', run.error);
+  assert.equal(reading(run.modelSnapshot, 'f2').value, 120);
+  assert.equal(reading(run.modelSnapshot, 'f3').value, 72);
+  assert.equal(reading(run.modelSnapshot, 'f4').value, 48);
+  for (const id of ['f2', 'f3', 'f4']) assert.equal(reading(run.modelSnapshot, id).formula, reading(model, id).formula);
+  assert.deepEqual(outputSnapshot, run.modelSnapshot);
+  near(flow(run, 'f1').value, 120);
+  near(flow(run, 'f3').value, 72);
+  assert.deepEqual(saved, before);
+  assert.equal(appendRun(saved, 'model-a', run).runs['model-a'][0].modelSnapshot.streams[1].value, 120);
+});
+
+test('invalid or circular virtual formulas fail clearly and never reach output adapters', async () => {
+  for (const formula of ['', '[Missing meter] + 1', '1 / 0', '[Product meter]']) {
+    const model = virtualModel(); reading(model, 'f2').formula = formula;
+    let saved = createCatalog(model, { id: 'model-a', now: start });
+    saved = registerSource(saved, 'model-a', { id: 'report', name: 'Test report', direction: 'output', type: 'test-output' });
+    saved = setSchedule(saved, 'model-a', { outputSourceId: 'report' }, start);
+    let outputs = 0;
+    const { run } = await executeModelRun(saved, 'model-a', options({ outputAdapters: { 'test-output': () => { outputs++; } } }));
+    assert.equal(run.status, 'failed');
+    assert.equal(run.result, null);
+    assert.match(run.error, /Reconciliation failed:.*Internal meter/);
+    assert.equal(reading(run.modelSnapshot, 'f2').value, null);
+    assert.equal(reading(run.modelSnapshot, 'f2').formula, formula);
+    assert.equal(outputs, 0);
+    assert.equal(appendRun(saved, 'model-a', run).runs['model-a'][0].status, 'failed');
+  }
+});
+
+test('run input matching ignores virtual value caches but preserves every editable dependency', () => {
+  const model = virtualModel(), audit = clone(model);
+  reading(audit, 'f2').value = 100; reading(audit, 'f3').value = 60; reading(audit, 'f4').value = 40;
+  assert.equal(sameRunInputs(model, audit), true);
+  assert.equal(sameRunInputs(audit, model), true);
+  assert.equal(sameRunInputs(null, audit), false);
+  for (const [id, field, value] of [
+    ['f1', 'value', 110], ['f1', 'meterName', 'Renamed meter'],
+    ['f2', 'formula', '[Feed meter] + 1'], ['f2', 'meterName', 'Renamed virtual'],
+    ['f2', 'uncertainty', 5], ['f2', 'meterType', 'physical'], ['f2', 'unit', 't']
+  ]) {
+    const changed = clone(audit); reading(changed, id)[field] = value;
+    assert.equal(sameRunInputs(model, changed), false, `${id}.${field} must invalidate old results`);
+  }
+  assert.equal(reading(model, 'f2').value, 9999);
 });

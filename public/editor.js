@@ -2,6 +2,7 @@ import { newNode, newStream, NODE_TYPES } from './model.js';
 import { appendUnitSymbol, getUnitGeometry, portPosition, unitBounds } from './unit-symbols.js';
 import { formatPublishedMass, getPublishedUnitSummary, hasPublishedResults } from './published-results.js';
 import { getStreamRoutes } from './stream-routing.js';
+import { getMeterName, isVirtualMeter, evaluateMeterReadings } from './virtual-meters.js';
 
 const NS = 'http://www.w3.org/2000/svg';
 const BLUE = '#2563eb', INK = '#243a54', MUTED = '#7890aa';
@@ -24,6 +25,7 @@ export function createEditor({ svg, canEdit = () => true, onChange = () => {}, o
   let previewPoint = null;
   let presentation = 'editing';
   let hiddenIds = new Set(), showHidden = false;
+  let meterReadings = new Map();
   const prefix = `flow-${crypto.randomUUID()}`;
   const listeners = [];
   const listen = (target, type, listener, options) => {
@@ -132,8 +134,9 @@ export function createEditor({ svg, canEdit = () => true, onChange = () => {}, o
     const output = resultFor(stream);
     const color = active ? BLUE : output?.status === 'unobservable' ? '#bc8c3f' : MUTED;
     const revealed = hiddenIds.has(stream.id);
-    const group = element('g', { class: `flow-stream${active ? ' is-selected' : ''}${revealed ? ' is-hidden-revealed' : ''}`, 'data-stream-id': stream.id, tabindex: '0', role: 'button', 'aria-label': `${stream.name}, ${stream.measured ? 'measured' : 'unmeasured'} stream. ${revealed ? 'Hidden line, temporarily revealed. ' : ''}${editable() ? 'Press Enter to edit.' : 'Read-only.'}`, 'aria-pressed': active });
-    group.append(element('title', {}, `${stream.name} · ${stream.material}\n${stream.measured ? `Measured: ${stream.value} ${stream.unit}` : 'No measurement; value may be estimated from the balance.'}${revealed ? '\nHidden line, temporarily revealed.' : ''}`));
+    const virtual = isVirtualMeter(stream), reading = meterReadings.get(stream.id);
+    const group = element('g', { class: `flow-stream${active ? ' is-selected' : ''}${revealed ? ' is-hidden-revealed' : ''}`, 'data-stream-id': stream.id, tabindex: '0', role: 'button', 'aria-label': `${stream.name}, ${virtual ? 'virtual meter' : stream.measured ? 'measured' : 'unmeasured'} stream. ${revealed ? 'Hidden line, temporarily revealed. ' : ''}${editable() ? 'Press Enter to edit.' : 'Read-only.'}`, 'aria-pressed': active });
+    group.append(element('title', {}, `${stream.name} · ${stream.material}\n${virtual ? `Virtual meter: ${getMeterName(stream)}\nFormula: ${stream.formula || 'Not entered'}\n${reading?.error || `Calculated: ${number(reading?.value)} ${stream.unit}`}` : stream.measured ? `Measured: ${stream.value} ${stream.unit}` : 'No measurement; value may be estimated from the balance.'}${revealed ? '\nHidden line, temporarily revealed.' : ''}`));
     group.append(element('path', { d: path.d, fill: 'none', stroke: color, 'stroke-width': active ? 3 : 2, 'stroke-linejoin': 'round', 'stroke-linecap': 'round', 'stroke-dasharray': stream.measured ? 'none' : '7 5', 'marker-end': `url(#${prefix}-${active ? 'selected' : 'arrow'})` }));
     group.append(element('path', { d: path.d, fill: 'none', stroke: 'transparent', 'stroke-width': 20, 'pointer-events': 'stroke', cursor: 'pointer', class: 'flow-stream-hit' }));
     const label = element('g', { transform: `translate(${path.label.x} ${path.label.y - 15})`, class: 'flow-stream-label', cursor: 'pointer' });
@@ -143,7 +146,7 @@ export function createEditor({ svg, canEdit = () => true, onChange = () => {}, o
     if (stream.measured) {
       const meterX = -labelWidth / 2 + 13;
       label.append(element('circle', { cx: meterX, cy: -1, r: 7, fill: '#edf4ff', stroke: active ? BLUE : '#688bb7', 'stroke-width': 1.2 }));
-      label.append(element('text', { x: meterX, y: 2, fill: active ? BLUE : '#688bb7', 'text-anchor': 'middle', 'font-family': 'inherit', 'font-size': 8, 'font-weight': 700 }, 'M'));
+      label.append(element('text', { x: meterX, y: 2, fill: active ? BLUE : '#688bb7', 'text-anchor': 'middle', 'font-family': 'inherit', 'font-size': 8, 'font-weight': 700 }, virtual ? 'V' : 'M'));
     }
     label.append(element('text', { x: stream.measured ? 7 : 0, y: 3, fill: active ? BLUE : INK, 'text-anchor': 'middle', 'font-family': 'inherit', 'font-size': 11, 'font-weight': 650 }, name));
     if (output) {
@@ -210,6 +213,7 @@ export function createEditor({ svg, canEdit = () => true, onChange = () => {}, o
 
   function render() {
     if (destroyed) return;
+    meterReadings = evaluateMeterReadings(model);
     if (!editable()) cancelMutation();
     const focused = document.activeElement?.closest?.('[data-node-id][tabindex], [data-stream-id][tabindex]');
     const focusedKind = focused?.hasAttribute('data-node-id') ? 'node' : 'stream';

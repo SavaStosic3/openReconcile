@@ -1,13 +1,37 @@
 import { measurementToMass, validateModel } from './model.js';
+import { evaluateMeterDetails, getMeterName, isVirtualMeter } from './virtual-meters.js';
 
 // This solver handles total mass over one interval, fixed density conversions,
-// independent measurement errors, exact conservation, and nonnegative streams.
+// first-order correlated meter errors, exact conservation, and nonnegative streams.
 // Unmeasured streams have no objective term. A representative of a nonunique
 // solution is used internally, but never exposed as an inferred measurement.
 const EPS = Number.EPSILON;
 const ZERO = 1e-9;
 const dot = (a, b) => a.reduce((s, v, i) => s + v * b[i], 0);
 const norm = a => Math.hypot(...a);
+const project = (row, values) => row.terms.reduce((sum, term) => sum + term.coefficient * values[term.index], 0);
+
+// For a virtual formula y_i=f_i(y_refs), the linearized error is
+// e_i=delta_y_i-sum(df_i/dy_j * delta_y_j). The configured calculation
+// uncertainty describes independent e_i. Whiten these innovations directly:
+// this is generalized least squares with the full propagated covariance, but
+// avoids forming/inverting a nearly singular dense covariance matrix.
+function measurementNoiseRows(measurements, details, sigmaScale) {
+  const byId = new Map(measurements.map(measurement => [measurement.id, measurement]));
+  return measurements.map(measurement => {
+    const scale = sigmaScale / measurement.independentSigma;
+    const terms = [{ index: measurement.index, coefficient: scale }];
+    let target = measurement.value * scale;
+    for (const [id, derivative] of details.get(measurement.id).derivatives) {
+      const reference = byId.get(id);
+      const coefficient = -derivative * measurement.factor / reference.factor * scale;
+      terms.push({ index: reference.index, coefficient });
+      target += coefficient * reference.value;
+    }
+    if (!Number.isFinite(target) || terms.some(term => !Number.isFinite(term.coefficient))) throw new Error('The formula and uncertainty scales make the numerical problem ill-conditioned. Check formulas and uncertainties.');
+    return { terms, target };
+  });
+}
 
 function orthonormalize(vectors) {
   const basis = [];
@@ -161,14 +185,13 @@ function graphModel(model) {
   return { internal, a, edges, vertices: adjacency.length, viable, reachable };
 }
 
-function solveOnFace(a, free, x, measurements, sigmaScale) {
+function solveOnFace(a, free, x, noiseRows) {
   if (!free.length) return Array(x.length).fill(0);
   const space = nullSpace(a.map(row => free.map(i => row[i])), free.length).basis;
   if (!space.length) return Array(x.length).fill(0);
   const index = new Map(free.map((i, j) => [i, j]));
-  const relevant = measurements.filter(m => index.has(m.index));
-  const b = relevant.map(m => space.map(v => v[index.get(m.index)] * sigmaScale / m.sigma));
-  const target = relevant.map(m => (m.value - x[m.index]) * sigmaScale / m.sigma);
+  const b = noiseRows.map(row => space.map(v => row.terms.reduce((sum, term) => sum + (index.has(term.index) ? term.coefficient * v[index.get(term.index)] : 0), 0)));
+  const target = noiseRows.map(row => row.target - project(row, x));
   const ls = leastSquares(b, target, space.length);
   const correction = Array(x.length).fill(0);
   for (let j = 0; j < free.length; j++) for (let k = 0; k < space.length; k++) correction[free[j]] += space[k][j] * ls.solution[k];
@@ -221,24 +244,26 @@ function negativeCycle(graph, x, gradient) {
   return cost < -tolerance ? direction : null;
 }
 
-function nonnegativeFit(graph, measurements, sigmaScale) {
+function nonnegativeFit(graph, noiseRows) {
   const n = graph.edges.length;
   const all = graph.viable.flatMap((value, i) => value ? [i] : []);
   const x = Array(n).fill(0);
-  const unconstrained = solveOnFace(graph.a, all, x, measurements, sigmaScale);
+  const unconstrained = solveOnFace(graph.a, all, x, noiseRows);
   if (unconstrained.every(value => Number.isFinite(value) && value >= -ZERO)) return unconstrained.map(value => Math.max(0, value));
-  const weights = Array(n).fill(0), observed = Array(n).fill(0);
-  for (const m of measurements) { weights[m.index] = (sigmaScale / m.sigma) ** 2; observed[m.index] = m.value; }
   for (let iteration = 0; iteration < 3000; iteration++) {
-    const gradient = x.map((value, i) => weights[i] * (value - observed[i]));
+    const gradient = Array(n).fill(0);
+    for (const row of noiseRows) {
+      const residual = project(row, x) - row.target;
+      for (const term of row.terms) gradient[term.index] += term.coefficient * residual;
+    }
     const cycle = negativeCycle(graph, x, gradient);
     if (!cycle) return x;
     let curvature = 0, slope = 0, limit = Infinity;
     for (const [i, direction] of cycle) {
-      curvature += weights[i] * direction ** 2;
       slope += gradient[i] * direction;
       if (direction < 0) limit = Math.min(limit, x[i] / -direction);
     }
+    for (const row of noiseRows) curvature += row.terms.reduce((sum, term) => sum + term.coefficient * (cycle.get(term.index) || 0), 0) ** 2;
     const step = Math.min(-slope / curvature, limit);
     if (!(curvature > 0) || !(step > 0) || !Number.isFinite(step)) throw new Error('The numerical optimizer could not find a reliable nonnegative step.');
     for (const [i, direction] of cycle) x[i] = Math.max(0, x[i] + step * direction);
@@ -246,7 +271,7 @@ function nonnegativeFit(graph, measurements, sigmaScale) {
     // Exact least-squares correction on the current face, with a feasible line
     // search to any new zero bounds. Each truncated step removes a free edge.
     for (let face = 0; face <= n; face++) {
-      const direction = solveOnFace(graph.a, free, x, measurements, sigmaScale);
+      const direction = solveOnFace(graph.a, free, x, noiseRows);
       let fraction = 1, hit = -1;
       for (const i of free) if (direction[i] < 0 && x[i] + direction[i] < 0) {
         const candidate = x[i] / -direction[i];
@@ -284,13 +309,19 @@ export function reconcile(model) {
     if (!model.nodes.length || !model.streams.length) return invalid('Add process units and connected flows before reconciling.');
     const connectivity = components(model);
     const graph = { ...graphModel(model), edgeComponent: connectivity.streamComponent }, measurements = [], byIndex = new Map(), warnings = [];
+    const details = evaluateMeterDetails(model);
     model.streams.forEach((s, index) => {
       if (!s.measured) return;
-      const converted = measurementToMass(s, model.periodHours);
+      const reading = details.get(s.id);
+      if (reading.error) throw new Error(`${getMeterName(s)}: ${reading.error}`);
+      const converted = measurementToMass({ ...s, value: reading.value }, model.periodHours);
       if (!Number.isFinite(converted.value) || !Number.isFinite(converted.sigma) || !(converted.sigma > 0)) throw new Error(`${s.name}: converted mass and uncertainty must be finite.`);
-      const measurement = { index, ...converted }; measurements.push(measurement); byIndex.set(index, measurement);
+      const sigma = reading.sigma * converted.factor;
+      if (!Number.isFinite(sigma) || !(sigma > 0)) throw new Error(`${getMeterName(s)}: propagated uncertainty must be positive and finite.`);
+      const measurement = { id: s.id, index, ...converted, independentSigma: converted.sigma, sigma }; measurements.push(measurement); byIndex.set(index, measurement);
     });
-    const sigmaScale = measurements.length ? Math.min(...measurements.map(m => m.sigma)) : 1;
+    const sigmaScale = measurements.length ? Math.min(...measurements.map(m => m.independentSigma)) : 1;
+    const noiseRows = measurementNoiseRows(measurements, details, sigmaScale);
     const viable = graph.viable.flatMap((value, i) => value ? [i] : []);
     const restricted = nullSpace(graph.a.map(row => viable.map(i => row[i])), viable.length);
     const base = restricted.basis.map(v => {
@@ -299,16 +330,16 @@ export function reconcile(model) {
     });
     const measuredRows = measurements.map(m => base.map(v => v[m.index]));
     const unweightedRank = leastSquares(measuredRows, measurements.map(() => 0), base.length).rank;
-    const whitened = measuredRows.map((row, i) => row.map(value => value * sigmaScale / measurements[i].sigma));
-    const decomposition = leastSquares(whitened, measurements.map(m => m.value * sigmaScale / m.sigma), base.length);
+    const whitened = noiseRows.map(row => base.map(v => project(row, v)));
+    const decomposition = leastSquares(whitened, noiseRows.map(row => row.target), base.length);
     if (decomposition.rank !== unweightedRank) return invalid('The uncertainty scales make the numerical problem ill-conditioned. Check uncertainties before using results.');
-    const values = nonnegativeFit(graph, measurements, sigmaScale);
+    const values = nonnegativeFit(graph, noiseRows);
     if (values.some(v => !Number.isFinite(v) || v < -ZERO)) return invalid('The numerical optimizer returned an unreliable flow. Results were withheld.');
     for (const row of graph.a) {
       const residual = dot(row, values), magnitude = row.reduce((sum, coefficient, i) => sum + Math.abs(coefficient * values[i]), 0);
       if (Math.abs(residual) > 1e-7 * Math.max(1, magnitude)) return invalid('Conservation could not be satisfied within numerical tolerance. Results were withheld.');
     }
-    const objective = measurements.reduce((sum, m) => sum + ((values[m.index] - m.value) / m.sigma) ** 2, 0);
+    const objective = noiseRows.reduce((sum, row) => sum + ((project(row, values) - row.target) / sigmaScale) ** 2, 0);
     if (!Number.isFinite(objective)) return invalid('The objective overflowed. Check measurement and uncertainty scales.');
     const degreesOfFreedom = measurements.length - decomposition.rank;
     const missingArcs = Array.from({ length: graph.vertices }, () => []);
@@ -317,6 +348,18 @@ export function reconcile(model) {
       missingArcs[e.from].push({ to: e.to, index: i });
       if (values[i] > ZERO) missingArcs[e.to].push({ to: e.from, index: i });
     });
+    // Formula references can correlate different physical process components.
+    // A bound in one then affects Gaussian covariance in that entire group.
+    const correlated = new Map(connectivity.streamComponent.map(component => [component, component]));
+    const group = component => {
+      while (correlated.get(component) !== component) component = correlated.get(component);
+      return component;
+    };
+    for (const row of noiseRows) for (const term of row.terms.slice(1)) {
+      const first = group(connectivity.streamComponent[row.terms[0].index]);
+      const other = group(connectivity.streamComponent[term.index]);
+      correlated.set(other, first);
+    }
     const boundComponents = new Set();
     let unobservableCount = 0;
     const streams = model.streams.map((s, i) => {
@@ -337,7 +380,7 @@ export function reconcile(model) {
       // the boundary of an otherwise feasible flow and does not invalidate
       // Gaussian covariance elsewhere in the connected process.
       const atBound = value === 0 && graph.viable[i];
-      if (atBound || !linearObservable) boundComponents.add(connectivity.streamComponent[i]);
+      if (atBound || !linearObservable) boundComponents.add(group(connectivity.streamComponent[i]));
       const variance = linearObservable ? decomposition.variance(row) * sigmaScale ** 2 : null;
       const uncertainty = !atBound && variance !== null && Number.isFinite(variance) ? Math.sqrt(Math.max(0, variance)) : null;
       return {
@@ -348,7 +391,7 @@ export function reconcile(model) {
       };
     });
     if (boundComponents.size) streams.forEach((s, i) => {
-      if (boundComponents.has(connectivity.streamComponent[i])) s.uncertainty = null;
+      if (boundComponents.has(group(connectivity.streamComponent[i]))) s.uncertainty = null;
     });
     const balances = graph.internal.map((node, row) => {
       const coefficients = graph.a[row];
@@ -359,8 +402,9 @@ export function reconcile(model) {
     if (unobservableCount) warnings.push(`${unobservableCount} unmeasured stream${unobservableCount === 1 ? ' is' : 's are'} not uniquely identifiable. Add independent measurements or revise the topology; no arbitrary estimates are shown.`);
     const forcedZero = graph.viable.filter(v => !v).length;
     if (forcedZero) warnings.push(`${forcedZero} stream${forcedZero === 1 ? ' cannot' : 's cannot'} carry nonzero flow in this steady-state topology. Check missing boundary connections or inventory changes.`);
-    if (connectivity.count > 1) warnings.push('The model has disconnected components. Each connected process is reconciled independently.');
-    if (measurements.some(m => model.streams[m.index].metric.startsWith('volume'))) warnings.push('Densities are fixed conversion inputs. Density uncertainty and shared-input correlations are not modeled.');
+    if (connectivity.count > 1) warnings.push('The model has disconnected components. Conservation is enforced within each connected process.');
+    if (measurements.some(m => model.streams[m.index].metric.startsWith('volume'))) warnings.push('Densities are fixed conversion inputs. Density uncertainty and shared density-input correlations are not modeled.');
+    if (model.streams.some(isVirtualMeter)) warnings.push('Virtual meter uncertainties include first-order propagated reference errors and independent calculation error. Formula relations are linearized at raw readings; they are not exact constraints on reconciled flows.');
     if (boundComponents.size) warnings.push('One or more flows are determined at a nonnegative bound. Reconciled uncertainties are withheld for the affected connected process; Gaussian uncertainty and chi-square assumptions may not hold.');
     if (degreesOfFreedom === 0 && measurements.length) warnings.push('There is no independent measurement redundancy. Exact closure alone cannot test the measurements for consistency.');
     if (degreesOfFreedom > 0) {

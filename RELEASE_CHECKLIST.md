@@ -31,6 +31,16 @@ Record: GitHub commit, Sites source commit, artifact/version ID, deployment URL,
 - [ ] Drag common equipment symbols, connect their ports, move units, and change a symbol. Confirm connection endpoints and properties survive saving and reopening.
 - [ ] Test an enabled schedule with an eligible browser session open; confirm a due run uses the publication and two sessions cannot claim the same occurrence. Confirm overdue reopening runs once, and unpublishing/deleting pauses the schedule. Record that unattended scheduling is not supported.
 
+## Virtual meters
+
+- [ ] Open meter settings, switch between **Physical** and **Virtual**, name meters, and enter formulas using `[Meter name]`, arithmetic, parentheses, unary signs, and `^` exponentiation. Confirm exact, case-sensitive, trimmed name matching and read-only calculated virtual readings on Measurements.
+- [ ] Test a physical-to-virtual dependency and a virtual-to-virtual chain. Change the source reading; confirm every dependent value changes and reconciliation uses the new readings.
+- [ ] Check explicit unit conversion, for example `[Feed t/h] * 1000` into kg/h, and subsequent batch-duration/density conversion. Confirm references use original readings rather than reconciled values.
+- [ ] Check duplicate and missing names, circular dependencies, incomplete formulas, division by zero, and nonfinite/negative outputs. Invalid formulas may be saved in a draft but must block a run with an actionable meter-specific error.
+- [ ] Verify the arithmetic parser rejects code execution, property access, unsupported functions, and excessive expressions. Confirm the server recomputes virtual readings instead of accepting a submitted calculated value.
+- [ ] Verify first-order uncertainty propagation and covariance against an independent analytical example with shared physical inputs. Confirm virtual meters do not double-count that shared evidence, configured positive calculation error has the documented effect, and zero readings require absolute uncertainty. Confirm physical-only reconciliation retains its existing analytical results.
+- [ ] Save, reopen, duplicate, and JSON-export/import a model with formulas. Edit a draft formula without changing its publication; publish changes and confirm each manual/scheduled run evaluates the correct snapshot and retains its input/result provenance.
+
 ## Hidden lines and diagram usability
 
 - [ ] Hide a line from its inspector and context menu. **Hidden lines** must list only hidden streams with their endpoints and a **Restore** button; visible streams must not appear in that list.

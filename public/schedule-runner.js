@@ -1,8 +1,17 @@
 import { getModelEntry, timeToEpoch, validateEditableModel } from './management-store.js';
 import { reconcile } from './solver.js';
+import { evaluateMeterReadings, getMeterName, isVirtualMeter } from './virtual-meters.js';
 
 const clone = value => structuredClone(value);
 const usableStatuses = new Set(['ok', 'warning', 'underdetermined']);
+
+// Computed virtual values are run audit data, not editable inputs. All physical
+// readings, formulas, meter names and other model properties must still match.
+export function sameRunInputs(left, right) {
+  if (!left || !right || !Array.isArray(left.streams) || !Array.isArray(right.streams)) return false;
+  const normalized = model => ({ ...model, streams: model.streams.map(stream => isVirtualMeter(stream) ? { ...stream, value: null } : stream) });
+  return JSON.stringify(normalized(left)) === JSON.stringify(normalized(right));
+}
 
 function sourceHandler(source, adapters, direction) {
   const key = source.adapterKey ?? source.adapter ?? source.type;
@@ -43,6 +52,17 @@ export async function executeModelRun(catalog, modelId, {
       run.modelSnapshot = validateEditableModel(imported);
     }
     stage = 'Reconciliation';
+    // Evaluate after input delivery using raw readings from this run, not any
+    // client-supplied cached virtual values. Preserve formulas in the audit copy.
+    const readings = evaluateMeterReadings(run.modelSnapshot);
+    const virtualMeters = run.modelSnapshot.streams.filter(stream => stream.measured && isVirtualMeter(stream));
+    for (const stream of virtualMeters) stream.value = readings.get(stream.id)?.value ?? null;
+    for (const stream of virtualMeters) {
+      const reading = readings.get(stream.id);
+      if (reading?.error || reading?.value === null || reading === undefined) {
+        throw new Error(`${getMeterName(stream)}: ${reading?.error ?? 'The virtual meter could not be calculated.'}`);
+      }
+    }
     run.result = reconcile(clone(run.modelSnapshot));
     run.status = run.result.status === 'infeasible' ? 'failed' : run.result.status;
     if (!usableStatuses.has(run.result.status)) {

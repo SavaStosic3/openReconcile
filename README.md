@@ -33,8 +33,8 @@ The production backend must be reached through the trusted Sites authentication 
 
 1. Sign in and open an assigned model, or create one with an editor/administrator account. Drag a pump, valve, heat exchanger, or another process-unit symbol from the toolbox onto the canvas. Click-to-add is also available. Add red inflow/outflow triangles for every external material path.
 2. Drag the right port of a source to the left port of a destination. Alternatively, select Connect and click the source then destination. Drag units to reposition them; lines update automatically.
-3. Right-click or double-click a stream. Set its name, material, phase, density, temperature, and pressure. Enable a meter and choose mass/volume, transferred quantity/flow rate, and units. Double-click a unit to change its name or equipment symbol.
-4. Enter readings and one-standard-deviation uncertainties on Measurements. Pick a 1-hour, 24-hour, or custom batch duration. **Test draft reconciliation** checks your working draft. Choose **Publish model** or **Publish changes**, then run the published version to show results above its symbols and on its flow lines.
+3. Right-click or double-click a stream. Set its name, material, phase, density, temperature, and pressure. Enable a meter and choose **Physical** or **Virtual**, mass/volume, transferred quantity/flow rate, and units. A virtual meter takes a formula using references such as `[Feed meter]`. Double-click a unit to change its name or equipment symbol.
+4. Enter physical readings and one-standard-deviation uncertainties on Measurements; virtual readings are calculated. Pick a 1-hour, 24-hour, or custom batch duration. **Test draft reconciliation** checks your working draft. Choose **Publish model** or **Publish changes**, then run the published version to show results above its symbols and on its flow lines.
 
 Unmetered streams can be inferred only when the measurements and network uniquely determine them. Otherwise they are clearly marked as needing a measurement. The example starts with a 100 kg feed and 60/35 kg outlets, with uncertainties 1/2/2 kg. Its correct reconciled values are 99.444444, 62.222222, and 37.222222 kg; the missing internal flow is 99.444444 kg.
 
@@ -58,6 +58,18 @@ Drag a symbol onto the canvas or click its toolbox button to add it. Each intern
 Double-click an existing unit and choose **Unit symbol** to change its appearance. This preserves its identity, location, connections, material properties, and readings, and works with undo/redo, saving, and JSON import/export. Boundary direction stays fixed, and edit permissions and locks still apply.
 
 Equipment symbols describe the process diagram. Every internal unit uses the same total-mass conservation equation, with no accumulation. Pump curves, pressure drop, compression, heat transfer, particle separation, and storage calculations are not introduced by choosing a symbol. Add every material path explicitly; tank/storage balances remain a separate planned feature.
+
+## Virtual meters
+
+Enable a stream's meter, select **Virtual**, and enter a formula. Give referenced meters clear, unique names; an empty meter name uses the stream name. Reference a physical or virtual meter with brackets, for example `[Feed meter] * 0.95` or `([Feed meter] - [Waste meter]) / 2`. Names are case-sensitive and trimmed. Basic arithmetic supports `+`, `-`, `*`, `/`, parentheses, unary signs, and `^` for exponentiation. Powers are right-associative: `2 ^ 3 ^ 2` means `2 ^ (3 ^ 2)`.
+
+References use the other meter's original reading in its configured unit, before reconciliation. The formula's result is interpreted in the virtual meter's configured unit. Conversion is explicit: `[Feed t/h] * 1000` can supply a virtual meter configured in kg/h. The app does not infer unit conversions or dimensional consistency within a formula. Both physical and virtual readings are then converted to kg per reporting interval for the mass balance.
+
+The diagram marks physical meters with **M** and virtual meters with **V**. Measurements displays virtual readings as calculated, read-only values. Changing a physical reading updates its dependents. A virtual meter may reference another virtual meter; dependency order is resolved automatically. Missing or ambiguous names, circular references, invalid syntax, division by zero, and nonfinite or negative readings prevent reconciliation and report the affected meter. You can save an unfinished draft formula and complete it before running.
+
+Physical reading errors are assumed independent. A virtual meter's configured one-standard-deviation uncertainty represents independent calculation/model error; uncertainty from its references is added through first-order propagation. Shared inputs produce covariance between readings, which the reconciliation uses to avoid counting the same physical evidence twice. Every configured uncertainty must be positive; at a zero reading use absolute uncertainty. The app uses derivatives around the original readings, so nonlinear uncertainty propagation is an approximation. Formulas calculate input readings, not exact relationships imposed on the reconciled values; density remains fixed.
+
+Formulas are parsed as arithmetic rather than executed as JavaScript; functions, property access, and arbitrary code are unsupported. Manual and scheduled runs evaluate the selected snapshot's formulas on the server instead of trusting a client-supplied calculated value. Names, formulas, and settings are retained in JSON import/export, saving, duplication, and publication snapshots. Editing a draft formula does not change a published model's formula or results until publishing changes.
 
 ## Line visibility and crossings
 
@@ -110,21 +122,23 @@ Unattended cloud scheduling, retries, external connectors, and browsable model v
 For each internal unit, incoming mass minus outgoing mass equals zero. In matrix form:
 
 \[
-\min_{x\ge0}\sum_{i\in M}\left((x_i-y_i)/\sigma_i\right)^2,
+\min_{x\ge0}(x_M-y)^T\Sigma^{-1}(x_M-y),
 \qquad Ax=0.
 \]
 
+Here \(M\) identifies metered streams, \(y\) contains their normalized physical or calculated readings, and \(\Sigma\) is the reading-error covariance matrix. With physical meters only, \(\Sigma\) is diagonal and this reduces to \(\sum_{i\in M}((x_i-y_i)/\sigma_i)^2\). Virtual formulas propagate shared-input covariance; independent configured calculation errors keep the covariance nonsingular. Triangular innovation whitening applies this weighting without explicitly inverting the covariance matrix.
+
 All quantities are normalized to kg per reporting interval before the server solves the saved model. Missing streams have no fabricated measurement or objective term. The numerical engine uses null-space reduction, pivoted Householder QR, and a feasible active-face network optimization for nonnegative flows. It handles rank-dependent conservation constraints and checks identifiability of each unmeasured stream. An internal representative of an ambiguous solution is never presented as a unique inferred flow.
 
-Input uncertainty is one standard deviation (1σ), either an absolute amount in the reading's unit or a percentage of the reading. At a zero reading use absolute uncertainty. Volume-to-mass conversion uses fixed stream density; flow rates are multiplied by batch duration. Results retain original readings and show reconciled mass, corrections, estimate uncertainty, and unit closure checks.
+Input uncertainty is one standard deviation (1σ), either an absolute amount in the reading's unit or a percentage of the reading. For a virtual meter this setting is its calculation/model error before reference uncertainty is propagated. At a zero reading use absolute uncertainty. Volume-to-mass conversion uses fixed stream density; flow rates are multiplied by batch duration. Results retain original readings and show reconciled mass, corrections, estimate uncertainty, and unit closure checks.
 
-Independent, unbiased errors and an accurate physical model are assumed. Very poor numerical conditioning is rejected instead of presenting unreliable results. Interior Gaussian covariance estimates are withheld for a connected process affected by active nonnegative bounds. Topology-forced zero flows are distinguished from measurement-driven bound activation. Gross-error indications are diagnostics, not automatic meter-fault identification.
+Unbiased errors and an accurate physical model are assumed. Very poor numerical conditioning is rejected instead of presenting unreliable results. Interior Gaussian covariance estimates are withheld for a connected process affected by active nonnegative bounds. Topology-forced zero flows are distinguished from measurement-driven bound activation. Gross-error indications are diagnostics, not automatic meter-fault identification.
 
 ## Deliberate MVP limits
 
 - No tanks, storage, or accumulation. Hourly/daily reporting does not imply that a real plant is steady; use this only for boundaries with negligible net holdup change.
 - Total mass only. Temperature and pressure describe streams but do not automatically compensate gases or compute thermodynamics. Density is fixed and its uncertainty is not propagated.
-- No component/species reconciliation, reactions/stoichiometry, energy balances, historian integration, correlated measurement errors, or min/max throughput limits beyond nonnegativity.
+- No component/species reconciliation, reactions/stoichiometry, energy balances, historian integration, or min/max throughput limits beyond nonnegativity. Physical instrument errors are assumed independent; arbitrary instrument correlation or calibration covariance cannot be configured.
 - No unattended cloud scheduler, external input/output connectors, or model version browsing. Shared workspace storage and account/model permission enforcement are implemented.
 - Diagram limit: 200 nodes and 500 streams. Verified examples are small networks; the interface is primarily a desktop/tablet engineering workbench.
 - All material paths, including waste and vents, must be modeled. Conservation and nonnegativity can force a dead-end path to zero; the tool warns about incomplete topology rather than treating closure as proof of physical correctness.
