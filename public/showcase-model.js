@@ -18,7 +18,7 @@ const SHOWCASE_MODEL = {
   nodes: [
     node('raw-feed', 'inlet', 'Raw slurry', 70, 260),
     node('feed-pump', 'pump', 'Feed pump', 240, 260),
-    node('wash-water', 'inlet', 'Wash water', 240, 70),
+    node('wash-water', 'inlet', 'Wash water', 240, 0),
     node('feed-mixer', 'mixer', 'Feed mixer', 460, 260),
     node('slurry-heater', 'heatExchanger', 'Slurry heater', 680, 260),
     node('pressure-filter', 'filter', 'Pressure filter', 900, 260),

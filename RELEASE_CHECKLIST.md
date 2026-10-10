@@ -104,6 +104,8 @@ Local evidence on 2026-10-10: the final `npm test` suite passed **289 tests**, i
 
 Local verification on 2026-10-10: **294 tests** passed, including five independent checks of the filtration showcase, every unit/boundary balance, a consistent baseline, and elapsed-duration scaling. Type checking and the production build passed. Browser checks with local simulated sign-in confirmed template creation, physical-reading reset, the expected one-hour draft and published reconciliation, and visible results on the diagram. Physical/virtual stream settings aligned on desktop and stacked without dialog overflow at 390px; unit mapping labels were checked. These checks do not establish real plant or connector validation.
 
+Live browser verification on 2026-10-10: the filtration showcase was created, published, and reconciled through the authenticated production workspace. Published model version 2 displays the expected one-hour stream values, three inferred flows, objective `0.4`, and zero closing error at all five units. The wash-water inlet was moved clear of result labels. Stream settings show aligned optional labels, reading/uncertainty fields, and source mappings. The earlier user-created model was retained. This run used supplied rate readings, with no external input/output connector configured.
+
 ## Closeout
 
 - [ ] Update the README, roadmap, and release notes to match delivered behavior and current limits.

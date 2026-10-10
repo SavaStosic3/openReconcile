@@ -22,7 +22,7 @@
       "kind": "inlet",
       "name": "Wash water",
       "x": 240,
-      "y": 70
+      "y": 0
     },
     {
       "id": "feed-mixer",
