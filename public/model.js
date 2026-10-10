@@ -18,7 +18,7 @@ export function newStream(source, target, count = 1) {
 }
 export function emptyModel() { return { version: 1, name: 'Untitled plant', periodHours: 1, nodes: [], streams: [] }; }
 export function exampleModel() {
-  const m = emptyModel(); m.name = 'Demo · feed & separation';
+  const m = emptyModel(); m.name = 'Feed and separation';
   m.nodes = [
     { id: 'feed', kind: 'inlet', name: 'Raw feed', x: 100, y: 260 },
     { id: 'mix', kind: 'mixer', name: 'Feed mixer', x: 350, y: 260 },
@@ -52,7 +52,7 @@ export function measurementToMass(stream, periodHours) {
 }
 export function validateModel(model) {
   if (!model || model.version !== 1 || !Array.isArray(model.nodes) || !Array.isArray(model.streams)) throw new Error('This file is not a supported plant model.');
-  if (model.nodes.length > 200 || model.streams.length > 500) throw new Error('This MVP supports up to 200 units and 500 streams.');
+  if (model.nodes.length > 200 || model.streams.length > 500) throw new Error('A model can contain up to 200 units and 500 streams.');
   if (typeof model.name !== 'string' || model.name.length > 160) throw new Error('Use a model name under 160 characters.');
   if (!Number.isFinite(Number(model.periodHours)) || Number(model.periodHours) <= 0) throw new Error('Choose a positive batch duration.');
   const ids = new Set();

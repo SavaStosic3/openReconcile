@@ -56,16 +56,16 @@ export function createAdmin({ api, getUser, onChange, onBack, beforeOpen, onToas
   function renderModels() {
     const visible = data.models.filter(model => $('#admin-show-deleted').checked || !model.deletedAt);
     if (!visible.some(model => model.id === selectedId)) selectedId = visible[0]?.id ?? null;
-    $('#admin-models-list').innerHTML = visible.length ? visible.map(model => `<button type="button" class="admin-model-item" data-model-id="${esc(model.id)}" aria-pressed="${model.id === selectedId}"${busy ? ' disabled' : ''}>${folderIcon}<span><strong>${esc(modelName(model))}</strong><small>Revision ${esc(model.revision)}${model.deletedAt ? ` · Deleted ${esc(date(model.deletedAt))}` : ''}</small><span class="admin-model-tags"><span class="admin-model-tag${model.deletedAt ? ' deleted' : model.published ? ' published' : ''}">${model.deletedAt ? 'Deleted' : model.published ? 'Published · active' : 'Draft'}</span>${model.editLocked ? '<span class="admin-model-tag">Editing locked</span>' : ''}${model.unpublishLocked ? '<span class="admin-model-tag">Unpublishing locked</span>' : ''}</span></span></button>`).join('') : '<div class="admin-list-empty"><p>No models to show. Create a model in the workbench to get started.</p></div>';
+    $('#admin-models-list').innerHTML = visible.length ? visible.map(model => `<button type="button" class="admin-model-item" data-model-id="${esc(model.id)}" aria-pressed="${model.id === selectedId}"${busy ? ' disabled' : ''}>${folderIcon}<span><strong>${esc(modelName(model))}</strong><small>Revision ${esc(model.revision)}${model.deletedAt ? ` · Deleted ${esc(date(model.deletedAt))}` : ''}</small><span class="admin-model-tags"><span class="admin-model-tag${model.deletedAt ? ' deleted' : model.published ? ' published' : ''}">${model.deletedAt ? 'Deleted' : model.published ? 'Published · active' : 'Draft'}</span>${model.editLocked ? '<span class="admin-model-tag">Editing locked</span>' : ''}${model.unpublishLocked ? '<span class="admin-model-tag">Unpublishing locked</span>' : ''}</span></span></button>`).join('') : '<div class="admin-list-empty"><p>No models available. Create a model in Model editor.</p></div>';
     renderDetail();
   }
   function renderDetail() {
     const model = data.models.find(item => item.id === selectedId);
     if (!model) {
-      $('#admin-model-detail').innerHTML = '<div class="admin-detail-empty"><h2>Choose a model.</h2><p>Select a model from the list to manage its permissions and protection.</p></div>';
+      $('#admin-model-detail').innerHTML = '<div class="admin-detail-empty"><h2>Select a model</h2><p>Select a model from the list to manage its permissions and protection.</p></div>';
       return;
     }
-    const heading = `<div class="admin-detail-header"><div><h2 id="admin-selected-model-heading">${esc(modelName(model))}</h2><p>Revision ${esc(model.revision)} · Changes are checked by the server</p></div><span class="admin-model-tag${model.deletedAt ? ' deleted' : model.published ? ' published' : ''}">${model.deletedAt ? 'Deleted' : model.published ? 'Published' : 'Draft'}</span></div>`;
+    const heading = `<div class="admin-detail-header"><div><h2 id="admin-selected-model-heading">${esc(modelName(model))}</h2><p>Revision ${esc(model.revision)}</p></div><span class="admin-model-tag${model.deletedAt ? ' deleted' : model.published ? ' published' : ''}">${model.deletedAt ? 'Deleted' : model.published ? 'Published' : 'Draft'}</span></div>`;
     if (model.deletedAt) {
       $('#admin-model-detail').innerHTML = `${heading}<div class="admin-restore-panel"><h3>This model is deleted.</h3><p>Deleted ${esc(date(model.deletedAt))}. Restore it as a draft to make it available again. Its schedule stays disabled until it is published and configured.</p><button type="button" class="button secondary" data-action="restore-model"${busy ? ' disabled' : ''}>Restore model</button></div>`;
       return;
@@ -79,7 +79,7 @@ export function createAdmin({ api, getUser, onChange, onBack, beforeOpen, onToas
         <label class="admin-policy"><input id="admin-model-unpublish-locked" type="checkbox"${model.unpublishLocked ? ' checked' : ''}${disabled}><span><strong>Lock unpublishing</strong><small>Keep this model published until an administrator removes the lock.</small></span></label>
         <div class="admin-policy-actions"><button type="submit" class="button primary"${disabled}>Save model settings</button></div><p class="admin-policy-note">${model.published && model.unpublishLocked ? 'To unpublish this model, clear Lock unpublishing and save first. Then clear Published model and save again.' : 'Unpublishing stops scheduled runs. Only administrators can delete models.'}</p>
       </form>
-      <div class="admin-grants-heading"><h3>Who can use this model?</h3><p>Assign a level for each user. Their account role limits the permissions they can use. Administrators have full access to all models.</p></div>
+      <div class="admin-grants-heading"><h3>Model permissions</h3><p>Assign a level for each user. Their account role limits the permissions they can use. Administrators have full access to all models.</p></div>
       <div class="admin-table-wrap"><table class="admin-table admin-grants-table"><thead><tr><th>User</th><th>Model permission</th><th><span class="sr-only">Save model permission</span></th></tr></thead><tbody>${data.users.map(user => {
         const level = data.grants.find(grant => grant.modelId === model.id && grant.userId === user.id)?.level ?? 'none';
         const admin = user.role === 'admin';

@@ -26,7 +26,7 @@ export function createSqlConnectors({ backend, beforeOpen, onBack, onMapping, on
     $('#sql-preview-target').disabled = !enabled;
     $('#sql-preview-target option[value="published"]').disabled = !backend.permission(selectedId).published;
     if (!backend.permission(selectedId).published) $('#sql-preview-target').value = 'draft';
-    $('#sql-access-note').textContent = !selectedId ? 'Create a model before adding a source.' : !editable() ? 'Editing is locked for this model. An administrator must unlock it before configuring or testing sources.' : 'Source settings apply to future runs of both the draft and the published model. Changing or removing a selected source pauses its schedule for review.';
+    $('#sql-access-note').textContent = !selectedId ? 'Create a model before adding a source.' : !editable() ? 'Editing is locked for this model. An administrator must unlock it before configuring or testing sources.' : 'Source settings apply to reconciliation runs for both the draft and the published model. Changing or removing a selected source pauses its schedule for review.';
     for (const button of $('#sql-source-list').querySelectorAll('button')) button.disabled = !editable() || busy || !configured;
   }
   function renderList() {

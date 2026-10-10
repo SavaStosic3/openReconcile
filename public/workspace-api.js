@@ -10,7 +10,7 @@ export async function api(path, method = 'GET', body) {
   return data;
 }
 
-function showAuth(message, title = 'Sign in to your workspace') {
+function showAuth(message, title = 'Sign in to MassFlow') {
   document.body.classList.add('is-auth');
   $('#auth-screen').hidden = false;
   $('#workspace-main').hidden = true;
@@ -30,7 +30,7 @@ export async function connectWorkspace(onError) {
     session = await api('/api/session');
     state = await api('/api/workspace');
   } catch (error) {
-    showAuth(error.status === 401 ? 'Sign in with ChatGPT to access the models assigned to your account.' : error.message, error.status === 403 ? 'Account access is unavailable' : 'Sign in to your workspace');
+    showAuth(error.status === 401 ? 'Sign in with ChatGPT to access the models assigned to your account.' : error.message, error.status === 403 ? 'Account access is unavailable' : 'Sign in to MassFlow');
     // Sign-in is a normal top-level navigation; this document resumes on reload.
     return new Promise(() => {});
   }
@@ -70,7 +70,7 @@ export async function connectWorkspace(onError) {
     // connected account's catalog. Reconnection requires a full page reload.
     for (const [id, model] of drafts) { failedDrafts.set(id, { model: clone(model), error }); settle(id, false); }
     drafts.clear();
-    showAuth(error.status === 403 ? 'Your account access is unavailable. Contact an administrator before trying again.' : 'Your session ended. Sign in again to continue.', error.status === 403 ? 'Account access is unavailable' : 'Sign in to your workspace');
+    showAuth(error.status === 403 ? 'Your account access is unavailable. Contact an administrator before trying again.' : 'Your session ended. Sign in again to continue.', error.status === 403 ? 'Account access is unavailable' : 'Sign in to MassFlow');
     notify('auth');
   }
   function visibleWorkspace() {

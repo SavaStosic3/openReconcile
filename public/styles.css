@@ -574,11 +574,11 @@ h3 { font-size: 14px; line-height: 1.4; font-weight: 650; }
 #management-runs td { padding: 13px 23px; border-top: 1px solid #edf0ec; color: #4f656a; }
 #management-runs .status-pill { font-size: 10px; }
 .management-planned-grid { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); gap: 22px; margin-top: 23px; }
-.management-planned { padding: 19px 21px; border: 1px dashed #d0dcd4; border-radius: var(--radius); background: #f8faf6; }
+.management-planned { padding: 19px 21px; border: 1px solid #d0dcd4; border-radius: var(--radius); background: #f8faf6; }
 .management-planned > div { display: flex; align-items: center; gap: 10px; margin-bottom: 8px; }
-.management-planned h2 { margin: 0; color: #60756c; font-size: 12px; font-weight: 550; }
+.management-planned h2 { margin: 0; color: #314d42; font-size: 12px; font-weight: 600; }
 .management-planned-badge { padding: 2px 6px; border: 1px solid #dce4dc; border-radius: 4px; color: #819086; background: #f1f5ee; font-size: 8px; }
-.management-planned p { margin: 0; color: #85918b; font-size: 10px; line-height: 1.6; }
+.management-planned p { margin: 0; color: #60756c; font-size: 11px; line-height: 1.6; }
 @media (max-width: 1100px) {
   .header-start { gap: 10px; }
   .management-grid { grid-template-columns: minmax(0, 1.4fr) minmax(285px, 1fr); gap: 18px; }

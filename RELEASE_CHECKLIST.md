@@ -76,6 +76,13 @@ Local verification on 2026-10-10: the combined suite passed 243 tests, including
 - [ ] Check bridge bumps at perpendicular crossings, no bumps at real shared ports/touching endpoints, and updated bridges after moving or hiding a line.
 - [ ] Check keyboard access, focus after restoring a row, accessible control names, and narrow layouts. Confirm diagram controls and published result labels remain usable.
 
+## Application copy
+
+- [ ] Review sign-in, navigation, empty states, dialogs, measurements, results, and settings for clear product wording. Keep demo, MVP, prototype, and future-feature promises out of the application interface.
+- [ ] Confirm **Load template** creates a separate **Feed and separation** model, and **Reset template readings** restores its preset readings. Retain existing user-defined model names.
+- [ ] Confirm operational requirements remain clear: total-mass conservation without accumulation, fixed conversion properties, browser-session scheduling, and SQL gateway configuration.
+- [ ] Review results and settings layouts for clipped or overflowing labels, and keep the README and roadmap action names aligned with the interface.
+
 ## Closeout
 
 - [ ] Update the README, roadmap, and release notes to match delivered behavior and current limits.

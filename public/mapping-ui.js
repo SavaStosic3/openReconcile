@@ -37,7 +37,7 @@ export function createDataMapping({ getModel, getModelId, canEdit, onChange, onI
     const mapped = all.filter(({ item }) => getDataMapping(item)).length;
     $('#mapping-summary').textContent = `${mapped} of ${all.length} items mapped`;
     $('#mapping-version').textContent = getView();
-    $('#mapping-access-note').textContent = canEdit() ? 'Enter a source tag or column and press Tab to save. Clear removes the mapping.' : 'Read-only mappings. Changes require an unlocked model draft and editor access.';
+    $('#mapping-access-note').textContent = canEdit() ? 'Enter a source identifier and press Tab to save. Select Clear to remove a mapping.' : 'Read-only mappings. Changes require an unlocked model draft and editor access.';
     const nextStructure = JSON.stringify([scope(), visible.map(({ item, kind, type, detail }) => [kind, item.id, getModelItemName(item, kind), type, detail])]);
     if (structure !== nextStructure || !rows.children.length) {
       structure = nextStructure;

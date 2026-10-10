@@ -43,7 +43,7 @@ Unmetered streams can be inferred only when the measurements and network uniquel
 - Mouse wheel zooms. Pan mode or middle-drag moves the viewport. Fit frames the current model.
 - Select a unit or stream and press Delete to remove it. Enter edits the selection. Arrow keys move focused units (Shift for larger increments). V/C/H select the canvas tools.
 - Undo/redo retain the last 100 model states. Ctrl+Z and Ctrl+Shift+Z work outside text fields.
-- Models are autosaved to the shared backend with separate identities, measurements, schedules, and run histories. New, Demo, and Import add draft models and preserve existing models. Creating models requires an editor or administrator account.
+- Models are autosaved to the shared backend with separate identities, measurements, schedules, and run histories. New model, Load template, and Import add draft models and preserve existing models. Creating models requires an editor or administrator account.
 - Open the hamburger menu and choose **Model Management** to select, open, create, or duplicate a saved model. A duplicate starts with scheduling disabled and empty run history.
 - The backend checks permissions and model revisions before saving. A stale edit is rejected rather than overwriting someone else's changes; export your unsaved draft, then refresh the workspace. Revision checks support concurrent editing and are not a browsable model version history.
 - Earlier browser data is retained locally and is not uploaded automatically. **Import browser models** asks before importing the last single-model autosave into the shared workspace. Use JSON export/import for additional models from the previous browser library. Export files also provide portable backups.
@@ -160,7 +160,7 @@ Input uncertainty is one standard deviation (1σ), either an absolute amount in 
 
 Unbiased errors and an accurate physical model are assumed. Very poor numerical conditioning is rejected instead of presenting unreliable results. Interior Gaussian covariance estimates are withheld for a connected process affected by active nonnegative bounds. Topology-forced zero flows are distinguished from measurement-driven bound activation. Gross-error indications are diagnostics, not automatic meter-fault identification.
 
-## Deliberate MVP limits
+## Operating limits
 
 - No tanks, storage, or accumulation. Hourly/daily reporting does not imply that a real plant is steady; use this only for boundaries with negligible net holdup change.
 - Total mass only. Temperature and pressure describe streams but do not automatically compensate gases or compute thermodynamics. Density is fixed and its uncertainty is not propagated.

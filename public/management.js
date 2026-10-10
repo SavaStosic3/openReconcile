@@ -141,7 +141,7 @@ export function createManagement({ fallbackModel, beforeAction, onActivate, onRu
     select.value = selection || '';
     $(`#schedule-${direction}-help`).textContent = sources.length
       ? 'SQL sources use the server’s configured gateway. Input fetches fresh batch readings; output writes reconciled results. These choices also apply to manual runs.'
-      : direction === 'input' ? 'No external input sources defined. Uses this model’s saved readings; no new plant data is fetched.' : backend ? 'No external output destinations defined. Results are saved in the shared model history.' : 'No external output destinations defined. Results are saved in this browser’s model history.';
+      : direction === 'input' ? 'No input connector configured. Runs use the model’s saved readings.' : backend ? 'No output connector configured. Results are saved in the workspace run history.' : 'No output connector configured. Results are saved in this browser’s run history.';
   }
   function cadence(minutes) {
     if (minutes % 1440 === 0) return { value: minutes / 1440, unit: 'days' };
@@ -373,11 +373,11 @@ export function createManagement({ fallbackModel, beforeAction, onActivate, onRu
       const intervalMinutes = frequencyToMinutes(Number($('#schedule-interval').value), $('#schedule-unit').value);
       if (backend) {
         await backend.schedule(selectedId, { enabled: $('#schedule-enabled').checked, intervalMinutes, inputSourceId: $('#schedule-input').value || null, outputSourceId: $('#schedule-output').value || null });
-        pullShared(); render(true); message('Schedule saved to the workspace. It runs while this app is open.'); return;
+        pullShared(); render(true); message('Schedule saved. Scheduled runs require an open, authorized browser session.'); return;
       }
       save(setSchedule(catalog, selectedId, { enabled: $('#schedule-enabled').checked, intervalMinutes, inputSourceId: $('#schedule-input').value || null, outputSourceId: $('#schedule-output').value || null }, now()), true);
       render(true);
-      message('Schedule saved. It runs while this app is open.');
+      message('Schedule saved. Scheduled runs require an open browser session.');
     } catch (error) { message(error.message, true); }
   };
   $('#schedule-run-now').onclick = async () => {
