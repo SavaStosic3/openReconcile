@@ -373,7 +373,7 @@ test('published and editing activation use the same model identity but request d
   assert.deepEqual(activations[1].options, { view: 'editing' });
   backend.state.catalog.models[0].publishedVersion = 2;
   backend.notify('refresh');
-  assert.equal(activations.at(-1).options, undefined, 'An automatic refresh must preserve the current page.');
+  assert.deepEqual(activations.at(-1).options, { background: true }, 'An automatic refresh must update the model in the background without requesting a different page.');
   assert.equal(controller.current().publishedVersion, 2);
   assert.equal(controller.publishedEntries().length, 1);
   backend.state.grants['model-a'].published = false;

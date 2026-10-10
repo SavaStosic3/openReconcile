@@ -1,6 +1,7 @@
 import { appendUnitSymbol, unitBounds } from './unit-symbols.js';
 import { getStreamRoutes } from './stream-routing.js';
 import { isStorageNode } from './inventory.js';
+import { modelActionPermissions } from './model-actions.js';
 
 const NS = 'http://www.w3.org/2000/svg';
 const $ = selector => document.querySelector(selector);
@@ -83,13 +84,33 @@ function preview(item) {
   return holder;
 }
 
-function card(item, view) {
+function card(item, view, user) {
   const { entry, model, permission, name } = item;
   const article = element('article', 'gallery-card');
   article.id = `gallery-model-${item.id}`;
   const headingId = `gallery-model-name-${item.id}`;
   article.setAttribute('aria-labelledby', headingId);
   article.append(preview(item));
+  const overflow = element('div', 'gallery-card-overflow');
+  const menuButton = element('button', 'gallery-menu-button');
+  menuButton.type = 'button'; menuButton.dataset.galleryMenu = item.id;
+  menuButton.setAttribute('aria-label', `Model actions — ${name}`);
+  menuButton.setAttribute('aria-haspopup', 'menu'); menuButton.setAttribute('aria-expanded', 'false');
+  menuButton.setAttribute('aria-controls', `gallery-model-menu-${item.id}`);
+  const dots = svgElement('svg', { viewBox: '0 0 20 20', 'aria-hidden': 'true', focusable: 'false' });
+  for (const y of [5, 10, 15]) dots.append(svgElement('circle', { cx: 10, cy: y, r: 1.5, fill: 'currentColor' }));
+  menuButton.append(dots);
+  const menu = element('div', 'gallery-card-menu');
+  menu.id = `gallery-model-menu-${item.id}`; menu.hidden = true;
+  menu.setAttribute('role', 'menu'); menu.setAttribute('aria-label', `Actions for ${name}`);
+  const flags = modelActionPermissions(user, permission);
+  for (const [actionName, label, allowed] of [['rename', 'Rename', flags.canRename], ['duplicate', 'Duplicate', flags.canDuplicate], ['delete', 'Delete', flags.canDelete]]) {
+    const itemButton = element('button', `gallery-menu-item${actionName === 'delete' ? ' danger' : ''}`, label);
+    itemButton.type = 'button'; itemButton.dataset.galleryAction = actionName; itemButton.dataset.galleryId = item.id;
+    itemButton.setAttribute('role', 'menuitem'); itemButton.tabIndex = -1; itemButton.disabled = !allowed;
+    menu.append(itemButton);
+  }
+  overflow.append(menuButton, menu); article.append(overflow);
   const body = element('div', 'gallery-card-body');
   const badges = element('div', 'gallery-card-badges');
   const published = permission.published && entry.publishedModel;
@@ -125,9 +146,37 @@ function card(item, view) {
   return article;
 }
 
-export function createModelGallery({ backend, onOpen, onCreate, onToast }) {
-  let pageOpen = false, currentView = 'published', loading = false, opening = false, cardsKey = '';
+export function createModelGallery({ backend, onOpen, onCreate, onAction, onToast }) {
+  let pageOpen = false, currentView = 'published', loading = false, opening = false, updating = false, cardsKey = '';
+  let menuState = null, dialogContext = null;
   const section = $('#model-gallery'), search = $('#gallery-search'), grid = $('#gallery-grid');
+  const renameDialog = $('#gallery-rename-dialog'), deleteDialog = $('#gallery-delete-dialog');
+  const busy = () => loading || opening || updating;
+  const currentItem = (id, view = currentView) => galleryEntries(backend.workspace.catalog, itemId => backend.permission(itemId), view).find(item => item.id === id);
+  const allowed = (action, item) => Boolean(item && modelActionPermissions(backend.user, item.permission)[{ rename: 'canRename', duplicate: 'canDuplicate', delete: 'canDelete' }[action]]);
+  function focusCard(id) {
+    const trigger = [...grid.querySelectorAll('button[data-gallery-menu]')].find(button => button.dataset.galleryMenu === id);
+    if (pageOpen && trigger && !trigger.disabled) trigger.focus();
+    else if (pageOpen) search.focus();
+  }
+  function closeMenu(restoreFocus = true) {
+    if (!menuState) return;
+    const { trigger, menu, article } = menuState;
+    menu.hidden = true; trigger.setAttribute('aria-expanded', 'false'); article.classList.remove('menu-open');
+    menuState = null;
+    if (restoreFocus && pageOpen && grid.contains(trigger) && !trigger.disabled) trigger.focus();
+  }
+  function closeDialog(restoreFocus = true) {
+    const context = dialogContext;
+    dialogContext = null;
+    if (renameDialog.open) renameDialog.close();
+    if (deleteDialog.open) deleteDialog.close();
+    if (context && restoreFocus) focusCard(context.id);
+  }
+  function showActionError(action, message) {
+    const error = $(`#gallery-${action}-error`);
+    error.textContent = message; error.hidden = false;
+  }
   function render() {
     if (!pageOpen) return;
     const published = currentView === 'published';
@@ -138,36 +187,163 @@ export function createModelGallery({ backend, onOpen, onCreate, onToast }) {
     $('#gallery-heading').textContent = published ? 'Published models' : 'Edit models';
     $('#gallery-description').textContent = published ? 'Open a published model to view its flowsheet and reconciliation results.' : 'Choose a working draft to build, update, and publish your process model.';
     $('#gallery-new-model').hidden = !canCreate;
-    $('#gallery-new-model').disabled = loading || opening;
+    $('#gallery-new-model').disabled = busy();
     $('#gallery-summary').textContent = search.value.trim() ? `${entries.length} of ${plural(all.length, 'model')}` : `${plural(all.length, 'model')} available`;
     $('#gallery-clear-search').hidden = !search.value;
-    const key = JSON.stringify([currentView, entries]);
+    const key = JSON.stringify([currentView, backend.user.role, backend.user.active, entries]);
     if (key !== cardsKey) {
-      grid.replaceChildren(...entries.map(item => card(item, currentView)));
+      const menuId = menuState?.id;
+      closeMenu(false);
+      grid.replaceChildren(...entries.map(item => card(item, currentView, backend.user)));
       cardsKey = key;
+      if (menuId) focusCard(menuId);
     }
-    for (const button of grid.querySelectorAll('button[data-gallery-open]')) button.disabled = loading || opening;
+    for (const button of grid.querySelectorAll('button[data-gallery-open]')) button.disabled = busy();
+    for (const button of grid.querySelectorAll('button[data-gallery-menu]')) button.disabled = busy();
+    for (const button of grid.querySelectorAll('button[data-gallery-action]')) button.disabled = busy() || !allowed(button.dataset.galleryAction, currentItem(button.dataset.galleryId));
     grid.hidden = entries.length === 0;
     $('#gallery-empty').hidden = entries.length !== 0 || loading;
     const searching = Boolean(search.value.trim());
     $('#gallery-empty-heading').textContent = searching ? 'No matching models' : published ? 'No published models yet' : 'No models available';
     $('#gallery-empty-description').textContent = searching ? 'Try another name or clear the search to see all available models.' : published ? canBuild ? 'Publish a draft from Edit models to make it available here. Your administrator manages access to other models.' : 'Published models assigned to your account appear here. Ask your administrator for model access.' : canCreate ? 'Create a model to start building your flowsheet. You can also import a saved model from the editor.' : 'Models assigned to your account appear here. Ask your administrator for model access.';
     $('#gallery-reset-search').hidden = !searching;
-    section.setAttribute('aria-busy', String(loading || opening));
-    $('#gallery-status').textContent = opening ? 'Opening model…' : loading ? 'Refreshing models…' : '';
+    section.setAttribute('aria-busy', String(busy()));
+    $('#gallery-status').textContent = updating ? 'Updating model…' : opening ? 'Opening model…' : loading ? 'Refreshing models…' : '';
   }
   async function perform(action) {
-    if (loading || opening || !pageOpen) return;
+    if (busy() || !pageOpen) return;
+    closeMenu(false);
     opening = true; render();
     try { await action(); }
     catch (error) { onToast?.(error?.message || 'The model could not be opened.'); }
     finally { opening = false; render(); }
   }
+  async function performAction(context, name) {
+    if (busy() || !pageOpen) return;
+    const item = currentItem(context.id, context.view);
+    if (!allowed(context.action, item)) {
+      const message = 'You no longer have permission to make this change.';
+      if (dialogContext === context) showActionError(context.action, message); else onToast?.(message);
+      return;
+    }
+    let focusId = context.id;
+    updating = true; closeMenu(false); render();
+    for (const action of ['rename', 'delete']) {
+      $(`#gallery-${action}-submit`).disabled = true;
+      $(`#gallery-${action}-cancel`).disabled = true;
+      $(`#gallery-${action}-close`).disabled = true;
+    }
+    $('#gallery-rename-name').disabled = true;
+    try {
+      if (!onAction) throw new Error('Model actions are not available.');
+      const result = await onAction(context.action, context.id, { ...(name !== undefined ? { name } : {}), revision: context.revision, view: context.view });
+      if (context.action === 'duplicate' && result?.id) focusId = result.id;
+      if (dialogContext === context) closeDialog(false);
+    } catch (error) {
+      const message = error?.message || 'The model could not be updated.';
+      if (dialogContext === context) showActionError(context.action, message);
+      else onToast?.(message);
+    } finally {
+      updating = false;
+      for (const action of ['rename', 'delete']) {
+        $(`#gallery-${action}-submit`).disabled = false;
+        $(`#gallery-${action}-cancel`).disabled = false;
+        $(`#gallery-${action}-close`).disabled = false;
+      }
+      $('#gallery-rename-name').disabled = false;
+      render();
+      if (!dialogContext) focusCard(focusId);
+    }
+  }
+  function chooseAction(action, id) {
+    if (busy() || !pageOpen) return;
+    const item = currentItem(id);
+    if (!allowed(action, item)) return;
+    const context = { action, id, view: currentView, revision: item.permission.revision ?? item.entry.revision };
+    closeMenu(false);
+    if (action === 'duplicate') { void performAction(context); return; }
+    dialogContext = context;
+    const error = $(`#gallery-${action}-error`); error.textContent = ''; error.hidden = true;
+    if (action === 'rename') {
+      $('#gallery-rename-name').value = item.entry.model.name || 'Untitled model';
+      $('#gallery-rename-description').textContent = currentView === 'published' ? 'Rename the working draft. The current publication keeps its name until you publish the updated draft.' : 'Choose a name for this working draft.';
+      renameDialog.showModal(); $('#gallery-rename-name').focus(); $('#gallery-rename-name').select();
+    } else {
+      $('#gallery-delete-description').textContent = `Delete “${item.name}”? This removes the model from both galleries and stops its schedule. An administrator can restore it from deleted models.`;
+      deleteDialog.showModal(); $('#gallery-delete-cancel').focus();
+    }
+  }
+  function openMenu(trigger, last = false) {
+    if (busy() || !pageOpen || !grid.contains(trigger) || !currentItem(trigger.dataset.galleryMenu)) return;
+    const article = trigger.closest('article'), menu = article.querySelector('.gallery-card-menu');
+    closeMenu(false);
+    menu.hidden = false; trigger.setAttribute('aria-expanded', 'true'); article.classList.add('menu-open');
+    menuState = { id: trigger.dataset.galleryMenu, view: currentView, trigger, menu, article };
+    const items = [...menu.querySelectorAll('button[data-gallery-action]')].filter(button => !button.disabled);
+    (last ? items.at(-1) : items[0])?.focus();
+  }
   grid.addEventListener('click', event => {
+    const action = event.target.closest?.('button[data-gallery-action]');
+    if (action && grid.contains(action)) {
+      event.stopPropagation();
+      if (menuState && menuState.menu.contains(action) && !action.disabled) chooseAction(action.dataset.galleryAction, action.dataset.galleryId);
+      return;
+    }
+    const trigger = event.target.closest?.('button[data-gallery-menu]');
+    if (trigger && grid.contains(trigger)) {
+      event.stopPropagation();
+      if (menuState?.trigger === trigger) closeMenu(); else openMenu(trigger);
+      return;
+    }
     const button = event.target.closest?.('button[data-gallery-open]');
     if (!button || !grid.contains(button)) return;
     void perform(() => onOpen(currentView, button.dataset.galleryOpen));
   });
+  grid.addEventListener('keydown', event => {
+    const trigger = event.target.closest?.('button[data-gallery-menu]');
+    if (trigger && grid.contains(trigger) && ['ArrowDown', 'ArrowUp'].includes(event.key)) {
+      event.preventDefault(); event.stopPropagation(); openMenu(trigger, event.key === 'ArrowUp'); return;
+    }
+    if (!menuState || !menuState.menu.contains(event.target)) return;
+    if (event.key === 'Escape') { event.preventDefault(); event.stopPropagation(); closeMenu(); return; }
+    if (event.key === 'Tab') { closeMenu(); return; }
+    const items = [...menuState.menu.querySelectorAll('button[data-gallery-action]')].filter(button => !button.disabled);
+    const index = items.indexOf(event.target);
+    if (['ArrowDown', 'ArrowUp', 'Home', 'End'].includes(event.key) && items.length) {
+      event.preventDefault(); event.stopPropagation();
+      const next = event.key === 'Home' ? 0 : event.key === 'End' ? items.length - 1 : (index + (event.key === 'ArrowDown' ? 1 : -1) + items.length) % items.length;
+      items[next].focus();
+    }
+  });
+  grid.addEventListener('focusout', event => {
+    if (menuState && event.relatedTarget && !menuState.menu.contains(event.relatedTarget) && !menuState.trigger.contains(event.relatedTarget)) closeMenu(false);
+  });
+  document.addEventListener('click', event => { if (menuState && !menuState.menu.contains(event.target) && !menuState.trigger.contains(event.target)) closeMenu(false); });
+  document.addEventListener('keydown', event => { if (menuState && event.key === 'Escape') { event.preventDefault(); closeMenu(); } });
+  for (const action of ['rename', 'delete']) {
+    const dialog = action === 'rename' ? renameDialog : deleteDialog;
+    const dismiss = () => { if (!updating) closeDialog(); };
+    $(`#gallery-${action}-close`).addEventListener('click', dismiss);
+    $(`#gallery-${action}-cancel`).addEventListener('click', dismiss);
+    dialog.addEventListener('cancel', event => { event.preventDefault(); dismiss(); });
+    dialog.addEventListener('click', event => {
+      if (event.target !== dialog || updating) return;
+      const bounds = dialog.getBoundingClientRect();
+      if (event.clientX < bounds.left || event.clientX > bounds.right || event.clientY < bounds.top || event.clientY > bounds.bottom) dismiss();
+    });
+    dialog.addEventListener('close', () => { if (dialogContext?.action === action) { const id = dialogContext.id; dialogContext = null; focusCard(id); } });
+    $(`#gallery-${action}-form`).addEventListener('submit', event => {
+      event.preventDefault();
+      const context = dialogContext;
+      if (!context || context.action !== action || busy()) return;
+      $(`#gallery-${action}-error`).hidden = true;
+      const name = action === 'rename' ? $('#gallery-rename-name').value.trim() : undefined;
+      if (action === 'rename' && (!name || name.length > 160)) {
+        showActionError(action, 'Enter a model name between 1 and 160 characters.'); $('#gallery-rename-name').focus(); return;
+      }
+      void performAction(context, name);
+    });
+  }
   $('#gallery-new-model').addEventListener('click', () => {
     if (currentView !== 'editing' || !['admin', 'editor'].includes(backend.user.role)) return;
     void perform(() => onCreate());
@@ -179,12 +355,13 @@ export function createModelGallery({ backend, onOpen, onCreate, onToast }) {
   return {
     open(view) {
       if (!['published', 'editing'].includes(view)) throw new Error('Choose published models or edit models.');
+      closeMenu(false); closeDialog(false);
       if (!pageOpen || currentView !== view) search.value = '';
       currentView = view; pageOpen = true;
       section.hidden = false; document.body.classList.add('is-model-gallery');
       render(); $('#gallery-heading').focus();
     },
-    leave() { pageOpen = false; section.hidden = true; document.body.classList.remove('is-model-gallery'); },
+    leave() { closeMenu(false); closeDialog(false); pageOpen = false; section.hidden = true; document.body.classList.remove('is-model-gallery'); },
     render,
     setLoading(value) { loading = Boolean(value); render(); },
     get isOpen() { return pageOpen; },

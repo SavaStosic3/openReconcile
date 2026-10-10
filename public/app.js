@@ -19,6 +19,7 @@ import { isStorageNode } from './inventory.js';
 import { INVENTORY_UNITS, fillInventoryForm, inventoryFromForm, inventoryMassHtml, inventoryRowsHtml, inventoryResultsHtml } from './storage-ui.js';
 import { storageShowcaseModel, resetStorageShowcaseReadings } from './storage-showcase-model.js';
 import { createModelGallery } from './model-gallery.js';
+import { createModelActions } from './model-actions.js';
 
 const $ = (s, root = document) => root.querySelector(s);
 const $$ = (s, root = document) => [...root.querySelectorAll(s)];
@@ -53,6 +54,7 @@ let model = emptyModel(), results = null, selection = null, activeTab = 'model',
 const modelSessions = new Map();
 let modelGallery = null, galleryNavigation = 0;
 const backend = await connectWorkspace(toast);
+const modelActions = createModelActions({ backend });
 const lineVisibility = createLineVisibility();
 const initialPage = new URL(location.href);
 if (backend.workspace.catalog.models.some(entry => entry.id === initialPage.searchParams.get('model'))) backend.select(initialPage.searchParams.get('model'));
@@ -312,7 +314,22 @@ window.addEventListener('resize', positionLineMenu);
 admin = createAdmin({ api: backend.api, getUser: () => backend.user, beforeOpen: async () => { galleryNavigation++; auditPage?.leave(); sqlPage?.leave(); flushVisibleDraft(); await backend.flush(); leaveGallery(); management.leave(); }, onChange: () => backend.refresh(), onBack: () => switchTab('model'), onToast: toast });
 sqlPage = createSqlConnectors({ backend, beforeOpen: async () => { galleryNavigation++; auditPage?.leave(); flushVisibleDraft(); await backend.flush(); leaveGallery(); management.leave(); admin?.leave(); }, onBack: () => switchTab('model'), onMapping: async id => { if (id) await management.activate(id, { view: 'editing' }); switchTab('mapping'); }, onManagement: async id => { if (id) await management.activate(id, { view: 'editing' }); management.open(); }, onChange: refreshChrome, onToast: toast });
 auditPage = createAuditHistory({ backend, beforeOpen: async () => { galleryNavigation++; flushVisibleDraft(); await backend.flush(); leaveGallery(); management.leave(); admin?.leave(); sqlPage?.leave(); }, onBack: () => switchTab('model'), onChange: refreshChrome, onToast: toast });
-modelGallery = createModelGallery({ backend, onToast: toast, onCreate: () => management.create(emptyModel()), onOpen: async (view, id) => {
+modelGallery = createModelGallery({ backend, onToast: toast, onCreate: () => management.create(emptyModel()), onAction: async (action, id, options) => {
+  const request = galleryNavigation;
+  flushVisibleDraft();
+  const result = action === 'rename' ? await modelActions.rename(id, options.name, options) : action === 'duplicate' ? await modelActions.duplicate(id, options) : action === 'delete' ? await modelActions.remove(id, options) : null;
+  if (!result) throw new Error('Choose a supported model action.');
+  if (action === 'delete') modelSessions.delete(id);
+  if (request === galleryNavigation && modelGallery.isOpen) {
+    if (action === 'duplicate' && modelGallery.view === 'published') {
+      modelGallery.open('editing');
+      const url = new URL(location.href); url.searchParams.set('view', 'editing-models'); url.searchParams.delete('model'); window.history.replaceState({}, '', url);
+    }
+    refreshChrome();
+  }
+  toast(action === 'rename' ? 'Draft renamed. Publish changes to update its published name.' : action === 'duplicate' ? 'Model duplicated as an unpublished draft with scheduling disabled.' : 'Model deleted. Its schedule is stopped; administrators can restore it in Admin.');
+  return result;
+}, onOpen: async (view, id) => {
   const request = galleryNavigation;
   await backend.refresh();
   if (request !== galleryNavigation || !modelGallery.isOpen || modelGallery.view !== view) return false;
@@ -339,14 +356,14 @@ $('#empty-import-legacy').onclick = () => {
   } catch (error) { toast(`Import failed: ${error.message}`); }
 };
 
-function switchTab(name) {
+function switchTab(name, { background = false } = {}) {
   if (activeTab === 'mapping' && name !== 'mapping') mappingPage?.flush();
   if (viewMode === 'published' && name === 'data') name = 'model';
   admin?.leave();
   sqlPage?.leave();
   auditPage?.leave();
   management.leave();
-  leaveGallery();
+  if (!background) leaveGallery();
   activeTab = name;
   for (const button of $$('.tab')) { const active = button.dataset.tab === name; button.classList.toggle('active', active); button.setAttribute('aria-selected', String(active)); button.tabIndex = active ? 0 : -1; }
   for (const view of $$('[role="tabpanel"]')) view.classList.toggle('hidden', view.id !== `view-${name}`);
@@ -407,7 +424,8 @@ function flushVisibleDraft() {
   commit();
 }
 function activateManagedModel(entry, options = {}) {
-  leaveGallery();
+  const preserveGallery = options.background && modelGallery?.isOpen;
+  if (!options.background) leaveGallery();
   if (viewMode === 'editing') modelSessions.set(editingModelId, { history, historyIndex, results, activeRun, json: JSON.stringify(model) });
   mappingPage?.invalidate();
   viewMode = options.view || viewMode;
@@ -418,8 +436,9 @@ function activateManagedModel(entry, options = {}) {
   activeRun = viewMode === 'published' && !hasPublishedModel() ? null : management.latest(entry.id, { target: viewMode === 'published' ? 'published' : 'draft', period: periodSelector?.selected });
   results = runResult(activeRun);
   editor.setPresentation(viewMode === 'published' ? 'published' : 'editing'); editor.setModel(model); editor.setResults(results); setMode('select');
-  refreshChrome(); renderInspector(); if (!admin?.isOpen && !management.isOpen && !sqlPage?.isOpen && !auditPage?.isOpen) switchTab('model'); editor.fit();
+  refreshChrome(); renderInspector(); if (!preserveGallery && !admin?.isOpen && !management.isOpen && !sqlPage?.isOpen && !auditPage?.isOpen) switchTab(options.background ? activeTab : 'model', { background: options.background }); editor.fit();
   if (viewMode === 'editing' && canEdit()) $('#canvas-status').textContent = 'Drag a port to another unit to connect. Right-click a stream to add a meter.';
+  if (preserveGallery) return;
   const url = new URL(location.href); url.searchParams.set('view', viewMode);
   if (entry.id) url.searchParams.set('model', entry.id); else url.searchParams.delete('model');
   window.history.replaceState({}, '', url);
@@ -449,7 +468,7 @@ $('#demo-button').onclick = loadDemo; $('#empty-demo').onclick = loadDemo;
 $('#storage-demo-button').onclick = () => { $('.template-menu').open = false; askReplace('Create the tanks and storage model?', () => { replaceModel(storageShowcaseModel()); toast('Storage template loaded with opening and closing inventories.'); }); };
 $('#help-button').onclick = () => $('#help-dialog').showModal();
 $$('.close-dialog').forEach(button => button.addEventListener('click', () => button.closest('dialog').close()));
-$$('dialog').forEach(dialog => dialog.addEventListener('click', event => { if (event.target === dialog) { const box = dialog.getBoundingClientRect(); if (event.clientX < box.left || event.clientX > box.right || event.clientY < box.top || event.clientY > box.bottom) dialog.close(); } }));
+$$('dialog:not(#gallery-rename-dialog):not(#gallery-delete-dialog)').forEach(dialog => dialog.addEventListener('click', event => { if (event.target === dialog) { const box = dialog.getBoundingClientRect(); if (event.clientX < box.left || event.clientX > box.right || event.clientY < box.top || event.clientY > box.bottom) dialog.close(); } }));
 
 function renderInspector() {
   const node = selection?.kind === 'node' ? model.nodes.find(n => n.id === selection.id) : null;

@@ -437,7 +437,7 @@ export function createManagement({ fallbackModel, beforeAction, onActivate, onRu
     if (!catalog.models.some(entry => entry.id === selectedId)) selectedId = catalog.activeId;
     if (reason === 'refresh') {
       const current = catalog.activeId ? getModelEntry(catalog) : { id: null, model: fallbackModel };
-      if (previous?.id !== current.id || JSON.stringify(previous?.model) !== JSON.stringify(current.model) || JSON.stringify(previous?.publishedModel) !== JSON.stringify(current.publishedModel) || previous?.publishedVersion !== current.publishedVersion) onActivate?.(clone(current));
+      if (previous?.id !== current.id || JSON.stringify(previous?.model) !== JSON.stringify(current.model) || JSON.stringify(previous?.publishedModel) !== JSON.stringify(current.publishedModel) || previous?.publishedVersion !== current.publishedVersion) onActivate?.(clone(current), { background: true });
     }
     onAccessChange?.(reason); render();
   });

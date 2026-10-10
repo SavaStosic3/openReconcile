@@ -10,6 +10,10 @@ Select a card to open its published diagram or draft editor. Draft cards use **E
 
 Use **New model** in the editing gallery to create a draft if your account is an editor or administrator. **Model Management** remains the place for scheduling, duplication, publication, and other model settings.
 
+Each card's **⋯** menu also provides **Rename**, **Duplicate**, and **Delete** without leaving the gallery. Rename requires editing access and an unlocked draft; changing a draft name leaves its published name unchanged until you publish again. Duplicate requires an editor or administrator account and creates an unpublished copy of the snapshot shown on the card, with no connector configuration, inherited user permissions, run history, or enabled schedule. A copy made from Published models appears in Edit models.
+
+Only administrators can delete models. Confirming deletion removes the model from both galleries and stops its schedule; it can be restored as a draft from **Admin**. Actions recheck current permissions and model revisions before saving. If another user changed a model while a rename or delete dialog was open, close the dialog and review it again before retrying.
+
 ## Build and reconcile a model
 
 1. Sign in and open an assigned model, or create one with an editor/administrator account. Drag a pump, valve, heat exchanger, or another process-unit symbol from the toolbox onto the canvas. Click-to-add is also available. Add red inflow/outflow triangles for every external material path.
