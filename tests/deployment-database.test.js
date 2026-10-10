@@ -31,7 +31,8 @@ test('standalone database applies ordered migrations idempotently and persists a
   assert.equal(db.raw.prepare('PRAGMA journal_mode').get().journal_mode, 'wal');
   assert.equal(db.raw.prepare('PRAGMA busy_timeout').get().timeout, 5000);
   assert.equal(db.raw.prepare('PRAGMA synchronous').get().synchronous, 2);
-  assert.equal(db.raw.prepare('SELECT COUNT(*) AS count FROM _openreconcile_migrations').get().count, 4);
+  const expectedMigrations = JSON.parse(readFileSync(new URL('../drizzle/meta/_journal.json', import.meta.url), 'utf8')).entries.length;
+  assert.equal(db.raw.prepare('SELECT COUNT(*) AS count FROM _openreconcile_migrations').get().count, expectedMigrations);
   assert.equal((await putUser(db).run()).meta.changes, 1);
   const applied = db.raw.prepare('SELECT * FROM _openreconcile_migrations ORDER BY name').all();
   db.close();
@@ -62,9 +63,10 @@ test('failed migration release rolls back every schema change and its ledger ent
   const root = directory(t), migrationsDir = join(root, 'migrations');
   cpSync(new URL('../drizzle/', import.meta.url), migrationsDir, { recursive: true });
   const journalPath = join(migrationsDir, 'meta', '_journal.json'), journal = JSON.parse(readFileSync(journalPath, 'utf8'));
-  journal.entries.push({ idx: 4, tag: '0004_bad_release' });
+  const badRelease = `${String(journal.entries.length).padStart(4, '0')}_bad_release`;
+  journal.entries.push({ idx: journal.entries.length, tag: badRelease });
   writeFileSync(journalPath, JSON.stringify(journal));
-  writeFileSync(join(migrationsDir, '0004_bad_release.sql'), 'CREATE TABLE partial_release(id INTEGER); INVALID SQL;');
+  writeFileSync(join(migrationsDir, `${badRelease}.sql`), 'CREATE TABLE partial_release(id INTEGER); INVALID SQL;');
   const dataDir = join(root, 'data');
   assert.throws(() => openDatabase({ dataDir, migrationsDir }), /syntax error/);
   const raw = new DatabaseSync(join(dataDir, 'app.sqlite'));

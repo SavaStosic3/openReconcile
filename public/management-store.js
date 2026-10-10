@@ -6,7 +6,7 @@ export const CATALOG_VERSION = 1;
 export const MAX_RUN_HISTORY = 100;
 const MINUTE_MS = 60_000;
 const DIRECTIONS = new Set(['input', 'output', 'both']);
-const RUN_STATUSES = new Set(['ok', 'warning', 'underdetermined', 'invalid', 'failed']);
+const RUN_STATUSES = new Set(['ok', 'warning', 'underdetermined', 'invalid', 'failed', 'running']);
 
 // Persistence, source adapters and execution belong to the host. These helpers
 // return detached JSON data, take explicit IDs/clocks, and never mutate inputs.

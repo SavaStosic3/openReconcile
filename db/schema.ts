@@ -1,4 +1,5 @@
-import { sqliteTable, text, integer, primaryKey, index, uniqueIndex } from 'drizzle-orm/sqlite-core';
+import { sqliteTable, text, integer, primaryKey, index, uniqueIndex, check } from 'drizzle-orm/sqlite-core';
+import { sql } from 'drizzle-orm';
 
 export const users = sqliteTable('users', {
   id: text('id').primaryKey(), email: text('email').notNull(), name: text('name').notNull(),
@@ -42,6 +43,25 @@ export const modelRuns = sqliteTable('model_runs', {
   id: text('id').primaryKey(), modelId: text('model_id').notNull().references(() => models.id),
   runJson: text('run_json').notNull(), startedAt: text('started_at').notNull(), createdBy: text('created_by').notNull().references(() => users.id)
 }, table => [index('model_runs_model_time_idx').on(table.modelId, table.startedAt)]);
+
+export const scheduleAuthorizations = sqliteTable('schedule_authorizations', {
+  modelId: text('model_id').primaryKey().references(() => models.id),
+  userId: text('user_id').notNull().references(() => users.id),
+  generation: integer('generation').notNull(), configuredAt: text('configured_at').notNull()
+});
+
+export const scheduledJobs = sqliteTable('scheduled_jobs', {
+  id: text('id').primaryKey(), modelId: text('model_id').notNull().references(() => models.id),
+  actorId: text('actor_id').notNull().references(() => users.id), trigger: text('trigger', { enum: ['scheduled','manual'] }).notNull().default('scheduled'), generation: integer('generation').notNull(),
+  scheduledAt: text('scheduled_at').notNull(), ownerToken: text('owner_token').notNull(), leaseUntil: integer('lease_until').notNull(),
+  state: text('state', { enum: ['claimed','running','output','finished','interrupted','cancelled'] }).notNull(),
+  snapshotJson: text('snapshot_json').notNull(), runJson: text('run_json').notNull(),
+  claimedAt: text('claimed_at').notNull(), finishedAt: text('finished_at')
+}, table => [uniqueIndex('scheduled_jobs_occurrence_idx').on(table.modelId, table.generation, table.scheduledAt),
+  uniqueIndex('scheduled_jobs_active_model_idx').on(table.modelId).where(sql`${table.state} IN ('claimed','running','output')`),
+  check('scheduled_jobs_state_check', sql`${table.state} IN ('claimed','running','output','finished','interrupted','cancelled')`),
+  check('scheduled_jobs_trigger_check', sql`${table.trigger} IN ('scheduled','manual')`),
+  index('scheduled_jobs_lease_idx').on(table.state, table.leaseUntil), index('scheduled_jobs_model_time_idx').on(table.modelId, table.claimedAt)]);
 
 export const auditSettings = sqliteTable('audit_settings', {
   id: integer('id').primaryKey(), retentionDays: integer('retention_days').notNull().default(365),

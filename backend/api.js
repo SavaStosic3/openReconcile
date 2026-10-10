@@ -5,6 +5,7 @@ import { Repository } from './repository.js';
 import { validateSqlSource } from '../public/sql-sources.js';
 import { sqlConnections, testSqlSource, readSqlInput, sqlAdapters } from './sql-connectors.js';
 import { resolveReportingPeriod } from '../public/reporting-periods.js';
+import { schedulingStatus, executeStandaloneManualRun } from './scheduled-runs.js';
 
 const MAX_BODY_BYTES = 2_000_000;
 const headers = { 'Content-Type': 'application/json; charset=utf-8', 'Cache-Control': 'no-store', 'X-Content-Type-Options': 'nosniff' };
@@ -106,12 +107,16 @@ function auditFilters(url, trends = false) {
 // It is never read from request bodies, headers, cookies, or query parameters.
 export async function handleApi(request, env, identity) {
   try {
-    const repo = new Repository(env.DB, { now: clock(env), ...(typeof env.UUID === 'function' ? { uuid: env.UUID } : {}) });
+    const repo = new Repository(env.DB, { now: clock(env), ...(typeof env.UUID === 'function' ? { uuid: env.UUID } : {}), standaloneScheduler: env.STANDALONE_SCHEDULER === true });
     const user = await repo.authenticate(identity, env.ADMIN_EMAIL);
     const route = routeInfo(new URL(request.url).pathname);
     if (!route.methods.includes(request.method)) return new Response(JSON.stringify({ error: 'That method is not supported.' }), { status: 405, headers: { ...headers, Allow: route.methods.join(', ') } });
     if (route.kind === 'session') return response({ user, signInUrl: identity.signInUrl ?? env.SIGN_IN_URL ?? null, signOutUrl: identity.signOutUrl ?? env.SIGN_OUT_URL ?? null });
-    if (route.kind === 'workspace') return response(await repo.workspace(user));
+    if (route.kind === 'workspace') {
+      const workspace = await repo.workspace(user);
+      if (env.STANDALONE_SCHEDULER === true) workspace.scheduling = { mode: 'server', enabled: env.SCHEDULER_ENABLED !== false, pollSeconds: env.SCHEDULER_POLL_SECONDS ?? 5, executions: await schedulingStatus(repo, workspace.catalog.models.map(model => model.id)) };
+      return response(workspace);
+    }
     if (route.kind === 'admin') return response(await repo.admin(user));
     if (route.kind === 'audit') { await repo.pruneAudit(); return response(await repo.audit(user,auditFilters(new URL(request.url)))); }
     if (route.kind === 'auditTrends') { await repo.pruneAudit(); return response(await repo.auditTrends(user,auditFilters(new URL(request.url),true))); }
@@ -204,10 +209,15 @@ export async function handleApi(request, env, identity) {
     if (route.kind === 'runs') {
       fields(body, ['trigger', 'target', 'period'], ['trigger']);
       if (!['manual', 'scheduled'].includes(body.trigger)) throw new ApiError(400, 'Choose a manual or scheduled run.');
+      if (body.trigger === 'scheduled' && env.STANDALONE_SCHEDULER === true) throw new ApiError(409, 'Scheduled reconciliation is managed by the server. Use a manual run to reconcile a selected period.');
       if (Object.hasOwn(body, 'target') && !['draft', 'published'].includes(body.target)) throw new ApiError(400, 'Choose the draft or published model for this run.');
       if (body.trigger === 'scheduled' && body.target === 'draft') throw new ApiError(400, 'Scheduled runs use the published model.');
       if (body.trigger === 'scheduled' && Object.hasOwn(body, 'period')) throw new ApiError(400, 'Scheduled runs use the latest completed configured reporting period.');
       let { model, permission } = await repo.accessibleModel(user, route.id, 'canRun');
+      const checkScheduledJob = async () => {
+        if (env.STANDALONE_SCHEDULER === true && await repo.first("SELECT id FROM scheduled_jobs WHERE model_id=? AND state IN ('claimed','running','output') LIMIT 1", [route.id])) throw new ApiError(409, 'A scheduled reconciliation is already running for this model. Wait for it to finish before running manually.');
+      };
+      await checkScheduledJob();
       const target = body.trigger === 'scheduled' ? 'published' : body.target ?? (model.published ? 'published' : 'draft');
       if (target === 'published' && (!model.published || !model.publishedModel || model.publishedVersion < 1)) throw new ApiError(403, 'Publish this model before running its published version.');
       let catalog = singleCatalog(model, target);
@@ -220,11 +230,15 @@ export async function handleApi(request, env, identity) {
         model = await repo.claimSchedule(user, model, catalog.schedules[route.id]);
         catalog = singleCatalog(model, target);
       }
-      const { run } = await executeModelRun(catalog, route.id, { trigger: body.trigger, id: repo.uuid(), now: clock(env), target, period: { start: reportingPeriod.start, end: reportingPeriod.end, kind: reportingPeriod.kind }, publishedVersion: target === 'published' ? model.publishedVersion : null,
-        ...sqlAdapters(env), beforeOutput: async () => { await repo.accessibleModel(user, route.id, 'canRun'); } });
-      const previous = (await repo.runs(route.id, model)).findLast(item => item.target === run.target && item.publishedVersion === run.publishedVersion && item.reportingPeriod?.start === reportingPeriod.start && item.reportingPeriod?.end === reportingPeriod.end && item.reportingPeriod?.kind === reportingPeriod.kind);
-      if (previous) run.rerunOf = previous.id;
-      await repo.appendRun(user, route.id, run);
+      const runOptions = { trigger: body.trigger, id: repo.uuid(), now: clock(env), target, period: { start: reportingPeriod.start, end: reportingPeriod.end, kind: reportingPeriod.kind }, publishedVersion: target === 'published' ? model.publishedVersion : null,
+        ...sqlAdapters(env), beforeOutput: async () => { await repo.accessibleModel(user, route.id, 'canRun'); await checkScheduledJob(); } };
+      const durableManual = env.STANDALONE_SCHEDULER === true;
+      const { run } = durableManual ? await executeStandaloneManualRun(env, repo, user, model, catalog, runOptions) : await executeModelRun(catalog, route.id, runOptions);
+      if (!durableManual) {
+        const previous = (await repo.runs(route.id, model)).findLast(item => item.target === run.target && item.publishedVersion === run.publishedVersion && item.reportingPeriod?.start === reportingPeriod.start && item.reportingPeriod?.end === reportingPeriod.end && item.reportingPeriod?.kind === reportingPeriod.kind);
+        if (previous) run.rerunOf = previous.id;
+        await repo.appendRun(user, route.id, run);
+      }
       const fresh = await repo.model(route.id);
       if (!fresh) throw new ApiError(404, 'That model was deleted during the run.');
       permission = await repo.permission(user, fresh); requirePermission(permission, 'canRun');

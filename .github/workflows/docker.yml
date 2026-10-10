@@ -13,6 +13,9 @@ on:
       - 'drizzle/**'
       - 'package.json'
       - 'scripts/docker-smoke.mjs'
+      - 'tests/standalone-scheduler.test.js'
+      - 'tests/deployment-server.test.js'
+      - 'tests/deployment-database.test.js'
       - 'docs/self-hosting.md'
       - 'README.md'
       - '.github/workflows/docker.yml'
@@ -27,6 +30,9 @@ on:
       - 'drizzle/**'
       - 'package.json'
       - 'scripts/docker-smoke.mjs'
+      - 'tests/standalone-scheduler.test.js'
+      - 'tests/deployment-server.test.js'
+      - 'tests/deployment-database.test.js'
       - 'docs/self-hosting.md'
       - 'README.md'
       - '.github/workflows/docker.yml'
@@ -49,7 +55,9 @@ jobs:
           package-manager-cache: false
       - name: Validate Compose configuration
         run: docker compose config --quiet
+      - name: Verify durable scheduling and standalone server behavior
+        run: node --test --test-isolation=none tests/standalone-scheduler.test.js tests/deployment-server.test.js tests/deployment-database.test.js
       - name: Build the internal-server image
         run: docker compose build --pull
-      - name: Exercise login, reconciliation, and persistent storage
+      - name: Exercise login, unattended reconciliation, restart safety, and persistent storage
         run: node scripts/docker-smoke.mjs

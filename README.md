@@ -22,7 +22,7 @@ Build a plant flowsheet, reconcile measured and unmeasured material flows, and i
 | **Reporting periods and data quality** | Select completed hours, days, shifts, or batches and rerun previous periods. Configure time zones, cutoffs, and late-data allowance; apply SQL reading-age, quality-flag, coverage, integration, and totalizer rules. |
 | **SQL input and output** | Map model items to source names and read/write SQL Server, PostgreSQL, or MySQL through the separately configured [SQL gateway](connectors/sql-gateway/README.md). |
 | **Models and permissions** | Manage multiple models with viewer, operator, editor, and administrator roles. Assign model access, lock editing or unpublishing, and control deletion/restoration. |
-| **Schedules and audit history** | Configure browser-triggered runs and source selections. Search recorded changes to readings, mappings, permissions, and publications, with configurable audit retention. |
+| **Schedules and audit history** | Run published models automatically on an internal server, without an open browser. Configure frequency, reporting periods, and source selections; search recorded changes with configurable audit retention. |
 | **Portable models and results** | Import/export models as JSON and export reconciliation results as CSV. Start from supplied reference models with independently calculated expected results. |
 
 ## Quickstart
@@ -61,6 +61,10 @@ For access by colleagues, configure `PUBLIC_ORIGIN`, internal DNS, and a trusted
 ### 3. Keep your workspace
 
 Accounts, models, permissions, schedules, audit records, and retained results persist in the **`openreconcile_data`** Docker volume. Keep that volume when replacing or upgrading the container. Follow the [backup and restore instructions](docs/self-hosting.md#persistent-data-and-backups) before upgrades.
+
+### 4. Enable scheduled reconciliation
+
+Publish a model, open **☰ → Model Management**, choose its frequency, reporting period, and optional SQL input/output, then enable and save the schedule. The Docker server checks due schedules every five seconds by default and continues after you sign out or close the browser. It rechecks the configuring account's permissions for each run. On an upgraded installation, save existing enabled schedules once to authorize unattended execution. See [scheduling and recovery](docs/self-hosting.md#unattended-scheduling) for configuration and interrupted-run handling.
 
 ## Run your first reconciliation
 
@@ -110,7 +114,7 @@ Read the [mathematical scope and assumptions](docs/user-guide.md#mathematical-sc
 ## Current scope
 
 - **Total mass reconciliation.** Equipment symbols do not calculate pump curves, thermodynamics, component balances, or energy balances. Storage conversion assumptions are documented in the mathematics guide.
-- **Browser-triggered scheduling.** An authorized browser session must stay open for scheduled runs. An unattended background scheduler is not implemented.
+- **Unattended scheduling for internal installations.** The standalone server runs schedules while the app service is running. The retained ChatGPT testing site continues to use browser-triggered schedules. Missed periods are not replayed automatically. Uncertain SQL delivery from a manual or scheduled run pauses that model's automatic schedule until you review the destination and explicitly enable it again.
 - **20 retained runs per model.** Use output connectors for long-term reconciliation results; audit retention is configured separately.
 - **SQL requires a separate gateway.** CSV result export and JSON model import are available. CSV connection-structure import and dedicated SAP, ODBC, or PI connectors remain on the roadmap.
 - **One internal app instance with local SQLite storage.** High availability and multiple replicas are outside the supplied Docker deployment. Models are limited to 200 nodes and 500 streams.

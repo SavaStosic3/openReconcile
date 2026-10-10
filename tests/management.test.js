@@ -107,7 +107,7 @@ function sharedBackend(catalog) {
   state.catalog.models = state.catalog.models.map(entry => ({ publishedModel: clone(entry.model), publishedVersion: 1, publishedAt: new Date(START).toISOString(), hasUnpublishedChanges: false, ...entry }));
   return {
     state,
-    get workspace() { return { catalog: clone(state.catalog) }; },
+    get workspace() { return { catalog: clone(state.catalog), ...(state.scheduling ? { scheduling: clone(state.scheduling) } : {}) }; },
     get user() { return clone(state.user); },
     permission(id) { return clone(state.grants[id] || {}); },
     now: () => START,
@@ -440,4 +440,175 @@ test('legacy runs are adopted only by their matching first published snapshot', 
   backend.state.catalog.models[0].publishedVersion = 2;
   backend.notify();
   assert.equal(controller.latest('model-a', { target: 'published' }), null);
+});
+
+for (const enabled of [true, false]) test(`standalone server scheduling ${enabled ? 'enabled' : 'paused'} never falls back to a browser trigger`, async t => {
+  const catalog = setSchedule(seed(), 'model-a', { enabled: true, intervalMinutes: 60 }, START - 3_600_000);
+  const env = setup(t), backend = sharedBackend(catalog), calls = [];
+  backend.state.scheduling = { mode: 'server', enabled, pollSeconds: 5, executions: { 'model-a': { status: 'ready', startedAt: null, actorName: 'Plant scheduler' } } };
+  backend.execute = async (id, trigger, options) => { calls.push({ id, trigger, ...options }); return { id: 'manual-run', modelId: id, status: 'ok', trigger }; };
+  const controller = env.create({ backend });
+  await controller.open();
+  await controller.tick();
+  await controller.tick();
+  assert.deepEqual(calls, [], 'The browser must not submit a due occurrence owned by the standalone service.');
+  assert.match(env.node('#schedule-execution-note').textContent, enabled ? /continue on the server.*every browser closed/ : /Server scheduling is paused.*manual reconciliation/);
+  assert.equal(env.node('#schedule-summary-state').textContent, enabled ? 'Enabled' : 'Server paused');
+  assert.match(env.node('#schedule-execution-status').textContent, /Authorized by Plant scheduler/);
+  assert.equal(env.node('#schedule-run-now').disabled, false);
+  await controller.run('model-a', { target: 'published' });
+  assert.deepEqual(calls, [{ id: 'model-a', trigger: 'manual', target: 'published', period: null }], 'Global automatic scheduling pause does not disable an authorized manual run.');
+});
+
+test('missing unattended authority is visible without executing the due schedule in the browser', async t => {
+  const catalog = setSchedule(seed(), 'model-a', { enabled: true, intervalMinutes: 60 }, START - 3_600_000);
+  const env = setup(t), backend = sharedBackend(catalog);
+  backend.state.scheduling = { mode: 'server', enabled: true, executions: { 'model-a': { status: 'needs_authorization', startedAt: null, error: 'Save this schedule again with an account authorized to schedule this model.' } } };
+  backend.execute = async () => assert.fail('An unauthorised unattended schedule must not fall back to browser authority.');
+  const controller = env.create({ backend });
+  await controller.open();
+  await controller.tick();
+  assert.equal(env.node('#schedule-summary-state').textContent, 'Needs attention');
+  assert.match(env.node('#schedule-execution-status').textContent, /Save the schedule to authorize unattended runs.*Save this schedule again/);
+  assert.equal(env.node('#schedule-execution-status').hidden, false);
+});
+
+test('active standalone execution disables manual runs only for its model and pending history has no completed results', async t => {
+  const catalog = withRun(addModel(seed(), { ...exampleModel(), name: 'Model B' }, { id: 'model-b', now: START }), 'model-a', 'prior-completed');
+  catalog.activeId = 'model-a';
+  const prior = catalog.runs['model-a'][0];
+  Object.assign(prior, { target: 'published', publishedVersion: 1 });
+  catalog.runs['model-a'].push({ ...clone(prior), id: 'pending-run', trigger: 'scheduled', status: 'running', result: null, error: null,
+    reportingPeriod: { start: '2026-10-09T11:00:00.000Z', end: '2026-10-09T12:00:00.000Z', kind: 'hour', label: '11:00–12:00 UTC', modelPeriodHours: 1 } });
+  const env = setup(t), backend = sharedBackend(catalog), calls = [];
+  backend.state.scheduling = { mode: 'server', enabled: true, executions: { 'model-a': { status: 'running', startedAt: new Date(START).toISOString(), actorName: 'Plant scheduler' } } };
+  backend.execute = async (id, trigger) => { calls.push({ id, trigger }); return { id: 'b-run', modelId: id, status: 'ok', trigger }; };
+  const controller = env.create({ backend });
+  await controller.open();
+  assert.equal(env.node('#schedule-summary-state').textContent, 'Running');
+  assert.equal(env.node('#schedule-run-now').disabled, true);
+  assert.match(env.node('#schedule-execution-status').textContent, /Running on the server/);
+  const history = env.node('#management-runs');
+  assert.match(history.innerHTML, /Running on the server\. Results will appear when the run finishes\./);
+  assert.equal(history.reviewButtons.length, 1);
+  assert.equal(history.reviewButtons[0].dataset.reviewRun, 'prior-completed');
+  assert.doesNotMatch(history.innerHTML, /data-rerun-period="pending-run"/);
+  assert.equal(controller.latest('model-a', { target: 'published' }).id, 'prior-completed', 'Pending work must not replace the last completed diagram result.');
+  await assert.rejects(controller.run('model-a'), /already running/);
+  assert.deepEqual(calls, []);
+
+  backend.state.scheduling.executions['model-a'].status = 'output';
+  backend.notify('refresh');
+  assert.equal(env.node('#schedule-summary-state').textContent, 'Running');
+  assert.match(env.node('#schedule-execution-status').textContent, /Delivering output/);
+  await assert.rejects(controller.run('model-a'), /already running/);
+  env.node('#management-model').onchange({ target: { value: 'model-b' } });
+  assert.equal(env.node('#schedule-run-now').disabled, false);
+  await controller.run('model-b');
+  assert.deepEqual(calls, [{ id: 'model-b', trigger: 'manual' }]);
+
+  backend.state.catalog.runs['model-a'] = [backend.state.catalog.runs['model-a'][1]];
+  backend.notify('refresh');
+  assert.equal(controller.latest('model-a', { target: 'published' }), null, 'A model with only pending work has no completed result.');
+});
+
+test('terminal scheduled failures and interruptions are presented as attention states, not active work', async t => {
+  const env = setup(t), backend = sharedBackend(seed());
+  backend.state.scheduling = { mode: 'server', enabled: true, executions: { 'model-a': { status: 'failed', startedAt: new Date(START).toISOString(), error: 'Input readings were not available.' } } };
+  const controller = env.create({ backend });
+  await controller.open();
+  assert.equal(env.node('#schedule-summary-state').textContent, 'Needs attention');
+  assert.match(env.node('#schedule-execution-status').textContent, /Scheduled run failed.*Input readings were not available/);
+  assert.equal(env.node('#schedule-run-now').disabled, false);
+  backend.state.scheduling.executions['model-a'] = { status: 'interrupted', error: 'Output delivery may have completed. Check the destination before rerunning.' };
+  backend.notify('refresh');
+  assert.equal(env.node('#schedule-summary-state').textContent, 'Needs attention');
+  assert.match(env.node('#schedule-execution-status').textContent, /Scheduled run interrupted.*Check the destination/);
+  assert.equal(env.node('#schedule-run-now').disabled, false);
+  backend.state.scheduling.executions['model-a'] = { status: 'invalid', error: null };
+  backend.notify('refresh');
+  assert.equal(env.node('#schedule-summary-state').textContent, 'Needs attention');
+  assert.match(env.node('#schedule-execution-status').textContent, /Scheduled reconciliation is invalid/);
+});
+
+test('saving a standalone schedule reports server ownership and keeps browser-triggered hosted copy distinct', async t => {
+  const env = setup(t), backend = sharedBackend(seed()), saved = [];
+  backend.state.scheduling = { mode: 'server', enabled: true, executions: {} };
+  backend.schedule = async (id, value) => { saved.push({ id, value }); backend.state.catalog = setSchedule(backend.state.catalog, id, value, START); };
+  const controller = env.create({ backend });
+  await controller.open();
+  env.node('#schedule-enabled').checked = true;
+  await env.node('#schedule-form').onsubmit({ preventDefault() {} });
+  assert.equal(saved.length, 1);
+  assert.equal(saved[0].value.enabled, true);
+  assert.match(env.node('#schedule-message').textContent, /server will run it without an open browser.*current model permissions/);
+  backend.state.scheduling.enabled = false;
+  await env.node('#schedule-form').onsubmit({ preventDefault() {} });
+  assert.match(env.node('#schedule-message').textContent, /Server scheduling is paused.*installation configuration/);
+  delete backend.state.scheduling;
+  await env.node('#schedule-form').onsubmit({ preventDefault() {} });
+  assert.equal(env.node('#schedule-message').textContent, 'Schedule saved. Scheduled runs require an open, authorized browser session.');
+  assert.match(env.node('#schedule-execution-note').textContent, /Scheduled runs require an open, authorized browser session/);
+  assert.equal(env.node('#schedule-execution-status').hidden, true);
+});
+
+test('manual jobs started in another browser disable per-model run and rerun controls until completion', async t => {
+  const catalog = withRun(seed(), 'model-a', 'prior-manual');
+  const prior = catalog.runs['model-a'][0];
+  prior.reportingPeriod = { start: '2026-10-09T11:00:00.000Z', end: '2026-10-09T12:00:00.000Z', kind: 'hour', label: '11:00–12:00 UTC', modelPeriodHours: 1 };
+  const env = setup(t), backend = sharedBackend(catalog);
+  backend.state.scheduling = { mode: 'server', enabled: true, executions: { 'model-a': { status: 'ready', startedAt: null } } };
+  const controller = env.create({ backend });
+  await controller.open();
+  assert.equal(env.node('#schedule-run-now').disabled, false);
+  assert.doesNotMatch(env.node('#management-runs').innerHTML, /data-rerun-period="prior-manual" disabled/);
+
+  const pending = { ...clone(prior), id: 'other-browser-manual', status: 'running', result: null, error: null };
+  backend.state.catalog.runs['model-a'].push(pending);
+  backend.notify('refresh');
+  assert.equal(env.node('#schedule-summary-state').textContent, 'Running');
+  assert.equal(env.node('#schedule-run-now').disabled, true);
+  assert.match(env.node('#management-runs').innerHTML, /data-rerun-period="prior-manual" disabled/);
+  assert.doesNotMatch(env.node('#management-runs').innerHTML, /data-rerun-period="other-browser-manual"/);
+  assert.equal(controller.latest('model-a', { target: 'draft' }).id, 'prior-manual');
+  await assert.rejects(controller.run('model-a'), /already running/);
+
+  Object.assign(pending, { status: 'ok', result: clone(prior.result) });
+  backend.notify('refresh');
+  assert.equal(env.node('#schedule-run-now').disabled, false);
+  assert.notEqual(env.node('#schedule-summary-state').textContent, 'Running');
+  assert.equal(controller.latest('model-a', { target: 'draft' }).id, 'other-browser-manual');
+  assert.doesNotMatch(env.node('#management-runs').innerHTML, /data-rerun-period="prior-manual" disabled/);
+  backend.state.grants['model-a'].canRun = false;
+  backend.notify('policy');
+  assert.equal(env.node('#schedule-run-now').disabled, true);
+  assert.match(env.node('#management-runs').innerHTML, /data-rerun-period="prior-manual" disabled/);
+});
+
+test('uncertain terminal output explains the paused model schedule without claiming a globally paused service', async t => {
+  const catalog = withRun(seed(), 'model-a', 'uncertain-output');
+  const run = catalog.runs['model-a'][0];
+  Object.assign(run, { status: 'failed', error: 'The SQL gateway did not confirm output.', execution: { state: 'finished', delivery: 'uncertain' } });
+  const env = setup(t), backend = sharedBackend(catalog);
+  backend.state.scheduling = { mode: 'server', enabled: true, executions: { 'model-a': { status: 'failed', error: run.error, delivery: 'uncertain' } } };
+  const controller = env.create({ backend });
+  await controller.open();
+  assert.equal(env.node('#schedule-summary-state').textContent, 'Needs attention');
+  assert.match(env.node('#schedule-execution-status').textContent, /Automatic scheduling is paused.*Review the destination/);
+  assert.match(env.node('#management-runs').innerHTML, /Automatic scheduling is paused.*Review the destination/);
+  assert.match(env.node('#schedule-execution-note').textContent, /continue on the server/);
+  assert.doesNotMatch(env.node('#schedule-execution-note').textContent, /Server scheduling is paused/);
+
+  backend.state.catalog = setSchedule(backend.state.catalog, 'model-a', { enabled: true }, START);
+  backend.notify('refresh');
+  assert.doesNotMatch(env.node('#schedule-execution-status').textContent, /Automatic scheduling is paused/);
+  assert.doesNotMatch(env.node('#management-runs').innerHTML, /Automatic scheduling is paused/, 'A historical uncertain delivery must not claim the newly enabled model is currently paused.');
+
+  backend.state.catalog.schedules['model-a'] = { ...backend.state.catalog.schedules['model-a'], enabled: false, nextRunAt: null };
+  backend.state.catalog.runs['model-a'][0].status = 'running';
+  backend.state.scheduling.executions['model-a'].status = 'output';
+  backend.notify('refresh');
+  assert.equal(env.node('#schedule-summary-state').textContent, 'Running');
+  assert.doesNotMatch(env.node('#schedule-execution-status').textContent, /Automatic scheduling is paused/);
+  assert.doesNotMatch(env.node('#management-runs').innerHTML, /Automatic scheduling is paused/, 'Output awaiting acknowledgement is active work, not a terminal uncertain failure.');
 });

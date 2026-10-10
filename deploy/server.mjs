@@ -7,6 +7,7 @@ import { pipeline } from 'node:stream/promises';
 import { handleAuthenticatedApi } from '../backend/local-auth.js';
 import { openDatabase } from './sqlite.js';
 import { loadConfig, validatePublicOrigin } from './config.js';
+import { createScheduler } from './scheduler.mjs';
 
 const MAX_BODY_BYTES = 2_000_000;
 const MIME = {
@@ -82,15 +83,26 @@ export async function startServer({ config, DB: suppliedDatabase } = {}) {
     const admin = await DB.prepare("SELECT COUNT(*) AS count FROM local_credentials c JOIN users u ON u.id=c.user_id WHERE u.role='admin' AND u.active=1").first();
     if (!Number(admin?.count)) throw new Error('No active administrator account is configured. Run the installation setup command before starting the server.');
   } catch (error) { if (!suppliedDatabase) DB.close(); throw error; }
-  const env = { ...config.backendEnv, DB, AUTH_MODE: 'password', LOCAL_AUTH_ITERATIONS: 600_000 };
+  const scheduling = config.scheduler ?? { enabled: true, pollSeconds: 5 };
+  const env = { ...config.backendEnv, DB, AUTH_MODE: 'password', LOCAL_AUTH_ITERATIONS: 600_000,
+    STANDALONE_SCHEDULER: true, SCHEDULER_ENABLED: scheduling.enabled, SCHEDULER_POLL_SECONDS: scheduling.pollSeconds };
+  let scheduler;
+  const activeRequests = new Set();
   const server = createServer({ maxHeaderSize: 16_384 }, async (incoming, outgoing) => {
+    let completeRequest;
+    const completion = new Promise(resolveRequest => { completeRequest = resolveRequest; });
+    activeRequests.add(completion);
     try {
       const { path, decoded } = requestPath(incoming.url);
       let response;
       if (path === '/healthz') {
         if (!['GET', 'HEAD'].includes(incoming.method)) response = json({ error: 'That method is not supported.' }, 405);
         else {
-          try { await DB.prepare('SELECT 1 AS ready').first(); response = json({ status: 'ok' }); }
+          try {
+            await DB.prepare('SELECT 1 AS ready').first();
+            const state = scheduler?.status();
+            response = state?.lastError ? json({ status: 'unavailable' }, 503) : json({ status: 'ok' });
+          }
           catch { response = json({ status: 'unavailable' }, 503); }
         }
       } else if (path === '/api' || path.startsWith('/api/')) {
@@ -114,21 +126,37 @@ export async function startServer({ config, DB: suppliedDatabase } = {}) {
       if (status === 413) { outgoing.setHeader('Connection', 'close'); incoming.resume(); }
       try { await writeResponse(json({ error: error instanceof RequestError ? error.message : 'The request could not be completed.' }, status), outgoing, incoming.method); }
       catch { outgoing.destroy(); }
+    } finally {
+      activeRequests.delete(completion);
+      completeRequest();
     }
   });
   server.requestTimeout = 30_000; server.headersTimeout = 15_000; server.keepAliveTimeout = 5_000;
   try {
     await new Promise((resolveListen, reject) => { server.once('error', reject); server.listen(config.port, config.host, resolveListen); });
-  } catch (error) { if (!suppliedDatabase) DB.close(); throw error; }
+    scheduler = createScheduler(env, scheduling);
+  } catch (error) {
+    if (server.listening) await new Promise(resolveClose => server.close(resolveClose));
+    if (!suppliedDatabase) DB.close();
+    throw error;
+  }
   let closing;
-  const close = () => closing ??= new Promise((resolveClose, reject) => {
-    server.close(error => {
-      try { if (!suppliedDatabase) DB.close(); } catch (databaseError) { reject(databaseError); return; }
-      if (error) reject(error); else resolveClose();
+  const close = () => closing ??= (async () => {
+    const httpClosed = new Promise((resolveClose, reject) => {
+      server.close(error => error ? reject(error) : resolveClose());
+      server.closeIdleConnections();
     });
-    server.closeIdleConnections();
-  });
-  return { server, DB, address: server.address(), close };
+    try {
+      const outcomes = await Promise.allSettled([httpClosed, scheduler.close()]);
+      // A disconnected HTTP client can leave an authorized gateway operation
+      // active. Socket closure alone is not permission to close its database.
+      await Promise.allSettled([...activeRequests]);
+      const failure = outcomes.find(outcome => outcome.status === 'rejected');
+      if (failure) throw failure.reason;
+    }
+    finally { if (!suppliedDatabase) DB.close(); }
+  })();
+  return { server, DB, scheduler, address: server.address(), close };
 }
 
 if (process.argv[1] && pathToFileURL(resolve(process.argv[1])).href === import.meta.url) {

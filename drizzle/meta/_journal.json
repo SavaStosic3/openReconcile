@@ -29,6 +29,13 @@
       "when": 1791654794203,
       "tag": "0003_kind_tempest",
       "breakpoints": true
+    },
+    {
+      "idx": 4,
+      "version": "6",
+      "when": 1791664800000,
+      "tag": "0004_unattended_schedules",
+      "breakpoints": true
     }
   ]
 }

@@ -88,13 +88,42 @@ try {
   assert.equal((await api('/api/workspace')).catalog.models.length,0);
   console.info('Restricted-user permissions passed.');
   await api('/api/auth/login', { method: 'POST', body: { username: 'SmokeAdmin', password } });
+  const scheduledWorkspace = await api('/api/workspace');
+  assert.equal(scheduledWorkspace.scheduling.mode, 'server');
+  assert.equal(scheduledWorkspace.scheduling.enabled, true);
+  for (const id of ids) {
+    await api(`/api/models/${id}/schedule`, { method: 'PATCH', body: { revision: scheduledWorkspace.permissions[id].revision, changes: { enabled: true, intervalMinutes: 60 } } });
+    // A stale or active browser cannot issue a second scheduled execution on a
+    // company server. Scheduling belongs to the durable server worker.
+    await api(`/api/models/${id}/runs`, { method: 'POST', body: { trigger: 'scheduled' }, expected: 409 });
+  }
+  await api('/api/auth/logout', { method: 'POST', body: {} });
+  cookie = '';
+  await api('/api/workspace', { expected: 401 });
+  const forceDue = "import {openDatabase} from './deploy/sqlite.js'; const db=openDatabase({dataDir:'/data'}); try { for(const row of (await db.prepare('SELECT id,schedule_json FROM models WHERE deleted_at IS NULL').all()).results) { const schedule=JSON.parse(row.schedule_json); schedule.nextRunAt=new Date(Date.now()-1000).toISOString(); await db.prepare('UPDATE models SET schedule_json=? WHERE id=?').bind(JSON.stringify(schedule),row.id).run(); } } finally { db.close(); }";
+  compose(['exec','-T','app','node','--input-type=module','-e',forceDue]);
+  const waitForRuns = "import {openDatabase} from './deploy/sqlite.js'; const db=openDatabase({dataDir:'/data'}); try { const deadline=Date.now()+45000; let runs; do { runs=(await db.prepare(\"SELECT run_json FROM model_runs WHERE json_extract(run_json,'$.trigger')='scheduled' ORDER BY model_id\").all()).results.map(row=>JSON.parse(row.run_json)); if(runs.length===2&&runs.every(run=>run.status!=='running')) break; if(runs.length>2) throw Error('Duplicate scheduled runs'); await new Promise(resolve=>setTimeout(resolve,250)); } while(Date.now()<deadline); if(runs.length!==2||runs.some(run=>run.status==='running')) throw Error('The server did not reconcile without a browser'); console.log(JSON.stringify(runs)); } finally { db.close(); }";
+  const unattendedRuns = JSON.parse(compose(['exec','-T','app','node','--input-type=module','-e',waitForRuns]));
+  assert.equal(unattendedRuns.length, 2);
+  for (const run of unattendedRuns) {
+    assert.equal(run.trigger, 'scheduled'); assert.equal(run.target, 'published'); assert.equal(run.publishedVersion, 1);
+    assert.ok(['ok','warning'].includes(run.status), run.error);
+    close(run.result.objective, run.modelName === 'Three-tank transfer' ? 100/350 : 0.4);
+    run.result.balances.forEach(balance => close(balance.reconciled, 0));
+    assert.equal(new Date(run.reportingPeriod.start).getUTCMinutes(), 0);
+    assert.equal(new Date(run.reportingPeriod.end).getUTCMinutes(), 0);
+  }
+  console.info('Both published analytical models reconciled unattended with all sessions logged out.');
+  await api('/api/auth/login', { method: 'POST', body: { username: 'SmokeAdmin', password } });
   const before = await api('/api/workspace');
   compose(['exec','-T','app','node','deploy/cli.mjs','backup','--output','/data/backups/smoke']);
   compose(['up','-d','--no-build','--force-recreate','--wait','--wait-timeout','90','app']);
   const after = await api('/api/workspace');
   assert.deepEqual(after.catalog.models,before.catalog.models);
-  assert.deepEqual(after.catalog.runs,before.catalog.runs);
-  console.info('Container recreation preserved models, runs, and sessions.');
+  // The saved claim advances its due time atomically, so restarting a worker
+  // must not replay either completed run.
+  assert.deepEqual(after.catalog.runs, before.catalog.runs);
+  console.info('Container recreation preserved models, runs, and sessions without replaying scheduled work.');
   compose(['stop','app']);
   const restore = "import {readFileSync,writeFileSync} from 'node:fs'; import {createHash} from 'node:crypto'; const dir='/source/backups/smoke/'; const manifest=JSON.parse(readFileSync(dir+'backup-manifest.json','utf8')); for(const name of ['app.sqlite','server-secrets.json']) { const bytes=readFileSync(dir+name); if(createHash('sha256').update(bytes).digest('hex')!==manifest.files[name]) throw Error('Invalid backup'); writeFileSync('/data/'+name,bytes,{flag:'wx',mode:0o600}); }";
   compose(['run','--rm','-T','--volume',`${volume}:/source:ro`,'app','node','--input-type=module','-e',restore],{restored:true});
@@ -102,7 +131,7 @@ try {
   const recovered=await api('/api/workspace');
   assert.deepEqual(recovered.catalog.models,before.catalog.models);
   assert.deepEqual(recovered.catalog.runs,before.catalog.runs);
-  console.info('Docker smoke passed: private login, RBAC, both analytical reconciliations, container recreation, and backup restoration.');
+  console.info('Docker smoke passed: private login, RBAC, both analytical reconciliations, unattended scheduling, no restart replay, and backup restoration.');
 } finally {
   // Names are generated here and cannot target the company's persistent volume.
   for(const restored of [true,false]) {

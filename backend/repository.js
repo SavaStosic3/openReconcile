@@ -40,7 +40,7 @@ export const localAccountIdentity = Symbol('local account identity');
 
 // Each write repeats authorization in SQL. A role/grant revoked after a read
 // cannot authorize an in-flight mutation; revisions independently guard edits.
-function accessClause(action, userId) {
+export function accessClause(action, userId) {
   const roles = rolesFor[action];
   return {
     sql: `EXISTS (SELECT 1 FROM users actor LEFT JOIN model_grants grant_row ON grant_row.user_id = actor.id AND grant_row.model_id = models.id WHERE actor.id = ? AND actor.active = 1 AND (actor.role = 'admin' OR (actor.role IN (${placeholders(roles)}) AND grant_row.level IN (${placeholders(roles)}))))`,
@@ -55,9 +55,9 @@ const legacyRun = (run, model) => {
 };
 
 export class Repository {
-  constructor(db, { now = () => Date.now(), uuid = () => crypto.randomUUID() } = {}) {
+  constructor(db, { now = () => Date.now(), uuid = () => crypto.randomUUID(), standaloneScheduler = false } = {}) {
     if (!db?.prepare || !db?.batch) throw new Error('A D1 database binding is required.');
-    this.db = db; this.now = now; this.uuid = uuid;
+    this.db = db; this.now = now; this.uuid = uuid; this.standaloneScheduler = standaloneScheduler;
   }
   statement(sql, values = []) { return this.db.prepare(sql).bind(...values); }
   async first(sql, values) { return this.statement(sql, values).first(); }
@@ -275,7 +275,15 @@ export class Repository {
     const guard = accessClause('edit', user.id);
     const statement = this.statement(`UPDATE models SET schedule_json=?,revision=revision+1,updated_at=? WHERE id=? AND revision=? AND deleted_at IS NULL AND published=1 AND ${guard.sql}`, [JSON.stringify(schedule), this.stamp(), id, revision, ...guard.values]);
     const changes = Object.keys(schedule).filter(key => different(before?.schedule[key], schedule[key])).map(key => detail(key, before?.schedule[key] ?? null, schedule[key]));
-    const result = await this.auditedWrite(statement, user, before, changes.length ? [auditEvent('schedule','updated','Updated reconciliation schedule.',changes)] : [], { revisionBefore: revision, revisionAfter: revision + 1 });
+    const events = changes.length ? [auditEvent('schedule','updated','Updated reconciliation schedule.',changes)] : [];
+    // Saving a standalone schedule is the explicit authorization for unattended
+    // execution. The owner and generation share the guarded configuration write
+    // so a stale request cannot transfer ownership or revive old work.
+    const ownership = this.standaloneScheduler ? [this.statement(`INSERT INTO schedule_authorizations(model_id,user_id,generation,configured_at) SELECT id,?,1,? FROM models WHERE id=? AND revision=? AND changes()>0 ON CONFLICT(model_id) DO UPDATE SET user_id=excluded.user_id,generation=schedule_authorizations.generation+1,configured_at=excluded.configured_at`, [user.id, this.stamp(), id, revision + 1])] : [];
+    const previousAuthorization = this.standaloneScheduler ? await this.first('SELECT user_id FROM schedule_authorizations WHERE model_id=?', [id]) : null;
+    if (this.standaloneScheduler) events.push(auditEvent('schedule','authorized','Authorized unattended reconciliation under the scheduling account.',[detail('authorizedUserId',previousAuthorization?.user_id ?? null,user.id)]));
+    const results = await this.db.batch([statement, ...ownership, ...this.auditStatements(user, before, events, { revisionBefore: revision, revisionAfter: revision + 1 })]);
+    const result = results[0];
     if (!changed(result)) await this.rejectWrite(user, id, revision, 'canSchedule');
     const saved = await this.model(id);
     return { schedule: saved.schedule, permission: await this.permission(user, saved) };

@@ -23,6 +23,10 @@ export async function loadConfig({ env = process.env } = {}) {
   if (!isIP(host)) throw new Error('HOST must be a valid IPv4 or IPv6 listening address.');
   const loginIpLimit = env.LOGIN_IP_LIMIT ?? '100';
   if (!/^\d{2,4}$/.test(loginIpLimit) || Number(loginIpLimit) < 20 || Number(loginIpLimit) > 1000) throw new Error('LOGIN_IP_LIMIT must be an integer from 20 to 1000.');
+  const schedulerEnabled = env.SCHEDULER_ENABLED ?? 'true';
+  if (!['true', 'false'].includes(schedulerEnabled)) throw new Error('SCHEDULER_ENABLED must be true or false.');
+  const schedulerPollSeconds = env.SCHEDULER_POLL_SECONDS ?? '5';
+  if (!/^[1-9]\d?$/.test(schedulerPollSeconds) || Number(schedulerPollSeconds) > 60) throw new Error('SCHEDULER_POLL_SECONDS must be an integer from 1 to 60.');
   const dataDir = resolve(env.APP_DATA_DIR || resolve(ROOT, 'data'));
   const secrets = await loadServerSecrets({ dataDir });
   const backendEnv = {
@@ -43,5 +47,6 @@ export async function loadConfig({ env = process.env } = {}) {
   return {
     host, port: Number(portText), publicOrigin, dataDir,
     publicDir: resolve(ROOT, 'public'), migrationsDir: resolve(ROOT, 'drizzle'), backendEnv,
+    scheduler: { enabled: schedulerEnabled === 'true', pollSeconds: Number(schedulerPollSeconds) },
   };
 }

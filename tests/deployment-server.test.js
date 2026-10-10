@@ -15,7 +15,7 @@ import { storageShowcaseModel } from '../public/storage-showcase-model.js';
 const USERNAME = 'PlantAdmin', PASSWORD = 'independent-test-password';
 const closeTo = (actual, expected) => assert.ok(Number.isFinite(actual) && Math.abs(actual - expected) < 1e-7, `${actual} differs from ${expected}`);
 
-async function fixture(t, publicOrigin = 'http://localhost:8080') {
+async function fixture(t, publicOrigin = 'http://localhost:8080', overrides = {}) {
   const dataDir = await mkdtemp(join(tmpdir(), 'openreconcile-server-'));
   let running;
   t.after(async () => {
@@ -24,6 +24,7 @@ async function fixture(t, publicOrigin = 'http://localhost:8080') {
   });
   await setupAdmin({ dataDir, username: USERNAME, password: PASSWORD });
   const config = { ...await loadConfig({ env: { APP_DATA_DIR: dataDir, PUBLIC_ORIGIN: publicOrigin } }), port: 0, host: '127.0.0.1' };
+  Object.assign(config, overrides, { backendEnv: { ...config.backendEnv, ...(overrides.backendEnv ?? {}) } });
   running = await startServer({ config });
   const request = async (path, { method = 'GET', body, cookie, headers = {} } = {}) => {
     const response = await fetch(`http://127.0.0.1:${running.address.port}${path}`, {
@@ -73,6 +74,10 @@ test('standalone configuration requires persisted secrets and a canonical HTTPS 
   assert.equal(configured.backendEnv.SQL_GATEWAY_URL, 'https://gateway.internal/');
   for (const LOGIN_IP_LIMIT of ['0', '19', '1001', '1000000', '20.5', 'abc', '', '-100']) await assert.rejects(loadConfig({ env: { APP_DATA_DIR: dataDir, LOGIN_IP_LIMIT } }), /LOGIN_IP_LIMIT/);
   for (const LOGIN_IP_LIMIT of ['20', '250', '1000']) assert.equal((await loadConfig({ env: { APP_DATA_DIR: dataDir, LOGIN_IP_LIMIT } })).backendEnv.LOCAL_AUTH_IP_LIMIT, Number(LOGIN_IP_LIMIT));
+  for (const SCHEDULER_ENABLED of ['0', '1', 'TRUE', 'yes', '', 'off']) await assert.rejects(loadConfig({ env: { APP_DATA_DIR: dataDir, SCHEDULER_ENABLED } }), /SCHEDULER_ENABLED/);
+  for (const SCHEDULER_ENABLED of ['true', 'false']) assert.equal((await loadConfig({ env: { APP_DATA_DIR: dataDir, SCHEDULER_ENABLED } })).scheduler.enabled, SCHEDULER_ENABLED === 'true');
+  for (const SCHEDULER_POLL_SECONDS of ['0', '61', '0.5', '5.5', 'abc', '', '-1']) await assert.rejects(loadConfig({ env: { APP_DATA_DIR: dataDir, SCHEDULER_POLL_SECONDS } }), /SCHEDULER_POLL_SECONDS/);
+  for (const SCHEDULER_POLL_SECONDS of ['1', '5', '60']) assert.equal((await loadConfig({ env: { APP_DATA_DIR: dataDir, SCHEDULER_POLL_SECONDS } })).scheduler.pollSeconds, Number(SCHEDULER_POLL_SECONDS));
 });
 
 test('real HTTP login, publication, both analytic showcases, and persisted sessions work after a server restart', async t => {
@@ -112,6 +117,43 @@ test('real HTTP login, publication, both analytic showcases, and persisted sessi
   const logout = await f.request('/api/auth/logout', { method: 'POST', body: {}, cookie });
   assert.equal(logout.status, 200);
   assert.equal((await f.request('/api/workspace', { cookie })).status, 401);
+});
+
+test('a restarted standalone server runs an overdue publication while every user is logged out', async t => {
+  const now = Date.parse('2026-10-10T10:07:00.000Z');
+  const f = await fixture(t, 'http://localhost:8080', { backendEnv: { NOW: () => now }, scheduler: { enabled: true, pollSeconds: 1 } });
+  let { cookie } = await f.login();
+  const created = await f.request('/api/models', { method: 'POST', body: { model: showcaseModel() }, cookie });
+  assert.equal(created.status, 201); const id = created.data.entry.id;
+  const published = await f.request(`/api/models/${id}/publication`, { method: 'PATCH', body: { published: true, revision: created.data.permission.revision }, cookie });
+  assert.equal(published.status, 200);
+  const scheduled = await f.request(`/api/models/${id}/schedule`, { method: 'PATCH', body: { changes: { enabled: true, intervalMinutes: 60 }, revision: published.data.permission.revision }, cookie });
+  assert.equal(scheduled.status, 200, JSON.stringify(scheduled.data));
+  assert.equal((await f.request('/api/auth/logout', { method: 'POST', body: {}, cookie })).status, 200);
+  assert.equal((await f.request('/api/workspace', { cookie })).status, 401);
+  await f.running.close();
+  const stoppedDB = openDatabase({ dataDir: f.config.dataDir });
+  try {
+    const row = await stoppedDB.prepare('SELECT schedule_json FROM models WHERE id=?').bind(id).first();
+    await stoppedDB.prepare('UPDATE models SET schedule_json=? WHERE id=?').bind(JSON.stringify({ ...JSON.parse(row.schedule_json), nextRunAt: new Date(now - 1000).toISOString() }), id).run();
+  } finally { stoppedDB.close(); }
+  await f.restart();
+  const deadline = Date.now() + 5000; let persisted;
+  do {
+    const row = await f.running.DB.prepare('SELECT run_json FROM model_runs WHERE model_id=?').bind(id).first();
+    if (row) { persisted = JSON.parse(row.run_json); if (persisted.status !== 'running') break; }
+    await new Promise(resolve => setTimeout(resolve, 10));
+  } while (Date.now() < deadline);
+  assert.ok(persisted, 'startup must execute overdue work without a browser or session');
+  assert.ok(['ok','warning'].includes(persisted.status), persisted.error);
+  assert.equal(persisted.trigger, 'scheduled'); assert.equal(persisted.target, 'published'); closeTo(persisted.result.objective, 0.4);
+  ({ cookie } = await f.login());
+  const workspace = await f.request('/api/workspace', { cookie });
+  assert.equal(workspace.data.scheduling.mode, 'server'); assert.equal(workspace.data.scheduling.enabled, true);
+  assert.equal(workspace.data.catalog.runs[id].length, 1);
+  assert.equal((await f.request(`/api/models/${id}/runs`, { method: 'POST', body: { trigger: 'scheduled' }, cookie })).status, 409);
+  await f.restart(); await f.running.scheduler.tick();
+  assert.equal((await f.request('/api/workspace', { cookie })).data.catalog.runs[id].length, 1);
 });
 
 test('company HTTPS uses Secure host cookies and enforces browser Origin while ignoring client identity and proxy headers', async t => {

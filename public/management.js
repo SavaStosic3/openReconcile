@@ -75,6 +75,30 @@ export function createManagement({ fallbackModel, beforeAction, onActivate, onRu
     $('#schedule-error').textContent = error ? text : '';
     $('#schedule-message').textContent = error ? '' : text;
   }
+  function serverScheduling() { return backend?.workspace.scheduling?.mode === 'server'; }
+  function scheduledExecution(id = selectedId) { return serverScheduling() ? backend.workspace.scheduling.executions?.[id] : null; }
+  function isRunning(id) { return running.has(id) || ['running', 'output'].includes(scheduledExecution(id)?.status) || Boolean(backend && catalog.runs[id]?.some(run => run.status === 'running')); }
+  function deliveryPauseHint(run) {
+    const delivery = run?.execution?.delivery ?? run?.delivery;
+    return serverScheduling() && delivery === 'uncertain' && !['running', 'output'].includes(run.status) && catalog.schedules[selectedId]?.enabled === false && !/schedul(?:e|ing).*paus/i.test(run.error || '')
+      ? 'Automatic scheduling is paused. Review the destination before enabling it again.' : '';
+  }
+  function renderSchedulingService() {
+    const service = backend?.workspace.scheduling;
+    const note = $('#schedule-execution-note'), execution = scheduledExecution();
+    if (serverScheduling()) {
+      note.textContent = service.enabled
+        ? 'Scheduled runs continue on the server after sign-out and with every browser closed. The server checks the configuring account’s current permissions before running the published model.'
+        : 'Server scheduling is paused by the installation’s configuration. Saved schedules will resume when it is enabled; manual reconciliation remains available.';
+    } else {
+      note.textContent = 'Scheduled runs require an open, authorized browser session. Browser sleep and background tabs can delay execution; an overdue schedule runs once when the session resumes or reopens.';
+    }
+    const detail = $('#schedule-execution-status');
+    if (!detail) return;
+    const states = { running: 'Running on the server', output: 'Delivering output', ok: 'Scheduled run completed', warning: 'Scheduled run completed with warnings', underdetermined: 'Scheduled run has unresolved quantities', invalid: 'Scheduled reconciliation is invalid', failed: 'Scheduled run failed', interrupted: 'Scheduled run interrupted', cancelled: 'Scheduled run cancelled', needs_authorization: 'Save the schedule to authorize unattended runs', ready: 'Ready for scheduled runs', disabled: 'Scheduling disabled' };
+    detail.hidden = !execution;
+    detail.textContent = execution ? `${states[execution.status] || execution.status}${execution.startedAt ? ` · ${date(execution.startedAt)}` : ''}${execution.actorName ? ` · Authorized by ${execution.actorName}` : ''}${execution.error ? `. ${execution.error}` : ''}${deliveryPauseHint(execution) ? `. ${deliveryPauseHint(execution)}` : ''}` : '';
+  }
   function closeMenu(returnFocus = false) {
     $('#app-menu').hidden = true;
     $('#menu-button').setAttribute('aria-expanded', 'false');
@@ -176,6 +200,7 @@ export function createManagement({ fallbackModel, beforeAction, onActivate, onRu
     return null;
   }
   function matchesRun(entry, run, target) {
+    if (run.status === 'running') return false;
     if (runTarget(entry, run) !== target) return false;
     const snapshot = target === 'published' ? entry.publishedModel : entry.model;
     if (!snapshot || !runMatchesModelInputs(run, snapshot) || !runMatchesInputSource(run, catalog.sources[entry.id], catalog.schedules[entry.id])) return false;
@@ -183,6 +208,7 @@ export function createManagement({ fallbackModel, beforeAction, onActivate, onRu
   }
   function render(form = false) {
     if (!pageOpen) return;
+    renderSchedulingService();
     if (backend) {
       $('#management-role-label').textContent = backend.user.role === 'admin' ? 'Administrator' : backend.user.role;
       $('#management-new-model').disabled = !['admin', 'editor'].includes(backend.user.role);
@@ -231,7 +257,7 @@ export function createManagement({ fallbackModel, beforeAction, onActivate, onRu
       $('#management-view-published').disabled = !permission.published || !entry.publishedModel;
       $('#management-duplicate-model').disabled = !['admin', 'editor'].includes(backend.user.role);
       $('#schedule-form').querySelectorAll('input, select, button').forEach(control => control.disabled = !permission.canSchedule);
-      $('#schedule-run-now').disabled = !permission.canRun || running.has(selectedId);
+      $('#schedule-run-now').disabled = !permission.canRun || isRunning(selectedId);
       $('#model-publication-state').textContent = permission.published ? entry.hasUnpublishedChanges ? 'Published · draft changes' : 'Published' : 'Draft';
       $('#model-publication-button').textContent = permission.published ? 'Publish changes' : 'Publish model';
       $('#model-publication-button').hidden = !permission.canPublish || (permission.published && !entry.hasUnpublishedChanges);
@@ -257,7 +283,9 @@ export function createManagement({ fallbackModel, beforeAction, onActivate, onRu
       message(storageWarning, Boolean(storageWarning));
     }
     $('#management-model-count').textContent = `${catalog.models.length} saved model${catalog.models.length === 1 ? '' : 's'} · ${entry.model.streams.length} streams in this model`;
-    $('#schedule-summary-state').textContent = running.has(selectedId) ? 'Running' : schedule.enabled ? 'Enabled' : 'Not scheduled';
+    const execution = scheduledExecution();
+    const needsAttention = ['failed', 'invalid', 'interrupted', 'cancelled', 'needs_authorization'].includes(execution?.status) || Boolean(execution?.error);
+    $('#schedule-summary-state').textContent = isRunning(selectedId) ? 'Running' : needsAttention ? 'Needs attention' : schedule.enabled && serverScheduling() && !backend.workspace.scheduling.enabled ? 'Server paused' : schedule.enabled ? 'Enabled' : 'Not scheduled';
     $('#schedule-summary-state').classList.toggle('is-enabled', schedule.enabled);
     $('#schedule-next-run').textContent = schedule.enabled ? date(schedule.nextRunAt) : 'No upcoming run';
     $('#schedule-summary-frequency').textContent = frequency(schedule.intervalMinutes);
@@ -268,14 +296,14 @@ export function createManagement({ fallbackModel, beforeAction, onActivate, onRu
     $('#schedule-timezone').textContent = `Reporting boundaries: ${reporting.timeZone}. Run times below: ${Intl.DateTimeFormat().resolvedOptions().timeZone}. Schedule checks use the latest eligible completed period.`;
     const runs = catalog.runs[selectedId];
     $('#schedule-last-run').textContent = runs.length ? `${date(runs.at(-1).finishedAt)} · ${runs.at(-1).status}` : 'No runs yet';
-    $('#schedule-run-now').disabled = running.has(selectedId) || (backend && !backend.permission(selectedId).canRun);
-    const runSignature = JSON.stringify([selectedId, runs]);
+    $('#schedule-run-now').disabled = isRunning(selectedId) || (backend && !backend.permission(selectedId).canRun);
+    const runSignature = JSON.stringify([selectedId, runs, serverScheduling() && isRunning(selectedId), serverScheduling() ? schedule.enabled : null, backend ? Boolean(backend.permission(selectedId).canRun) : true]);
     if (renderedRuns === runSignature) return;
     renderedRuns = runSignature;
     if (!runs.length) {
       $('#management-runs').innerHTML = '<div class="management-runs-empty"><h3>No runs yet</h3><p>Run a reconciliation to see its status and results here.</p></div>';
     } else {
-      $('#management-runs').innerHTML = `<div class="table-wrap"><table class="management-runs-table"><thead><tr><th>Run time / reporting period</th><th>Model</th><th>Trigger</th><th>Status</th><th>Result</th></tr></thead><tbody>${[...runs].reverse().slice(0, 10).map(run => `<tr><td>${esc(date(run.startedAt))}${run.reportingPeriod ? `<small>${esc(run.reportingPeriod.label)}</small>${run.rerunOf ? `<small>Rerun of ${esc(run.rerunOf)}</small>` : ''}` : ''}</td><td>${runTarget(entry, run) === 'published' ? `Published v${esc(run.publishedVersion ?? 1)}` : runTarget(entry, run) === 'draft' ? 'Draft test' : 'Legacy run'}</td><td>${run.trigger === 'scheduled' ? 'Scheduled' : 'Manual'}</td><td><span class="status-pill ${run.status === 'ok' ? 'estimated' : run.status === 'failed' || run.status === 'invalid' ? 'unobservable' : ''}">${esc(run.status)}</span></td><td>${run.error ? esc(run.error) : `<span>${esc(run.result?.message || 'Completed')}</span><details><summary>Stream results</summary><ul>${(run.result?.streams || []).map(stream => `<li>${esc(run.modelSnapshot?.streams.find(item => item.id === stream.id)?.name || stream.id)}: ${number(stream.value)} kg · ${esc(stream.status)}</li>`).join('')}</ul></details><button type="button" class="text-button" data-review-run="${esc(run.id)}">View on diagram</button>`}${run.reportingPeriod ? `<button type="button" class="text-button" data-rerun-period="${esc(run.id)}" ${backend && !backend.permission(selectedId).canRun || running.has(selectedId) ? 'disabled' : ''}>Rerun period</button>` : ''}</td></tr>`).join('')}</tbody></table></div>`;
+      $('#management-runs').innerHTML = `<div class="table-wrap"><table class="management-runs-table"><thead><tr><th>Run time / reporting period</th><th>Model</th><th>Trigger</th><th>Status</th><th>Result</th></tr></thead><tbody>${[...runs].reverse().slice(0, 10).map(run => `<tr><td>${esc(date(run.startedAt))}${run.reportingPeriod ? `<small>${esc(run.reportingPeriod.label)}</small>${run.rerunOf ? `<small>Rerun of ${esc(run.rerunOf)}</small>` : ''}` : ''}</td><td>${runTarget(entry, run) === 'published' ? `Published v${esc(run.publishedVersion ?? 1)}` : runTarget(entry, run) === 'draft' ? 'Draft test' : 'Legacy run'}</td><td>${run.trigger === 'scheduled' ? 'Scheduled' : 'Manual'}</td><td><span class="status-pill ${run.status === 'ok' ? 'estimated' : run.status === 'failed' || run.status === 'invalid' ? 'unobservable' : ''}">${esc(run.status)}</span></td><td>${run.status === 'running' ? 'Running on the server. Results will appear when the run finishes.' : run.error ? esc(run.error) : `<span>${esc(run.result?.message || 'Completed')}</span><details><summary>Stream results</summary><ul>${(run.result?.streams || []).map(stream => `<li>${esc(run.modelSnapshot?.streams.find(item => item.id === stream.id)?.name || stream.id)}: ${number(stream.value)} kg · ${esc(stream.status)}</li>`).join('')}</ul></details><button type="button" class="text-button" data-review-run="${esc(run.id)}">View on diagram</button>`}${deliveryPauseHint(run) ? `<p class="helper">${esc(deliveryPauseHint(run))}</p>` : ''}${run.reportingPeriod && run.status !== 'running' ? `<button type="button" class="text-button" data-rerun-period="${esc(run.id)}" ${backend && !backend.permission(selectedId).canRun || isRunning(selectedId) ? 'disabled' : ''}>Rerun period</button>` : ''}</td></tr>`).join('')}</tbody></table></div>`;
       $('#management-runs').querySelectorAll('[data-rerun-period]').forEach(button => button.onclick = async () => {
         const prior = catalog.runs[selectedId].find(item => item.id === button.dataset.rerunPeriod), targetId = selectedId;
         if (!prior?.reportingPeriod) return;
@@ -301,7 +329,7 @@ export function createManagement({ fallbackModel, beforeAction, onActivate, onRu
 
   async function execute(id, trigger = 'manual', { target = trigger === 'scheduled' ? 'published' : 'draft', period = null } = {}) {
     if (!['published', 'draft'].includes(target)) throw new Error('Choose a published reconciliation or a draft test.');
-    if (running.has(id)) throw new Error('This model is already running.');
+    if (isRunning(id)) throw new Error('This model is already running.');
     running.add(id);
     render();
     try {
@@ -333,6 +361,7 @@ export function createManagement({ fallbackModel, beforeAction, onActivate, onRu
       if (backend) {
         if (Date.now() - lastRefresh > 15_000) { lastRefresh = Date.now(); await backend.refresh(); }
         pullShared();
+        if (serverScheduling()) { render(); return; }
         for (const due of dueSchedules(catalog, backend.now())) {
           const permission = backend.permission(due.modelId);
           if (!permission.published || !permission.canRun || running.has(due.modelId)) continue;
@@ -407,7 +436,9 @@ export function createManagement({ fallbackModel, beforeAction, onActivate, onRu
       const intervalMinutes = frequencyToMinutes(Number($('#schedule-interval').value), $('#schedule-unit').value);
       if (backend) {
         await backend.schedule(selectedId, { enabled: $('#schedule-enabled').checked, intervalMinutes, inputSourceId: $('#schedule-input').value || null, outputSourceId: $('#schedule-output').value || null, reporting: reportingForm() });
-        pullShared(); render(true); message('Schedule saved. Scheduled runs require an open, authorized browser session.'); return;
+        pullShared(); render(true); message(serverScheduling()
+          ? backend.workspace.scheduling.enabled ? 'Schedule saved. The server will run it without an open browser, using your current model permissions.' : 'Schedule saved. Server scheduling is paused; enable it in the installation configuration to run automatically.'
+          : 'Schedule saved. Scheduled runs require an open, authorized browser session.'); return;
       }
       save(setSchedule(catalog, selectedId, { enabled: $('#schedule-enabled').checked, intervalMinutes, inputSourceId: $('#schedule-input').value || null, outputSourceId: $('#schedule-output').value || null, reporting: reportingForm() }, now()), true);
       render(true);

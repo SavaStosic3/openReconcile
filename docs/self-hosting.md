@@ -1,6 +1,6 @@
 # Run openReconcile on an internal server
 
-The Docker deployment runs the application, authenticated API, reconciliation solver, and SQLite database on a company's own server or VM. It uses the same frontend and calculation modules as the hosted application. It does not require a ChatGPT account, a Sites project, or a hosted database. No example account or password is included.
+The Docker deployment runs the application, authenticated API, reconciliation solver, unattended scheduler, and SQLite database on a company's own server or VM. It uses the same frontend and calculation modules as the hosted application. It does not require a ChatGPT account, a Sites project, or a hosted database. No example account or password is included.
 
 The existing hosted site remains available for development and testing. Each internal installation has its own users, models, permissions, schedules, audit history, and results. Nothing synchronizes with the hosted workspace automatically. Model JSON export/import transfers a model deliberately; it does not transfer accounts or workspace history.
 
@@ -190,6 +190,38 @@ Recreate the app after changing these values. The gateway's certificate must als
 
 Have an authorized database administrator provision least-privilege users, table allowlists, and the required schema. Verify a real input read, a known period's reconciliation, and committed output rows before using the integration operationally. Storage inputs require the updated gateway's exact boundary-snapshot support. Container packaging does not verify a connection to any plant database.
 
+## Unattended scheduling
+
+The standalone server executes enabled schedules without a browser or an active login session. This applies to Docker installations and deployments using `npm run start:server`; it does not change the hosted testing site's browser-triggered scheduling.
+
+1. Publish the model and open **☰ → Model Management** with editor or administrator access.
+2. Choose the run frequency, completed reporting period, time zone, late-data allowance, and optional SQL input/output sources.
+3. Enable scheduled runs and save. The account saving the schedule authorizes it. The server checks that account's current status, role, model grant, and publication before execution; disabling the account or removing its scheduling permission blocks further runs. An administrator or eligible editor can save the schedule again to take responsibility for it.
+4. Review **Schedule overview** and **Recent runs** for running, failed, and interrupted executions. Results remain attached to the publication used for that run.
+
+After upgrading an existing installation, **save each existing enabled schedule once**. Earlier schedules have no recorded authorizing account and cannot silently acquire unattended authority. New models, duplicates, and models restored from deletion start with scheduling disabled. Database backups retain their saved schedules and authorization.
+
+The following `.env` values configure the standalone service:
+
+```dotenv
+SCHEDULER_ENABLED=true
+SCHEDULER_POLL_SECONDS=5
+```
+
+The check interval accepts whole seconds from 1 to 60. It controls how quickly a due schedule is noticed, independently of the model's run frequency. Set `SCHEDULER_ENABLED=false` to pause automatic execution while keeping manual reconciliation available; browsers do not take over scheduled triggering on this installation. Recreate the container after changing these settings:
+
+```sh
+docker compose up -d --force-recreate
+```
+
+Run frequency remains elapsed time: one day means 24 hours. Reporting boundaries use the model's configured calendar and time zone. At 10:07, an hourly reporting period is 09:00–10:00; a late-data allowance can defer its eligibility. On startup or after downtime, an overdue schedule runs once using the latest eligible completed period and advances to the next future frequency interval. It does not replay every missed period. Use a deliberate manual period rerun to obtain historical results.
+
+Manual and scheduled runs share durable job claims that prevent overlapping runs for the same model and duplicate scheduled execution. Claims have a two-minute lease refreshed while work is active. After a process exits unexpectedly, recovery waits for the lease to expire before marking its abandoned run interrupted. The interrupted occurrence is retained as a failed run; it is not automatically retried. If output delivery had not begun, a subsequent due occurrence uses the normal latest-period policy. If output delivery is uncertain, automatic scheduling for that model is paused instead. Unpublishing, deleting, or changing a selected source also pauses the schedule.
+
+SQL output is an external operation. A lost acknowledgement or process interruption after delivery begins may leave its outcome unknown. For either a manual or a scheduled run, the server records the failure or interruption and **pauses the model's automatic schedule**. It does not repeat that delivery or allow a later scheduled occurrence to export the same period while the outcome is unresolved. Check the destination for the run ID, decide whether a manual period rerun is needed, then explicitly enable and save the schedule in Model Management to resume automatic work. Manually rerunning creates a new run and can produce additional output rows. This is not an exactly-once delivery guarantee. Keep the gateway's permissions, timeouts, and destination procedures appropriate for the installation.
+
+Keep the app container running with the supplied restart policy. Stopping the container or host stops execution until service returns. The scheduler does not require internet access unless the configured input or output gateway requires it.
+
 ## Operation and current limits
 
 ```sh
@@ -204,7 +236,7 @@ docker compose up -d
 
 Run **one app instance** against a local Docker volume. SQLite is the embedded database for this deployment; multiple replicas, a shared network filesystem, and high-availability orchestration are outside this deployment. Protect server and Docker access because operators of the host can read its files and environment.
 
-Schedules currently remain **browser-triggered**: an eligible authenticated browser session must be open for due reconciliations to run. Moving the application into Docker does not introduce a background scheduler. Run history remains capped at **20 runs per model**; output connectors are the destination for long-term reconciliation results. Audit retention remains configurable, with the existing 365-day default.
+Schedules run unattended in this standalone service as described above. Run history remains capped at **20 runs per model**; output connectors are the destination for long-term reconciliation results. Audit retention remains configurable, with the existing 365-day default.
 
 Password accounts have backend-enforced permissions, revocable sessions, and no public registration. ChatGPT sign-in belongs to the hosted deployment and is not offered by this internal password-only installation. The internal server does not trust client-supplied Sites identity headers.
 
@@ -212,4 +244,4 @@ Password accounts have backend-enforced permissions, revocable sessions, and no 
 
 GitHub's **Internal server container** workflow builds the real Docker image and exercises authentication, permissions, model publication, both analytical showcase reconciliations, and persistence across container replacement. A green run demonstrates those synthetic checks on that runner; it does not establish plant accuracy, your TLS configuration, database connectivity, backup policy, or sizing.
 
-For an installation acceptance check, test sign-in/logout, administrator and restricted-user permissions, both analytical example models, a container recreation without data loss, a backup restoration into a fresh volume, and the company's actual input/output integrations. Record the release commit, image ID, configuration, and test evidence. Continue using the existing hosted development/build workflow separately; no hosted data or credentials need to be copied to the internal server.
+For an installation acceptance check, test sign-in/logout, administrator and restricted-user permissions, both analytical example models, unattended execution after all browsers close, account/grant revocation, interruption recovery, a container recreation without data loss, a backup restoration into a fresh volume, and the company's actual input/output integrations. Record the release commit, image ID, configuration, and test evidence. Continue using the existing hosted development/build workflow separately; no hosted data or credentials need to be copied to the internal server.
