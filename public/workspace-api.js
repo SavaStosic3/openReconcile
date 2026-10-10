@@ -1,4 +1,4 @@
-import { setupLogin, setupSignOut, signInReturnUrl } from './login.js';
+import { setupLogin, setupSignOut, signInReturnUrl, supportsChatgptSignIn } from './login.js';
 
 const clone = value => structuredClone(value);
 const $ = selector => document.querySelector(selector);
@@ -48,7 +48,7 @@ function showAuth(message, title = 'Sign in to MassFlow') {
 export async function connectWorkspace(onError) {
   setupLogin({ request: api });
   if (new URL(location.href || '/', 'https://workspace.invalid').searchParams.get('signin') === '1') {
-    showAuth('Sign in with your workspace username and password, or use your ChatGPT account.');
+    showAuth(supportsChatgptSignIn() ? 'Sign in with your workspace username and password, or use your ChatGPT account.' : 'Sign in with your workspace username and password.');
     return new Promise(() => {});
   }
   let session, state;

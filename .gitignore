@@ -13,3 +13,8 @@ dist/
 *.zip
 preview*.png
 .openai/*.local.*
+data/
+backups/
+deploy/.env
+deploy/.env.*
+!deploy/.env.example

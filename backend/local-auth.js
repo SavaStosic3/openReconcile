@@ -20,20 +20,27 @@ const random = bytes => crypto.getRandomValues(new Uint8Array(bytes));
 const digest = async value => base64(await crypto.subtle.digest('SHA-256', encoder.encode(value)));
 const normalizeUsername = value => typeof value === 'string' && /^[a-zA-Z][a-zA-Z0-9._-]{2,63}$/.test(value.trim()) ? value.trim().toLowerCase() : null;
 
+function passwordIterations(value = ITERATIONS) {
+  if (![ITERATIONS, 600_000].includes(value)) throw new Error('Unsupported password work factor.');
+  return value;
+}
+const authIterations = env => passwordIterations(env.LOCAL_AUTH_ITERATIONS ?? ITERATIONS);
+const signInUrl = env => env.AUTH_MODE === 'password' ? '/?signin=1' : SIGN_IN_URL;
+
 function pepperFor(value) {
   if (typeof value !== 'string' || value.length < 32 || value.length > 1024) throw new ApiError(503, 'Password sign-in is unavailable. Contact an administrator.');
   return value;
 }
-function parseHash(value) {
+function parseHash(value, iterations = ITERATIONS) {
   if (typeof value !== 'string') return null;
   const parts = value.split('$');
-  if (parts.length !== 4 || parts[0] !== HASH_SCHEME || parts[1] !== String(ITERATIONS) || !/^[A-Za-z0-9_-]{22}$/.test(parts[2]) || !/^[A-Za-z0-9_-]{43}$/.test(parts[3])) return null;
+  if (parts.length !== 4 || parts[0] !== HASH_SCHEME || parts[1] !== String(iterations) || !/^[A-Za-z0-9_-]{22}$/.test(parts[2]) || !/^[A-Za-z0-9_-]{43}$/.test(parts[3])) return null;
   const salt = decode(parts[2]), signature = decode(parts[3]);
   return salt.length === 16 && signature.length === 32 && base64(salt) === parts[2] && base64(signature) === parts[3] ? { salt, signature } : null;
 }
-async function passwordKey(password, salt) {
+async function passwordKey(password, salt, iterations = ITERATIONS) {
   const key = await crypto.subtle.importKey('raw', encoder.encode(password), 'PBKDF2', false, ['deriveBits']);
-  return crypto.subtle.deriveBits({ name: 'PBKDF2', hash: 'SHA-256', iterations: ITERATIONS, salt }, key, 256);
+  return crypto.subtle.deriveBits({ name: 'PBKDF2', hash: 'SHA-256', iterations, salt }, key, 256);
 }
 async function pepperKey(pepper, usages) {
   return crypto.subtle.importKey('raw', encoder.encode(pepperFor(pepper)), { name: 'HMAC', hash: 'SHA-256' }, false, usages);
@@ -43,18 +50,20 @@ async function pepperKey(pepper, usages) {
 // https://github.com/cloudflare/workerd/issues/1346
 // A server-only post-KDF HMAC pepper protects hashes if D1 alone is exposed.
 // The pepper must be kept separately in the host's secret store.
-export async function hashPassword(password, pepper) {
+export async function hashPassword(password, pepper, { iterations = ITERATIONS } = {}) {
   if (typeof password !== 'string' || password.length < 8 || password.length > 1024) throw new Error('Choose a password between 8 and 1024 characters.');
-  const salt = random(16), derived = await passwordKey(password, salt);
+  passwordIterations(iterations);
+  const salt = random(16), derived = await passwordKey(password, salt, iterations);
   const signature = await crypto.subtle.sign('HMAC', await pepperKey(pepper, ['sign']), derived);
-  return `${HASH_SCHEME}$${ITERATIONS}$${base64(salt)}$${base64(signature)}`;
+  return `${HASH_SCHEME}$${iterations}$${base64(salt)}$${base64(signature)}`;
 }
-export async function verifyPassword(password, serialized, pepper) {
-  const parsed = parseHash(serialized);
+export async function verifyPassword(password, serialized, pepper, { iterations = ITERATIONS } = {}) {
+  passwordIterations(iterations);
+  const parsed = parseHash(serialized, iterations);
   // Unknown/invalid accounts perform the same KDF and native constant-time
   // HMAC verification, then fail without revealing whether a username exists.
   const candidate = parsed ?? { salt: new Uint8Array(16), signature: new Uint8Array(32) };
-  const derived = await passwordKey(password, candidate.salt);
+  const derived = await passwordKey(password, candidate.salt, iterations);
   const valid = await crypto.subtle.verify('HMAC', await pepperKey(pepper, ['verify']), candidate.signature, derived);
   return Boolean(parsed && valid);
 }
@@ -104,7 +113,7 @@ async function authBody(request) {
 async function provision(env) {
   if (!env.LOCAL_BOOTSTRAP_USERNAME && !env.LOCAL_BOOTSTRAP_PASSWORD_HASH) return;
   const username = normalizeUsername(env.LOCAL_BOOTSTRAP_USERNAME);
-  if (!username || !parseHash(env.LOCAL_BOOTSTRAP_PASSWORD_HASH)) throw new ApiError(503, 'Password sign-in is unavailable. Contact an administrator.');
+  if (!username || !parseHash(env.LOCAL_BOOTSTRAP_PASSWORD_HASH, authIterations(env))) throw new ApiError(503, 'Password sign-in is unavailable. Contact an administrator.');
   pepperFor(env.LOCAL_AUTH_PEPPER);
   const id = `local:${username}`, stamp = new Date(nowFor(env)).toISOString();
   // D1 batches are atomic. changes() gates credential insertion on the new
@@ -132,8 +141,8 @@ async function login(request, env) {
   const now = nowFor(env), username = normalizeUsername(body.username);
   // Cloudflare supplies/replaces CF-Connecting-IP at the edge. Never trust
   // browser-supplied X-Forwarded-For. Dev/missing-IP requests share one bucket.
-  const ip = request.headers.get('CF-Connecting-IP') ?? 'missing-edge-ip';
-  await attempt(env, `ip:${await digest(ip)}`, 20, now);
+  const ip = env.AUTH_MODE === 'password' ? env.LOCAL_CLIENT_IP ?? 'missing-client-ip' : request.headers.get('CF-Connecting-IP') ?? 'missing-edge-ip';
+  await attempt(env, `ip:${await digest(ip)}`, env.AUTH_MODE === 'password' ? env.LOCAL_AUTH_IP_LIMIT ?? 20 : 20, now);
   await attempt(env, `user:${await digest(username ?? body.username.trim().toLowerCase())}`, 5, now);
   // Bounded expiry housekeeping prevents abandoned limits/sessions building up.
   await env.DB.batch([
@@ -142,7 +151,7 @@ async function login(request, env) {
   ]);
   await provision(env);
   const account = username ? await statement(env, 'SELECT c.password_hash,u.id,u.active,u.updated_at FROM local_credentials c JOIN users u ON u.id=c.user_id WHERE c.username=?', [username]).first() : null;
-  const valid = await verifyPassword(body.password, account?.password_hash, env.LOCAL_AUTH_PEPPER);
+  const valid = await verifyPassword(body.password, account?.password_hash, env.LOCAL_AUTH_PEPPER, { iterations: authIterations(env) });
   if (!valid || !account?.active) throw new ApiError(401, 'The username or password is incorrect.');
   const token = base64(random(32)), tokenHash = await digest(token);
   await revokeCookieSession(request, env);
@@ -158,7 +167,7 @@ async function resolveLocal(request, env) {
     const tokenHash = await digest(stored.value), now = nowFor(env);
     const row = await statement(env, 'SELECT u.id FROM local_sessions s JOIN users u ON u.id=s.user_id JOIN local_credentials c ON c.user_id=u.id WHERE s.token_hash=? AND s.expires_at>? AND u.active=1 AND s.user_updated_at=u.updated_at', [tokenHash, now]).first();
     if (!row) { await statement(env, 'DELETE FROM local_sessions WHERE token_hash=?', [tokenHash]).run(); throw new ApiError(401, 'Sign in to access this workspace.'); }
-    return { id: row.id, [localAccountIdentity]: true, signInUrl: SIGN_IN_URL, signOutUrl: '/api/auth/logout' };
+    return { id: row.id, [localAccountIdentity]: true, signInUrl: signInUrl(env), signOutUrl: '/api/auth/logout' };
   }
   if (cookieValue(request, names.suppress).present) throw new ApiError(401, 'Sign in to access this workspace.');
   return null;
@@ -168,6 +177,7 @@ export async function handleAuthenticatedApi(request, env, externalIdentity) {
   try {
     const path = new URL(request.url).pathname;
     if (path === '/api/auth/chatgpt') {
+      if (env.AUTH_MODE === 'password') return reply({ error: 'ChatGPT sign-in is unavailable on this server.' }, 404);
       if (request.method !== 'GET') return reply({ error: 'That method is not supported.' }, 405, { Allow: 'GET' });
       if (request.headers.get('Sec-Fetch-Site') === 'cross-site') throw new ApiError(403, 'Sign in from this application.');
       await revokeCookieSession(request, env);
@@ -183,11 +193,11 @@ export async function handleAuthenticatedApi(request, env, externalIdentity) {
       return withCookies(reply({ ok: true }), [cookie(request, names.session, '', 0), cookie(request, names.suppress, '1', SIGNED_OUT_SECONDS)]);
     }
     const local = await resolveLocal(request, env);
-    const identity = local ?? externalIdentity;
+    const identity = local ?? (env.AUTH_MODE === 'password' ? null : externalIdentity);
     const result = await handleApi(request, env, identity);
     if (path === '/api/session' && result.ok) {
       const data = await result.json();
-      return reply({ ...data, authMethod: local ? 'password' : 'chatgpt', signInUrl: SIGN_IN_URL, signOutUrl: '/api/auth/logout' });
+      return reply({ ...data, authMethod: local ? 'password' : 'chatgpt', signInUrl: signInUrl(env), signOutUrl: '/api/auth/logout' });
     }
     return result;
   } catch (error) {

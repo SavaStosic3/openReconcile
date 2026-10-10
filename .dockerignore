@@ -1,0 +1,26 @@
+# Allow only the application runtime into the build context. In particular,
+# .env, .dev.vars, hosted configuration, local databases, and Git are excluded.
+**
+!Dockerfile
+!.dockerignore
+!package.json
+!LICENSE
+!backend/
+!backend/**
+!public/
+!public/**
+!drizzle/
+!drizzle/**
+!deploy/
+!deploy/*.mjs
+!deploy/*.js
+
+# These exclusions also apply inside the allowed runtime directories.
+**/.env
+**/.env.*
+**/.dev.vars*
+**/server-secrets.json
+**/*.sqlite*
+**/node_modules/**
+**/*.pem
+**/*.key

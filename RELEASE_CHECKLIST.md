@@ -13,6 +13,20 @@ Record: GitHub commit, Sites source commit, artifact/version ID, deployment URL,
 - [ ] Preserve the existing project ID, database binding, audience, and authentication configuration unless the release explicitly changes them.
 - [ ] Deploy that saved version, confirm a successful deployment, and check the live URL and served assets. Record which checks ran locally and which ran on the live application.
 
+## Internal-server Docker deployment
+
+The Docker installation is a separate deployment target sharing the frontend, authenticated backend rules, and solver with the hosted application. Its SQLite workspace and password accounts are private to that installation. The existing Sites project, hosted data, and development workflow must remain intact.
+
+- [ ] Run `docker compose config --quiet`, build the final image, and record the Git commit, Node base image, and built image ID. Verify the build context/image excludes credentials, `.env`, `.dev.vars`, hosted configuration, local databases, Git, and generated hosted build output.
+- [ ] Run `node scripts/docker-smoke.mjs` against the real image. Record its authentication, denied-access, analytical filtration/storage calculations, publication, and persistence checks separately from host-only tests. Confirm the GitHub container workflow completes successfully; adding a workflow is not evidence that it ran.
+- [ ] Verify a fresh private volume starts with no bundled users or models, first setup requires an explicit administrator/password, and an existing installation cannot be reseeded or overwritten. Check additional CLI account creation and backend role/model grants, disabled-user enforcement, and logout/session revocation.
+- [ ] Confirm the internal API never accepts ChatGPT/Sites identity from request headers. Check configured-origin validation, HTTPS Secure/HttpOnly/SameSite cookies, same-origin write enforcement, generic login failures, and bounded requests. Test company TLS and DNS separately from loopback HTTP.
+- [ ] Confirm the image runs as UID/GID 1000 with a read-only root filesystem, persistent writable `/data`, and healthy database checks. Recreate the container and verify accounts, models, permissions, publications, audit history, and retained runs survive.
+- [ ] Back up the live database using the maintenance command with its matching pepper/manifest, export an off-server copy, and restore into a fresh volume. Verify sign-in, grants, publications, audit history, and known reconciliation after restore. Record image/schema compatibility and the pre-upgrade rollback procedure.
+- [ ] Check pending SQLite migrations apply once and applied migration fingerprints are validated. Review schema compatibility before an upgrade; retain a previous image and its pre-upgrade backup. Never delete migration records to attempt a downgrade.
+- [ ] Review the [installation guide](docs/self-hosting.md) against actual commands, environment variables, and CLI options. Preserve browser-triggered scheduling, 20-run result retention, separate SQL gateway requirements, and single-instance/local-volume limits without implying new unattended/high-availability capabilities.
+- [ ] Verify the company's real SQL input/output, inventory boundary reads, trust chain, least-privilege accounts, and network access before operational use. Synthetic container tests do not establish plant integration or sizing.
+
 ## Data and access
 
 - [ ] Review pending ordered migrations and their metadata. Keep applied migrations unchanged; use schema-only migrations and bounded, separate initialization when needed. Never seed or replace existing plant data as part of deployment.
@@ -150,6 +164,8 @@ Browser checks with simulated local sign-in confirmed separate template creation
 - [ ] Validate the configured plant geometry, uniform density, independent/shared uncertainty assumptions, snapshot synchronization, and real database read/write behavior separately from synthetic tests. No uncertain geometry or cross-tank calibration/density covariance is claimed.
 
 ## Closeout
+
+Internal-server packaging validation: 454 automated tests, type checking, and the hosted production build passed locally. Real HTTP checks cover both analytical showcase reconciliations, password-only authentication, RBAC, server restart persistence, and request trust boundaries. SQLite checks cover transactional migrations/audits and online backup restoration. The GitHub container workflow separately builds and exercises the Docker image; plant connections, corporate TLS, and server sizing remain installation acceptance checks.
 
 - [ ] Update the README, roadmap, and release notes to match delivered behavior and current limits.
 - [ ] Record remaining operational or live checks and assign follow-up work. Do not mark a release ready based only on local automated checks.

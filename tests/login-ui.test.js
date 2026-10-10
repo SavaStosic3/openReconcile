@@ -1,7 +1,18 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { setupLogin, setupSignOut, signInReturnUrl } from '../public/login.js';
+import { setupLogin, setupSignOut, signInReturnUrl, supportsChatgptSignIn } from '../public/login.js';
 import { connectWorkspace } from '../public/workspace-api.js';
+
+test('self-hosted login hides the unavailable external sign-in while hosted login preserves it', () => {
+  for (const mode of ['password', 'hosted']) {
+    const link = { hidden: false };
+    const document = { querySelector: selector => selector === '#signin-link' ? link : selector === 'meta[name="openreconcile-auth-mode"]' ? { content: mode } : null };
+    setupLogin({ document });
+    assert.equal(link.hidden, mode === 'password');
+    assert.equal(supportsChatgptSignIn(document), mode !== 'password');
+  }
+  assert.equal(supportsChatgptSignIn({ querySelector: () => null }), true);
+});
 
 function loginFixture(request) {
   let handler;

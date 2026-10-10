@@ -1,5 +1,11 @@
 const LOGIN_FAILURE = 'The username or password is incorrect.';
 
+// This server-rendered flag only selects available UI controls. Authentication
+// and permissions are always enforced by the backend.
+export function supportsChatgptSignIn(document = globalThis.document) {
+  return document?.querySelector('meta[name="openreconcile-auth-mode"]')?.content !== 'password';
+}
+
 // Keep model links useful after sign-in without accepting a redirect destination.
 export function signInReturnUrl(href, showSignIn = false) {
   const current = new URL(href, 'https://workspace.invalid');
@@ -12,6 +18,8 @@ export function signInReturnUrl(href, showSignIn = false) {
 }
 
 export function setupLogin({ document = globalThis.document, location = globalThis.location, request } = {}) {
+  const externalSignIn = document.querySelector('#signin-link');
+  if (externalSignIn) externalSignIn.hidden = !supportsChatgptSignIn(document);
   const form = document.querySelector('#login-form');
   // Older embedded pages can show the authentication screen before updating
   // their markup. They must still be able to use the existing SSO entry point.

@@ -4,7 +4,24 @@ openReconcile is a standalone, MIT-licensed web workbench for building a physica
 
 See the [feature roadmap](ROADMAP.md) for planned capabilities and enhancements.
 
-## Run locally
+## Install on a company server with Docker
+
+An internal installation runs the application and its authenticated API against a private SQLite database on the company's server. It shares the hosted application's frontend and reconciliation code, with no ChatGPT/Sites dependency or bundled account. The current hosted site remains available for building and testing; internal workspaces are separate.
+
+```sh
+git clone https://github.com/SavaStosic3/openReconcile.git
+cd openReconcile
+cp deploy/.env.example .env
+docker compose build --pull
+docker compose run --rm app node deploy/cli.mjs setup --username PlantAdmin
+docker compose up -d
+```
+
+Run setup from an interactive terminal to choose a password with input hidden, then open **http://localhost:8080** and sign in. Before company-wide access, set `PUBLIC_ORIGIN` and configure a trusted HTTPS reverse proxy. Database, accounts, permissions, and audit history persist in a named Docker volume.
+
+See the [internal-server installation guide](docs/self-hosting.md) for HTTPS, user provisioning, example models, SQL gateway configuration, backup/restore, upgrades, and operational limits. Schedules still require an eligible open browser session; Docker packaging does not add unattended scheduling. Results retain the existing 20-run-per-model limit.
+
+## Hosted development locally
 
 Requires Node.js 22.13 or later. The application uses a Workers backend, D1 database, and the Sites authentication integration. Frontend assets live in `public/`; `dist/` is generated build output.
 

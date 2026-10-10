@@ -1,0 +1,55 @@
+name: Internal server container
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'Dockerfile'
+      - '.dockerignore'
+      - 'compose.yaml'
+      - 'deploy/**'
+      - 'backend/**'
+      - 'public/**'
+      - 'drizzle/**'
+      - 'package.json'
+      - 'scripts/docker-smoke.mjs'
+      - 'docs/self-hosting.md'
+      - 'README.md'
+      - '.github/workflows/docker.yml'
+  pull_request:
+    paths:
+      - 'Dockerfile'
+      - '.dockerignore'
+      - 'compose.yaml'
+      - 'deploy/**'
+      - 'backend/**'
+      - 'public/**'
+      - 'drizzle/**'
+      - 'package.json'
+      - 'scripts/docker-smoke.mjs'
+      - 'docs/self-hosting.md'
+      - 'README.md'
+      - '.github/workflows/docker.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  docker:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@v7
+        with:
+          node-version: '24'
+          package-manager-cache: false
+      - name: Validate Compose configuration
+        run: docker compose config --quiet
+      - name: Build the internal-server image
+        run: docker compose build --pull
+      - name: Exercise login, reconciliation, and persistent storage
+        run: node scripts/docker-smoke.mjs

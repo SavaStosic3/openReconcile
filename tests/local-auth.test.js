@@ -11,6 +11,16 @@ const pepper = 'test-only-private-pepper-'.repeat(3);
 const external = { id: 'owner-subject', email: 'owner@example.test', name: 'Owner' };
 const sessionName = '__Host-openreconcile_session';
 const suppressionName = '__Host-openreconcile_signed_out';
+
+test('standalone hashing has its own fixed stronger work factor without changing hosted credentials', async () => {
+  const hash = await hashPassword(password, pepper, { iterations: 600_000 });
+  assert.match(hash, /^pbkdf2_sha256_hmac\$600000\$/);
+  assert.equal(await verifyPassword(password, hash, pepper, { iterations: 600_000 }), true);
+  assert.equal(await verifyPassword('Wrong fixture password', hash, pepper, { iterations: 600_000 }), false);
+  assert.equal(await verifyPassword(password, hash, pepper), false);
+  await assert.rejects(hashPassword(password, pepper, { iterations: 10 }));
+  await assert.rejects(verifyPassword(password, hash, pepper, { iterations: 10 }));
+});
 let fixtureHash;
 function cookies(response) {
   return response.headers.getSetCookie().map(value => value.split(';')[0]);
