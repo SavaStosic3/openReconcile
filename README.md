@@ -59,6 +59,14 @@ Double-click an existing unit and choose **Unit symbol** to change its appearanc
 
 Equipment symbols describe the process diagram. Every internal unit uses the same total-mass conservation equation, with no accumulation. Pump curves, pressure drop, compression, heat transfer, particle separation, and storage calculations are not introduced by choosing a symbol. Add every material path explicitly; tank/storage balances remain a separate planned feature.
 
+## Line visibility and crossings
+
+Select a flow line and choose **Hide line** in its inspector, or right-click it and choose **Hide line**. Open **Lines** in the canvas toolbar to restore individual streams, **Restore all**, or toggle **Show hidden lines** for a temporary reveal. Revealed hidden lines appear lighter. The menu shows the hidden-line count and each stream's endpoints.
+
+Visibility is a personal browser preference per account and model, shared between its editor and published view. It does not edit the model, invalidate results, change publication versions, or remove streams from measurements, reconciliation, and JSON exports. It remains available to read-only viewers. Preferences are retained in this browser; they are not shared with other users or devices.
+
+Small bridge bumps mark perpendicular crossings without a connection. Shared ports, touching endpoints, and collinear paths are not given bridge bumps. Connections remain defined by the streams' source and target units. Crossing bridges update as units move, and hidden lines do not leave bridges on visible lines.
+
 ## Published models and working drafts
 
 **Published model** and **Model editor** are separate views, available above the workbench and in the hamburger menu. Their URLs retain the selected model and view. The published page lists only active publications and provides a read-only diagram with pan, zoom, Fit, result inspection, and permitted reconciliation. Model editor holds the editable draft, measurements, toolbox, and draft test results.

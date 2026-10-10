@@ -6,6 +6,7 @@ import { connectWorkspace } from './workspace-api.js';
 import { createAdmin } from './admin.js';
 import { UNIT_SYMBOLS, appendUnitSymbol } from './unit-symbols.js';
 import { getPublishedUnitSummary } from './published-results.js';
+import { createLineVisibility } from './line-visibility.js';
 
 const $ = (s, root = document) => root.querySelector(s);
 const $$ = (s, root = document) => [...root.querySelectorAll(s)];
@@ -38,6 +39,7 @@ buildPalette();
 let model = emptyModel(), results = null, selection = null, activeTab = 'model', mode = 'select', editingStream = null, editingNode = null, confirmAction = null, toastTimer, admin = null, runningWorkbench = false, viewMode = 'editing', activeRun = null;
 const modelSessions = new Map();
 const backend = await connectWorkspace(toast);
+const lineVisibility = createLineVisibility();
 const initialPage = new URL(location.href);
 if (backend.workspace.catalog.models.some(entry => entry.id === initialPage.searchParams.get('model'))) backend.select(initialPage.searchParams.get('model'));
 const management = createManagement({ backend, fallbackModel: model, beforeAction: () => { admin?.leave(); flushVisibleDraft(); }, onActivate: activateManagedModel, onRun: acceptManagedRun, onNewModel: () => replaceModel(emptyModel()), onToast: toast, onAccessChange: reason => { if (viewMode === 'published' && ['refresh', 'publication', 'run'].includes(reason)) refreshPublishedModel(); refreshChrome(); }, onReview: record => { acceptManagedRun(record); switchTab('results'); } });
@@ -103,6 +105,51 @@ function refreshChrome() {
   else if (exists && permission.editLocked) $('#canvas-status').textContent = 'Editing is locked by an administrator. You can still review and run this model if permitted.';
   else if (exists && !editable) $('#canvas-status').textContent = 'Read-only model. Your assigned permissions control editing and reconciliation.';
   refreshPageChrome();
+  syncLineVisibility();
+}
+function syncLineVisibility() {
+  const entry = currentEntry();
+  const streams = [...model.streams, ...(entry?.model.streams || []), ...(entry?.publishedModel?.streams || [])];
+  lineVisibility.scope(backend.user.id, editingModelId, streams);
+  editor.setLineVisibility(lineVisibility.snapshot());
+  renderLineMenu();
+}
+function renderLineMenu() {
+  const focusedId = document.activeElement?.dataset?.lineVisibility;
+  const { hiddenIds, showHidden } = lineVisibility.snapshot(), hidden = new Set(hiddenIds);
+  const count = model.streams.filter(stream => hidden.has(stream.id)).length;
+  $('#line-hidden-count').textContent = count ? `${count} hidden` : '';
+  $('#line-hidden-count').hidden = !count;
+  $('#show-hidden-lines').checked = showHidden;
+  $('#show-hidden-lines').disabled = !count;
+  $('#restore-all-lines').disabled = !count;
+  $('#line-visibility-status').textContent = count ? `${count} hidden line${count === 1 ? '' : 's'}${showHidden ? ' currently revealed' : ''}.` : 'All lines are visible.';
+  $('#line-visibility-list').innerHTML = model.streams.map(stream => {
+    const source = model.nodes.find(node => node.id === stream.source), target = model.nodes.find(node => node.id === stream.target);
+    return `<label class="line-visibility-row"><input type="checkbox" data-line-visibility="${esc(stream.id)}" aria-label="Show ${esc(stream.name)}" ${hidden.has(stream.id) ? '' : 'checked'}><span><strong>${esc(stream.name)}</strong><small>${esc(source?.name)} → ${esc(target?.name)}</small></span><span class="line-visibility-state">${hidden.has(stream.id) ? 'Hidden' : 'Visible'}</span></label>`;
+  }).join('') || '<p class="helper line-menu-empty">No flow lines in this model yet.</p>';
+  $$('[data-line-visibility]').forEach(input => input.onchange = () => {
+    input.checked ? lineVisibility.show(input.dataset.lineVisibility) : lineVisibility.hide(input.dataset.lineVisibility);
+    applyLineVisibility();
+  });
+  if (focusedId && $('#lines-menu').open) $$('[data-line-visibility]').find(input => input.dataset.lineVisibility === focusedId)?.focus({ preventScroll: true });
+}
+function applyLineVisibility() {
+  editor.setLineVisibility(lineVisibility.snapshot()); renderLineMenu(); renderInspector();
+}
+function hideLine(id) {
+  const stream = model.streams.find(item => item.id === id); if (!stream) return;
+  lineVisibility.hide(id); lineVisibility.setShowHidden(false);
+  editor.select('stream', ''); applyLineVisibility();
+  toast(`${stream.name} hidden. Open Lines to show it again. It still participates in reconciliation.`);
+}
+function openStreamActions(id) {
+  if (canEdit()) { openStream(id); return; }
+  const stream = model.streams.find(item => item.id === id); if (!stream) return;
+  $('#stream-actions-title').textContent = stream.name;
+  $('#stream-actions-description').textContent = `${model.nodes.find(node => node.id === stream.source)?.name} → ${model.nodes.find(node => node.id === stream.target)?.name}`;
+  $('#context-hide-line').onclick = () => { $('#stream-actions-dialog').close(); hideLine(id); };
+  $('#stream-actions-dialog').showModal();
 }
 function canEdit() { return viewMode === 'editing' && Boolean(backend.permission(editingModelId).canEdit); }
 function canCreate() { return ['admin', 'editor'].includes(backend.user.role); }
@@ -188,10 +235,24 @@ const editor = createEditor({
   svg: $('#flowsheet'), onChange: commit,
   onSelect: s => { selection = s; renderInspector(); },
   onEditStream: openStream, onEditNode: openNode,
+  onStreamContext: openStreamActions,
   onStatus: message => { $('#canvas-status').textContent = message; }
 });
 editor.setPresentation(viewMode === 'published' ? 'published' : 'editing');
 editor.setModel(model); refreshChrome(); renderInspector();
+$('#show-hidden-lines').onchange = event => { lineVisibility.setShowHidden(event.target.checked); applyLineVisibility(); };
+$('#restore-all-lines').onclick = () => { lineVisibility.showAll(); applyLineVisibility(); toast('All flow lines restored.'); };
+document.addEventListener('click', event => { if (!$('#lines-menu').contains(event.target)) $('#lines-menu').open = false; });
+$('#lines-menu').addEventListener('keydown', event => { if (event.key === 'Escape') { event.preventDefault(); event.stopPropagation(); $('#lines-menu').open = false; $('#lines-menu > summary').focus(); } });
+function positionLineMenu() {
+  if (!$('#lines-menu').open) return;
+  const panel = $('.lines-menu-panel'), group = $('.canvas-view-tools').getBoundingClientRect();
+  panel.style.right = `${Math.max(0, group.right - document.documentElement.clientWidth + 12)}px`;
+  panel.style.maxWidth = `${Math.max(180, document.documentElement.clientWidth - 32)}px`;
+  panel.style.maxHeight = `${Math.max(220, window.innerHeight - panel.getBoundingClientRect().top - 16)}px`;
+}
+$('#lines-menu').addEventListener('toggle', positionLineMenu);
+window.addEventListener('resize', positionLineMenu);
 admin = createAdmin({ api: backend.api, getUser: () => backend.user, beforeOpen: async () => { flushVisibleDraft(); await backend.flush(); management.leave(); }, onChange: () => backend.refresh(), onBack: () => switchTab('model'), onToast: toast });
 $('#empty-new-model').onclick = () => replaceModel(emptyModel());
 $('#menu-refresh-workspace').onclick = () => askReplace('Reload workspace and discard unsaved changes?', async () => {
@@ -239,7 +300,7 @@ function travel(delta) {
 }
 $('#undo-button').onclick = () => travel(-1); $('#redo-button').onclick = () => travel(1);
 document.addEventListener('keydown', event => {
-  if (event.target.closest('input,textarea,select,[contenteditable="true"]') || $('dialog[open]')) return;
+  if (event.target.closest('input,textarea,select,details,[contenteditable="true"]') || $('dialog[open]')) return;
   if (management.isOpen || admin?.isOpen) return;
   if ((event.ctrlKey || event.metaKey) && event.key.toLowerCase() === 'z') { event.preventDefault(); travel(event.shiftKey ? 1 : -1); return; }
   if (event.ctrlKey || event.metaKey || event.altKey || activeTab !== 'model') return;
@@ -316,6 +377,12 @@ function renderInspector() {
     const source = model.nodes.find(n => n.id === stream.source), target = model.nodes.find(n => n.id === stream.target); const rec = results?.streams.find(s => s.id === stream.id);
     $('#inspector').innerHTML = `<p class="eyebrow">SELECTED STREAM</p><h2>${esc(stream.name)}</h2><p class="connection-mini">${esc(source?.name)}<br><span>↓</span><br>${esc(target?.name)}</p><span class="pill">${stream.measured ? 'Ⓜ Measured' : 'Unmetered'}</span><dl class="properties-list"><dt>Material</dt><dd>${esc(stream.material)}</dd><dt>Phase</dt><dd>${esc(stream.phase)}</dd><dt>Density</dt><dd>${fmt(Number(stream.density))} kg/m³</dd><dt>Reading</dt><dd>${stream.measured ? `${stream.value === '' ? 'Not entered' : esc(stream.value)} ${esc(stream.unit)}` : 'To be inferred'}</dd>${rec ? `<dt>Reconciled</dt><dd>${fmt(rec.value)} kg</dd>` : ''}</dl><button class="button secondary full-width" id="inspect-edit-stream">Edit stream & meter</button><button class="text-button danger" id="inspect-delete">Delete selection</button>`;
     $('#inspect-edit-stream').onclick = () => openStream(stream.id);
+    const hide = document.createElement('button'); hide.type = 'button'; hide.className = 'button secondary full-width'; hide.id = 'inspect-line-visibility';
+    const hidden = lineVisibility.snapshot().hiddenIds.includes(stream.id);
+    hide.textContent = hidden ? 'Restore line' : 'Hide line';
+    hide.onclick = () => { if (hidden) { lineVisibility.show(stream.id); applyLineVisibility(); } else hideLine(stream.id); };
+    $('#inspect-edit-stream').before(hide);
+    const note = document.createElement('p'); note.className = 'helper'; note.textContent = 'Line visibility changes your diagram view only. Hidden streams remain in the mass balance.'; hide.after(note);
   } else {
     $('#inspector').innerHTML = `<p class="eyebrow">A CLEARER PICTURE</p><h2>Every stream.<br>One balance.</h2><p class="helper">Build the physical model, add what you measure, then let conservation connect the dots.</p><ol class="mini-steps"><li><strong>Place units</strong><span>Drag from the toolbox.</span></li><li><strong>Connect flows</strong><span>Drag between connection ports.</span></li><li><strong>Add measurements</strong><span>Right-click a stream to add a meter.</span></li><li><strong>Enter data & run</strong><span>Review adjustments and inferred flows.</span></li></ol><div class="inspector-callout"><span class="boundary-glyph">▶</span><p>Red triangles mark where material enters and leaves your model.</p></div><button class="button secondary full-width" id="inspect-guide">Open quick guide</button><div class="scope-note">Workspace autosave is enabled.<br><span>Export a file for a portable copy.</span></div>`;
     $('#inspect-guide').onclick = () => $('#help-dialog').showModal();
@@ -359,6 +426,7 @@ streamForm.addEventListener('submit', event => {
   Object.assign(current,next); $('#stream-dialog').close(); editor.setModel(model); commit(); if (activeTab === 'data') renderData(); toast(`${next.name} saved${next.measured ? ' · meter added' : ''}.`);
 });
 $('#delete-stream').onclick = () => { editor.select('stream',editingStream); editor.deleteSelection(); $('#stream-dialog').close(); if (activeTab === 'data') renderData(); };
+$('#hide-stream-line').onclick = () => { $('#stream-dialog').close(); hideLine(editingStream); };
 function updateNodeNote() {
   const kind = $('#node-form').elements.kind.value;
   $('#node-note').textContent = isBoundary(kind) ? 'Red triangles mark the model boundary. Its inflow or outflow direction stays fixed.' : `${UNIT_SYMBOLS[kind].description.replace(/\.$/, '')}. The symbol describes this unit; all incoming mass equals all outgoing mass, with no storage or equipment-specific equations. Changing a symbol keeps its connections and readings.`;

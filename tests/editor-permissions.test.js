@@ -10,7 +10,7 @@ const EQUIPMENT = ['process', 'mixer', 'splitter', 'pump', 'compressor', 'valve'
 
 // Exercise the editor's real event handlers with a small SVG surface. Geometry
 // and browser hit testing remain covered by the browser checks.
-function setup(t, allowed = false, model = exampleModel()) {
+function setup(t, allowed = false, model = exampleModel(), options = {}) {
   const originals = new Map(['document', 'ResizeObserver'].map(key => [key, Object.getOwnPropertyDescriptor(globalThis, key)]));
   const state = { allowed, changes: 0, edits: [], statuses: [], selected: null };
   let document;
@@ -41,7 +41,7 @@ function setup(t, allowed = false, model = exampleModel()) {
   document = { activeElement: null, createElementNS: (_ns, tag) => new Element(tag), elementFromPoint: () => state.hit ?? null };
   Object.defineProperty(globalThis, 'document', { configurable: true, value: document });
   Object.defineProperty(globalThis, 'ResizeObserver', { configurable: true, value: class { observe() {} disconnect() {} } });
-  const editor = createEditor({ svg, canEdit: () => state.allowed, onChange: () => state.changes++, onSelect: item => { state.selected = item; }, onEditNode: id => state.edits.push(['node', id]), onEditStream: id => state.edits.push(['stream', id]), onStatus: message => state.statuses.push(message) });
+  const editor = createEditor({ svg, canEdit: () => state.allowed, onChange: () => state.changes++, onSelect: item => { state.selected = item; }, onEditNode: id => state.edits.push(['node', id]), onEditStream: id => state.edits.push(['stream', id]), onStatus: message => state.statuses.push(message), ...options });
   editor.setModel(model);
   t.after(() => {
     editor.destroy();
@@ -67,6 +67,69 @@ test('read-only editor blocks public mutations, keyboard movement, and palette d
   assert.deepEqual(model, original);
   assert.equal(state.changes, 0);
   assert.ok(state.statuses.includes('This model is read-only or locked.'));
+});
+
+test('read-only visibility omits complete stream groups and reveals them without changing the model', t => {
+  const { state, svg, editor, model, stream } = setup(t);
+  const original = structuredClone(model);
+  editor.select('stream', 'f1');
+  editor.setLineVisibility({ hiddenIds: ['f1'], showHidden: false });
+  assert.equal(stream('f1'), undefined);
+  assert.equal(editor.getSelection(), null);
+  assert.equal(state.selected, null);
+  assert.equal(svg.querySelectorAll('[data-stream-id]').length, model.streams.length - 1);
+  assert.equal(svg.querySelectorAll('[font-size]').some(item => item.textContent === model.streams[0].name), false);
+  editor.setLineVisibility({ hiddenIds: new Set(['f1']), showHidden: true });
+  assert.match(stream('f1').getAttribute('class'), /is-hidden-revealed/);
+  assert.match(stream('f1').getAttribute('aria-label'), /Hidden line, temporarily revealed/);
+  assert.equal(svg.querySelectorAll('[data-stream-id]').length, model.streams.length);
+  editor.setLineVisibility({ hiddenIds: [], showHidden: false });
+  assert.doesNotMatch(stream('f1').getAttribute('class'), /is-hidden-revealed/);
+  assert.deepEqual(model, original);
+  assert.equal(state.changes, 0);
+  assert.deepEqual(state.edits, []);
+});
+
+test('hidden lines retain their mass in published unit summaries', t => {
+  const { state, svg, editor, model, stream, node } = setup(t);
+  editor.setPresentation('published');
+  editor.setResults(reconcile(model));
+  const originalSummary = node('mix').getAttribute('aria-label');
+  editor.setLineVisibility({ hiddenIds: ['f1', 'f2'], showHidden: false });
+  assert.equal(stream('f1'), undefined);
+  assert.equal(stream('f2'), undefined);
+  assert.equal(node('mix').getAttribute('aria-label'), originalSummary);
+  assert.match(originalSummary, /99\.444/);
+  assert.ok(svg.querySelectorAll('[font-size]').some(item => item.textContent === 'In 99.444'));
+  assert.equal(state.changes, 0);
+});
+
+test('fit excludes hidden detours and restores their extent when revealed', t => {
+  const model = exampleModel();
+  for (let index = 0; index < 8; index++) model.streams.push({ ...model.streams[0], id: `detour-${index}`, name: `Detour ${index}`, source: 'split', target: 'mix' });
+  const { editor, svg } = setup(t, false, model);
+  const transform = () => svg.children.find(item => item.getAttribute('class') === 'flow-world').getAttribute('transform');
+  editor.fit();
+  const withDetours = transform();
+  const hiddenIds = model.streams.filter(stream => stream.id.startsWith('detour-')).map(stream => stream.id);
+  editor.setLineVisibility({ hiddenIds });
+  editor.fit();
+  assert.notEqual(transform(), withDetours);
+  editor.setLineVisibility({ hiddenIds, showHidden: true });
+  editor.fit();
+  assert.equal(transform(), withDetours);
+});
+
+test('read-only right click opens the optional stream menu without opening an editor', t => {
+  const contexts = [];
+  const { state, svg, stream } = setup(t, false, exampleModel(), { onStreamContext: (id, event) => contexts.push({ id, x: event.clientX, y: event.clientY }) });
+  let prevented = false;
+  svg.fire('contextmenu', { target: stream('f1'), clientX: 210, clientY: 245, preventDefault() { prevented = true; } });
+  assert.equal(prevented, true);
+  assert.deepEqual(contexts, [{ id: 'f1', x: 210, y: 245 }]);
+  assert.deepEqual(state.selected, { kind: 'stream', id: 'f1' });
+  assert.deepEqual(state.edits, []);
+  assert.equal(state.changes, 0);
 });
 
 test('read-only node selection remains available without starting a move', t => {
@@ -197,15 +260,26 @@ test('palette drops add each equipment kind with reachable input and output port
 test('moving equipment keeps existing routes attached and drag previews connect from the visible output port', t => {
   const f = setup(t, true, equipmentModel());
   const route = id => f.stream(id).children.find(item => item.tag === 'path').getAttribute('d');
+  const endpoint = path => {
+    let x, y;
+    for (const [, command, values] of path.matchAll(/([MHVA]) ([^MHVA]+)/g)) {
+      const numbers = values.trim().split(/\s+/).map(Number);
+      if (command === 'M') [x, y] = numbers;
+      if (command === 'H') [x] = numbers;
+      if (command === 'V') [y] = numbers;
+      if (command === 'A') [x, y] = numbers.slice(-2);
+    }
+    return { x, y };
+  };
   for (const kind of EQUIPMENT) {
     const unit = f.model.nodes.find(node => node.id === kind), originalY = unit.y;
     assert.ok(route(`input-${kind}`).startsWith('M 127 200 '));
-    assert.ok(route(`input-${kind}`).endsWith(`V ${originalY} H 294`));
+    assert.deepEqual(endpoint(route(`input-${kind}`)), { x: 294, y: originalY });
     f.svg.fire('pointerdown', { target: f.node(kind), clientX: 350, clientY: originalY });
     f.svg.fire('pointermove', { clientX: 410, clientY: originalY + 30 });
     f.svg.fire('pointerup', { clientX: 410, clientY: originalY + 30 });
     assert.equal(unit.x, 410); assert.equal(unit.y, originalY + 30);
-    assert.ok(route(`input-${kind}`).endsWith(`V ${unit.y} H 354`), `${kind} input stream follows a moved symbol`);
+    assert.deepEqual(endpoint(route(`input-${kind}`)), { x: 354, y: unit.y }, `${kind} input stream follows a moved symbol`);
     f.svg.fire('pointerdown', { target: f.port(kind), clientX: 466, clientY: unit.y });
     f.svg.fire('pointermove', { clientX: 773, clientY: 200 });
     const world = f.svg.children.find(item => item.getAttribute('class') === 'flow-world');
@@ -216,7 +290,7 @@ test('moving equipment keeps existing routes attached and drag previews connect 
     const connected = f.model.streams.at(-1);
     assert.equal(connected.source, kind); assert.equal(connected.target, 'exit');
     assert.ok(route(connected.id).startsWith(`M 466 ${unit.y} `));
-    assert.ok(route(connected.id).endsWith('V 200 H 773'));
+    assert.deepEqual(endpoint(route(connected.id)), { x: 773, y: 200 });
   }
   assert.equal(f.state.changes, EQUIPMENT.length * 2);
 });

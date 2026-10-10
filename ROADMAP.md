@@ -68,15 +68,14 @@ Revision checks, run snapshots, and separate working drafts and published snapsh
 
 ## 8. Line-crossing bridges
 
-- Draw small bridge bumps where flow lines cross without connecting.
-- Distinguish geometric crossings from shared endpoints and actual connections, including during dragging, zooming, and automatic routing.
-- Keep connection behavior independent of the line's visual crossing treatment.
+- Implemented: small bridge bumps at perpendicular crossings without a connection, updated during dragging, zooming, and automatic routing.
+- Shared ports, touching endpoints, and collinear paths do not receive crossing bridges. Connection behavior remains independent of visual crossing treatment.
 
 ## 9. Hide flow lines
 
-- Hide individual streams or groups of lines to simplify a diagram and provide a clear way to show them again.
-- Preserve hidden streams in the model, measurements, reconciliation, and exports; visibility must not change the mass balance.
-- Indicate that the current view contains hidden lines and retain visibility settings with the model.
+- Implemented: hide individual streams in the inspector or right-click actions. The **Lines** menu restores individual lines or all lines and provides a **Show hidden lines** toggle for temporary reveal.
+- Hidden streams remain in the model, measurements, reconciliation, and exports. Visibility never changes the mass balance or published version.
+- Hidden counts and individual visibility are shown in the menu. Preferences are personal per account/model in the current browser, across editor and published views; shared visibility presets and groups remain future work.
 
 ## 10. Import a model from CSV connections
 
