@@ -2,6 +2,14 @@
 
 Build and operate models with the MassFlow web interface. For installation, see the [internal-server guide](self-hosting.md); for a first reconciliation, follow the [quickstart](../README.md#quickstart).
 
+## Choose a model
+
+Open **☰ → Published models** for a card gallery of active publications, or **☰ → Edit models** for available working drafts. Cards show a preview of their own flowsheet, unit/stream/meter counts, publication state, and editing access. Search by model name to narrow the list.
+
+Select a card to open its published diagram or draft editor. Draft cards use **Edit draft** when editing is permitted and **View draft** for read-only or locked access. A published card always previews the published snapshot, even when its draft has changed. **All published models** or **All draft models** above an open diagram returns to that gallery. Direct model links continue to open the selected diagram.
+
+Use **New model** in the editing gallery to create a draft if your account is an editor or administrator. **Model Management** remains the place for scheduling, duplication, publication, and other model settings.
+
 ## Build and reconcile a model
 
 1. Sign in and open an assigned model, or create one with an editor/administrator account. Drag a pump, valve, heat exchanger, or another process-unit symbol from the toolbox onto the canvas. Click-to-add is also available. Add red inflow/outflow triangles for every external material path.

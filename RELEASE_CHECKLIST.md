@@ -127,6 +127,11 @@ Local evidence on 2026-10-10: the final `npm test` suite passed **289 tests**, i
 
 ## Hidden lines and diagram usability
 
+Gallery verification on 2026-10-10: `npm test` passed **467 tests**, including 13 gallery tests covering snapshot isolation, access filtering, search, safe names, read-only cards, pending-click guards, failures/retry, and withdrawn publications. Typecheck and the hosted production build passed. Local browser checks covered hamburger galleries, keyboard opening, search/clear, model selection, draft autosave and per-model undo, publication separation, new-model creation, and cards at 390px without horizontal overflow. Live deployment checks remain a release step.
+
+- [ ] Open **Published models** and **Edit models** from the hamburger menu. Verify card previews/names use the correct publication/draft snapshot; only accessible models appear, and inactive publications are omitted. Test search and empty states.
+- [ ] Select cards to open the correct model, return through **All published models / All draft models**, and reopen gallery/model URLs. Check draft saves, per-model undo history, and published results remain separate when switching. A failed save must preserve the current work rather than opening another model.
+- [ ] Check viewer/operator and locked-model cards offer read-only draft viewing; permission removal or unpublishing while the gallery is open must prevent stale actions. Check keyboard selection, focus, duplicate-click prevention, and responsive cards at narrow widths.
 - [ ] Hide a line from its inspector and context menu. **Hidden lines** must list only hidden streams with their endpoints and a **Restore** button; visible streams must not appear in that list.
 - [ ] Restore one line, use **Restore all**, and confirm the empty state reads clearly. Toggle **Show hidden lines** to reveal hidden streams temporarily without clearing their hidden preference.
 - [ ] Repeat in the read-only published view. Confirm hiding/restoring does not edit the model, change its publication version, invalidate results, or remove streams from reconciliation or exports.

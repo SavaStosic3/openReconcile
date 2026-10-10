@@ -18,6 +18,7 @@ import { createAuditHistory } from './audit-ui.js';
 import { isStorageNode } from './inventory.js';
 import { INVENTORY_UNITS, fillInventoryForm, inventoryFromForm, inventoryMassHtml, inventoryRowsHtml, inventoryResultsHtml } from './storage-ui.js';
 import { storageShowcaseModel, resetStorageShowcaseReadings } from './storage-showcase-model.js';
+import { createModelGallery } from './model-gallery.js';
 
 const $ = (s, root = document) => root.querySelector(s);
 const $$ = (s, root = document) => [...root.querySelectorAll(s)];
@@ -50,11 +51,12 @@ function buildPalette() {
 buildPalette();
 let model = emptyModel(), results = null, selection = null, activeTab = 'model', mode = 'select', editingStream = null, editingNode = null, confirmAction = null, toastTimer, admin = null, mappingPage = null, sqlPage = null, auditPage = null, periodSelector = null, runningWorkbench = false, viewMode = 'editing', activeRun = null;
 const modelSessions = new Map();
+let modelGallery = null, galleryNavigation = 0;
 const backend = await connectWorkspace(toast);
 const lineVisibility = createLineVisibility();
 const initialPage = new URL(location.href);
 if (backend.workspace.catalog.models.some(entry => entry.id === initialPage.searchParams.get('model'))) backend.select(initialPage.searchParams.get('model'));
-const management = createManagement({ backend, fallbackModel: model, beforeAction: () => { admin?.leave(); sqlPage?.leave(); auditPage?.leave(); flushVisibleDraft(); }, onActivate: activateManagedModel, onRun: acceptManagedRun, onNewModel: () => replaceModel(emptyModel()), onToast: toast, onAccessChange: reason => { if (viewMode === 'published' && ['refresh', 'publication', 'run', 'sources', 'schedule'].includes(reason)) refreshPublishedModel(); if (activeRun && !runMatchesInputSource(activeRun, backend.workspace.catalog.sources[editingModelId] || [], backend.workspace.catalog.schedules[editingModelId])) { activeRun = null; results = null; editor.setResults(null); if (activeTab === 'results') renderResults(); } refreshChrome(); }, onReview: record => { acceptManagedRun(record); switchTab('results'); } });
+const management = createManagement({ backend, fallbackModel: model, beforeAction: () => { galleryNavigation++; admin?.leave(); sqlPage?.leave(); auditPage?.leave(); flushVisibleDraft(); }, onActivate: activateManagedModel, onRun: acceptManagedRun, onNewModel: () => replaceModel(emptyModel()), onToast: toast, onAccessChange: reason => { if (viewMode === 'published' && ['refresh', 'publication', 'run', 'sources', 'schedule'].includes(reason)) refreshPublishedModel(); if (activeRun && !runMatchesInputSource(activeRun, backend.workspace.catalog.sources[editingModelId] || [], backend.workspace.catalog.schedules[editingModelId])) { activeRun = null; results = null; editor.setResults(null); if (activeTab === 'results') renderResults(); } refreshChrome(); }, onReview: record => { acceptManagedRun(record); switchTab('results'); } });
 viewMode = initialPage.searchParams.get('view') === 'editing' ? 'editing' : initialPage.searchParams.get('view') === 'published' || backend.permission(management.activeId).published ? 'published' : 'editing';
 model = clone(viewMode === 'published' ? backend.permission(management.activeId).published && management.current().publishedModel || emptyModel() : management.current().model);
 let editingModelId = management.activeId;
@@ -91,7 +93,7 @@ function refreshChrome() {
   $('#canvas-empty').classList.toggle('hidden', model.nodes.length > 0);
   const permission = backend.permission(editingModelId), editable = canEdit(), exists = Boolean(editingModelId);
   $('#undo-button').disabled = !editable || historyIndex === 0; $('#redo-button').disabled = !editable || historyIndex >= history.length - 1;
-  $('#model-name').disabled = !editable || management.isOpen || Boolean(admin?.isOpen) || Boolean(sqlPage?.isOpen) || Boolean(auditPage?.isOpen);
+  $('#model-name').disabled = !editable || management.isOpen || Boolean(modelGallery?.isOpen) || Boolean(admin?.isOpen) || Boolean(sqlPage?.isOpen) || Boolean(auditPage?.isOpen);
   const available = viewMode !== 'published' || hasPublishedModel();
   periodSelector?.setEnabled(permission.canView && available && !runningWorkbench);
   $('#run-button').disabled = !permission.canRun || !available || runningWorkbench; $('#data-run-button').disabled = !permission.canRun || runningWorkbench;
@@ -113,16 +115,17 @@ function refreshChrome() {
   $('#management-role-label').textContent = backend.user.role === 'admin' ? 'Administrator' : backend.user.role;
   if (!exists) $('#save-state').textContent = 'No model selected';
   else $('#save-state').textContent = backend.hasFailedSave ? 'Not saved · export your draft' : backend.hasPending ? 'Saving to workspace…' : 'Saved to workspace';
-  $('#workspace-empty').hidden = exists || management.isOpen || Boolean(admin?.isOpen) || Boolean(sqlPage?.isOpen) || Boolean(auditPage?.isOpen);
+  $('#workspace-empty').hidden = exists || management.isOpen || Boolean(modelGallery?.isOpen) || Boolean(admin?.isOpen) || Boolean(sqlPage?.isOpen) || Boolean(auditPage?.isOpen);
   $('#workspace-empty').classList.toggle('hidden', $('#workspace-empty').hidden);
   $('#workspace-empty-message').textContent = canCreate() ? 'Create a model, start from a template, or import an existing model.' : 'Ask your administrator for model access. Assigned models will appear here.';
   $('#empty-new-model').hidden = !canCreate(); $('#empty-import-legacy').hidden = !canCreate();
   $$('.tab').forEach(button => button.disabled = !exists);
-  if ((!exists || !available) && !management.isOpen && !admin?.isOpen && !sqlPage?.isOpen && !auditPage?.isOpen) $$('[role="tabpanel"]').forEach(view => view.classList.add('hidden'));
+  if ((!exists || !available) && !management.isOpen && !modelGallery?.isOpen && !admin?.isOpen && !sqlPage?.isOpen && !auditPage?.isOpen) $$('[role="tabpanel"]').forEach(view => view.classList.add('hidden'));
   if (viewMode === 'published') $('#canvas-status').textContent = 'Published diagram · mass values in kg per reporting period. Select a unit or stream to inspect its results.';
   else if (exists && permission.editLocked) $('#canvas-status').textContent = 'Editing is locked by an administrator. You can still review and run this model if permitted.';
   else if (exists && !editable) $('#canvas-status').textContent = 'Read-only model. Your assigned permissions control editing and reconciliation.';
   refreshPageChrome();
+  modelGallery?.render();
   syncLineVisibility();
   if (activeTab === 'mapping') mappingPage?.render();
   $('#menu-data-mapping').disabled = !exists;
@@ -189,7 +192,7 @@ function runResult(record) {
   return record.result || { status: 'invalid', message: record.error || 'This run could not be completed.', streams: [], balances: [], warnings: [], objective: null, degreesOfFreedom: 0 };
 }
 function refreshPageChrome() {
-  const published = viewMode === 'published', pageOpen = !management.isOpen && !admin?.isOpen && !sqlPage?.isOpen && !auditPage?.isOpen;
+  const published = viewMode === 'published', pageOpen = !management.isOpen && !modelGallery?.isOpen && !admin?.isOpen && !sqlPage?.isOpen && !auditPage?.isOpen;
   const entry = currentEntry(), permission = backend.permission(editingModelId), available = hasPublishedModel();
   document.body.classList.toggle('is-published', published);
   $('#model-view-switch').hidden = !pageOpen;
@@ -204,6 +207,7 @@ function refreshPageChrome() {
   $('#open-editing-view').setAttribute('aria-pressed', String(!published));
   $('#open-published-view').classList.toggle('active', published);
   $('#open-editing-view').classList.toggle('active', !published);
+  $('#open-model-gallery').textContent = published ? 'All published models' : 'All draft models';
   $('#tab-data').hidden = published;
   $('.template-menu').hidden = published;
   if (published) $('.template-menu').open = false;
@@ -252,6 +256,21 @@ async function openPage(view, id = editingModelId) {
   if (view === 'published' && !backend.permission(id).published) id = backend.workspace.catalog.models.find(entry => backend.permission(entry.id).published && entry.publishedModel)?.id || id;
   await management.activate(id, { view });
 }
+function leaveGallery() { galleryNavigation++; modelGallery?.leave(); }
+async function openGallery(view) {
+  const request = ++galleryNavigation;
+  $('#app-menu').hidden = true; $('#menu-button').setAttribute('aria-expanded', 'false');
+  try {
+    flushVisibleDraft(); await backend.flush(); await backend.refresh();
+    if (request !== galleryNavigation) return;
+    admin?.leave(); sqlPage?.leave(); auditPage?.leave(); management.leave();
+    $$('[role="tabpanel"]').forEach(panel => panel.classList.add('hidden'));
+    modelGallery.open(view); refreshChrome();
+    const url = new URL(location.href);
+    url.searchParams.set('view', view === 'published' ? 'published-models' : 'editing-models');
+    url.searchParams.delete('model'); window.history.replaceState({}, '', url);
+  } catch (error) { toast(error.message || 'The model list could not be opened.'); }
+}
 async function publishDraft() {
   if (!canEdit()) return;
   const id = editingModelId;
@@ -276,7 +295,7 @@ periodSelector = createPeriodSelector({ container: $('#reporting-period'), prefi
   activeRun = management.latest(editingModelId, { target: viewMode === 'published' ? 'published' : 'draft', period: periodSelector.selected });
   results = runResult(activeRun); editor.setResults(results); renderInspector(); refreshChrome(); if (activeTab === 'results') renderResults();
 } });
-setInterval(() => { if (!document.hidden && !management.isOpen && !admin?.isOpen && !sqlPage?.isOpen && !auditPage?.isOpen) refreshChrome(); }, 30_000);
+setInterval(() => { if (!document.hidden && !management.isOpen && !modelGallery?.isOpen && !admin?.isOpen && !sqlPage?.isOpen && !auditPage?.isOpen) refreshChrome(); }, 30_000);
 $('#show-hidden-lines').onchange = event => { lineVisibility.setShowHidden(event.target.checked); applyLineVisibility(); };
 $('#restore-all-lines').onclick = () => { lineVisibility.showAll(); applyLineVisibility(); $('#lines-menu > summary').focus({ preventScroll: true }); toast('All flow lines restored.'); };
 document.addEventListener('click', event => { if (!event.composedPath().includes($('#lines-menu'))) $('#lines-menu').open = false; });
@@ -290,9 +309,21 @@ function positionLineMenu() {
 }
 $('#lines-menu').addEventListener('toggle', positionLineMenu);
 window.addEventListener('resize', positionLineMenu);
-admin = createAdmin({ api: backend.api, getUser: () => backend.user, beforeOpen: async () => { auditPage?.leave(); sqlPage?.leave(); flushVisibleDraft(); await backend.flush(); management.leave(); }, onChange: () => backend.refresh(), onBack: () => switchTab('model'), onToast: toast });
-sqlPage = createSqlConnectors({ backend, beforeOpen: async () => { auditPage?.leave(); flushVisibleDraft(); await backend.flush(); management.leave(); admin?.leave(); }, onBack: () => switchTab('model'), onMapping: async id => { if (id) await management.activate(id, { view: 'editing' }); switchTab('mapping'); }, onManagement: async id => { if (id) await management.activate(id, { view: 'editing' }); management.open(); }, onChange: refreshChrome, onToast: toast });
-auditPage = createAuditHistory({ backend, beforeOpen: async () => { flushVisibleDraft(); await backend.flush(); management.leave(); admin?.leave(); sqlPage?.leave(); }, onBack: () => switchTab('model'), onChange: refreshChrome, onToast: toast });
+admin = createAdmin({ api: backend.api, getUser: () => backend.user, beforeOpen: async () => { galleryNavigation++; auditPage?.leave(); sqlPage?.leave(); flushVisibleDraft(); await backend.flush(); leaveGallery(); management.leave(); }, onChange: () => backend.refresh(), onBack: () => switchTab('model'), onToast: toast });
+sqlPage = createSqlConnectors({ backend, beforeOpen: async () => { galleryNavigation++; auditPage?.leave(); flushVisibleDraft(); await backend.flush(); leaveGallery(); management.leave(); admin?.leave(); }, onBack: () => switchTab('model'), onMapping: async id => { if (id) await management.activate(id, { view: 'editing' }); switchTab('mapping'); }, onManagement: async id => { if (id) await management.activate(id, { view: 'editing' }); management.open(); }, onChange: refreshChrome, onToast: toast });
+auditPage = createAuditHistory({ backend, beforeOpen: async () => { galleryNavigation++; flushVisibleDraft(); await backend.flush(); leaveGallery(); management.leave(); admin?.leave(); sqlPage?.leave(); }, onBack: () => switchTab('model'), onChange: refreshChrome, onToast: toast });
+modelGallery = createModelGallery({ backend, onToast: toast, onCreate: () => management.create(emptyModel()), onOpen: async (view, id) => {
+  const request = galleryNavigation;
+  await backend.refresh();
+  if (request !== galleryNavigation || !modelGallery.isOpen || modelGallery.view !== view) return false;
+  const entry = backend.workspace.catalog.models.find(item => item.id === id), permission = backend.permission(id);
+  if (!entry || !permission.canView) throw new Error('This model is no longer available to your account.');
+  if (view === 'published' && (!permission.published || !entry.publishedModel)) throw new Error('This model no longer has an active publication.');
+  return management.activate(id, { view });
+} });
+const openManagementPage = $('#menu-model-management').onclick;
+$('#menu-model-management').onclick = async () => { await openManagementPage(); if (management.isOpen) { leaveGallery(); refreshChrome(); } };
+$('#menu-workbench').onclick = () => openGallery('editing');
 $('#empty-new-model').onclick = () => replaceModel(emptyModel());
 $('#menu-refresh-workspace').onclick = () => askReplace('Reload workspace and discard unsaved changes?', async () => {
   try { await backend.refresh({ discardDrafts: true }); activateManagedModel(management.current()); toast('Workspace refreshed.'); }
@@ -315,6 +346,7 @@ function switchTab(name) {
   sqlPage?.leave();
   auditPage?.leave();
   management.leave();
+  leaveGallery();
   activeTab = name;
   for (const button of $$('.tab')) { const active = button.dataset.tab === name; button.classList.toggle('active', active); button.setAttribute('aria-selected', String(active)); button.tabIndex = active ? 0 : -1; }
   for (const view of $$('[role="tabpanel"]')) view.classList.toggle('hidden', view.id !== `view-${name}`);
@@ -344,7 +376,7 @@ function travel(delta) {
 $('#undo-button').onclick = () => travel(-1); $('#redo-button').onclick = () => travel(1);
 document.addEventListener('keydown', event => {
   if (event.target.closest('input,textarea,select,details,[contenteditable="true"]') || $('dialog[open]')) return;
-  if (management.isOpen || admin?.isOpen || sqlPage?.isOpen || auditPage?.isOpen) return;
+  if (management.isOpen || modelGallery?.isOpen || admin?.isOpen || sqlPage?.isOpen || auditPage?.isOpen) return;
   if ((event.ctrlKey || event.metaKey) && event.key.toLowerCase() === 'z') { event.preventDefault(); travel(event.shiftKey ? 1 : -1); return; }
   if (event.ctrlKey || event.metaKey || event.altKey || activeTab !== 'model') return;
   if (event.key.toLowerCase() === 'v') setMode('select'); if (event.key.toLowerCase() === 'c') setMode('connect'); if (event.key.toLowerCase() === 'h') setMode('pan');
@@ -375,6 +407,7 @@ function flushVisibleDraft() {
   commit();
 }
 function activateManagedModel(entry, options = {}) {
+  leaveGallery();
   if (viewMode === 'editing') modelSessions.set(editingModelId, { history, historyIndex, results, activeRun, json: JSON.stringify(model) });
   mappingPage?.invalidate();
   viewMode = options.view || viewMode;
@@ -402,7 +435,8 @@ function acceptManagedRun(record) {
 function replaceModel(next) { if (!canCreate()) { toast('Your account cannot create models.'); return; } management.create(next); }
 $('#open-published-view').onclick = () => openPage('published');
 $('#open-editing-view').onclick = () => openPage('editing');
-$('#menu-published').onclick = () => openPage('published');
+$('#menu-published').onclick = () => openGallery('published');
+$('#open-model-gallery').onclick = () => openGallery(viewMode);
 $('#published-model-select').onchange = event => openPage('published', event.target.value);
 $('#view-live-button').onclick = () => openPage('published');
 $('#publish-draft-button').onclick = publishDraft;
@@ -710,7 +744,7 @@ async function run() {
     if (editingModelId === targetId && (viewMode === 'published' ? 'published' : 'draft') === target && sameRunInputs(model, snapshot) && runMatchesModelInputs(record, snapshot) && runMatchesInputSource(record, backend.workspace.catalog.sources[targetId] || [], backend.workspace.catalog.schedules[targetId]) && (target !== 'published' || record.publishedVersion === version)) {
       activeRun = record; results = runResult(record);
       periodSelector.select(record.reportingPeriod);
-      editor.setResults(results); switchTab(target === 'published' ? 'model' : 'results'); renderInspector(); editor.fit();
+      editor.setResults(results); if (!modelGallery?.isOpen) { switchTab(target === 'published' ? 'model' : 'results'); editor.fit(); } renderInspector();
     }
   }
   catch (error) { toast(error.message || 'The model could not be reconciled.'); }
@@ -753,4 +787,8 @@ function exportResults() {
   download(`${safeFilename()}-results.csv`, rows.map(row => row.map(cell).join(',')).join('\r\n'), 'text/csv;charset=utf-8');
 }
 activateManagedModel(management.current(), { view: viewMode });
+if (['published-models', 'editing-models'].includes(initialPage.searchParams.get('view')) || (!initialPage.searchParams.has('view') && !initialPage.searchParams.has('model'))) {
+  const initialGallery = initialPage.searchParams.get('view') === 'editing-models' ? 'editing' : initialPage.searchParams.get('view') === 'published-models' ? 'published' : backend.workspace.catalog.models.some(entry => backend.permission(entry.id).published && entry.publishedModel) ? 'published' : 'editing';
+  await openGallery(initialGallery);
+}
 requestAnimationFrame(() => editor.fit());

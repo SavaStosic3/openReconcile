@@ -33,6 +33,8 @@ function loginFixture(request) {
 test('sign-in return URLs retain model navigation and cannot redirect away from the workspace', () => {
   assert.equal(signInReturnUrl('https://app.example/?view=editing&model=model-1&signin=1'), '/?view=editing&model=model-1');
   assert.equal(signInReturnUrl('https://app.example/?view=published&model=model-1', true), '/?view=published&model=model-1&signin=1');
+  assert.equal(signInReturnUrl('https://app.example/?view=editing-models&signin=1'), '/?view=editing-models');
+  assert.equal(signInReturnUrl('https://app.example/?view=published-models', true), '/?view=published-models&signin=1');
   assert.equal(signInReturnUrl('https://app.example/evil?return_to=https://evil.example&model=https://evil.example&view=other'), '/');
 });
 

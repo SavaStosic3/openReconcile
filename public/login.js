@@ -11,7 +11,7 @@ export function signInReturnUrl(href, showSignIn = false) {
   const current = new URL(href, 'https://workspace.invalid');
   const next = new URL('/', current.origin);
   const view = current.searchParams.get('view'), model = current.searchParams.get('model');
-  if (['editing', 'published'].includes(view)) next.searchParams.set('view', view);
+  if (['editing', 'published', 'editing-models', 'published-models'].includes(view)) next.searchParams.set('view', view);
   if (model && /^[A-Za-z0-9_-]{1,100}$/.test(model)) next.searchParams.set('model', model);
   if (showSignIn) next.searchParams.set('signin', '1');
   return `${next.pathname}${next.search}`;

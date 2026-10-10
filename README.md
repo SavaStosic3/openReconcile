@@ -14,7 +14,7 @@ Build a plant flowsheet, reconcile measured and unmeasured material flows, and i
 
 | Capability | What you can do |
 | --- | --- |
-| **Visual process modeling** | Drag equipment symbols onto a canvas and connect their ports. Model pumps, valves, mixers, filters, tanks, and other units; use boundary triangles, crossing bridges, and hide/restore controls to keep diagrams readable. |
+| **Visual process modeling** | Choose a model from the published or editing gallery, then drag equipment symbols onto its canvas and connect their ports. Model pumps, valves, mixers, filters, tanks, and other units; use boundary triangles, crossing bridges, and hide/restore controls to keep diagrams readable. |
 | **Mass balance reconciliation** | Fit readings according to their uncertainty while enforcing conservation, nonnegative flows, and optional tank capacities. Infer quantities where the available evidence uniquely determines them and flag unresolved quantities. |
 | **Physical and virtual meters** | Enter readings with units and uncertainty, or calculate a virtual reading with arithmetic and references such as `[RAW FEED] + [WASH WATER]`. Shared-reference uncertainty is propagated into the reconciliation. |
 | **Tanks and storage** | Reconcile opening and closing inventories, net accumulation, and transfers. Use mass, volume, or level readings with configured density and geometry. |
@@ -64,7 +64,7 @@ Accounts, models, permissions, schedules, audit records, and retained results pe
 
 ## Run your first reconciliation
 
-1. Sign in as the administrator and select **Create a model** to open the editor.
+1. Sign in as the administrator, open **☰ → Edit models**, and select **New model** to open the editor.
 2. Choose **Load template → Slurry filtration with recycle** and confirm. The template creates a separate model with equipment, physical meters, a virtual meter, and unmetered streams already connected.
 3. Select a completed **Hour** and open **Measurements**. Review the included readings, their units, and one-standard-deviation uncertainties.
 4. Select **Test draft reconciliation** and inspect **Results** for fitted values, adjustments, inferred flows, and unit closure.
