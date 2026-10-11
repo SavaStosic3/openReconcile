@@ -209,7 +209,7 @@ Standalone Docker and Node installations run the numerical solver in bounded wor
 
 Each worker has a 256 MB V8 old-generation heap limit; this is not a total process-memory limit. Workers are discarded after each calculation. A full queue, expired deadline, worker failure, or memory-limit failure produces a failed run before output delivery. Shutdown cancels pending/running calculations and saves their terminal run records before closing SQLite. The internal worker API also accepts an `AbortSignal` for cancellation; HTTP client disconnection does not cancel a durably claimed run, because reconnecting must not cause duplicate output delivery.
 
-Increase concurrency only after checking host memory and CPU capacity. Recreate the container after changing limits. Calculation deadlines bound resource use; they do not guarantee that every valid maximum-size topology completes on every host. Check the intended plant models and inspect failures before enabling schedules. Authorization, publication, source, and lease checks still fence output after calculation.
+Increase concurrency only after checking host memory and CPU capacity. Recreate the container after changing limits. Calculation deadlines bound resource use; they do not guarantee that every valid topology completes on every host. There is no fixed node or stream count limit; see the [tested model size](../README.md#tested-model-size) for the benchmarked scale. Check the intended plant models and inspect failures before enabling schedules. Authorization, publication, source, and lease checks still fence output after calculation.
 
 ## Unattended scheduling
 

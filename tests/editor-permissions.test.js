@@ -5,6 +5,7 @@ import { exampleModel, newStream } from '../public/model.js';
 import { unitBounds } from '../public/unit-symbols.js';
 import { reconcile } from '../public/solver.js';
 import { getPublishedUnitSummary } from '../public/published-results.js';
+import { sizedModel } from './helpers/large-model-fixture.js';
 
 const EQUIPMENT = ['process', 'mixer', 'splitter', 'pump', 'compressor', 'valve', 'heatExchanger', 'filter', 'cyclone', 'conveyor'];
 
@@ -225,6 +226,22 @@ test('editable editor still supports addition, deletion, keyboard edits, and con
   svg.fire('click', { target: node('mix') });
   assert.equal(model.streams.length, 5);
   assert.equal(state.changes, 4);
+});
+
+test('editor addition, palette drops, and connections pass the former count limits', t => {
+  const f = setup(t, true, sizedModel(200, 500));
+  assert.ok(f.editor.addNode('process', { x: 400, y: 400 }));
+  assert.equal(f.model.nodes.length, 201);
+  f.svg.fire('drop', { dataTransfer: { getData: () => 'pump' }, clientX: 500, clientY: 400 });
+  assert.equal(f.model.nodes.length, 202);
+  assert.equal(f.model.nodes.at(-1).kind, 'pump');
+  f.editor.setMode('connect');
+  f.svg.fire('click', { target: f.port('feed') });
+  f.svg.fire('click', { target: f.node('mix') });
+  assert.equal(f.model.streams.length, 501);
+  assert.equal(f.model.streams.at(-1).source, 'feed');
+  assert.equal(f.model.streams.at(-1).target, 'mix');
+  assert.equal(f.state.changes, 3);
 });
 
 test('editing and published diagram overlays retain small positive masses', t => {

@@ -102,7 +102,6 @@ export function createEditor({ svg, canEdit = () => true, onChange = () => {}, o
     if (sourceId === targetId) { announce('Choose a different process unit for the destination.'); return false; }
     if (!hasOutput(source)) { announce('Outflows cannot have outgoing streams.'); return false; }
     if (!hasInput(target)) { announce('Inflows cannot have incoming streams.'); return false; }
-    if (model.streams.length >= 500) { announce('This model supports up to 500 streams.'); return false; }
     const stream = newStream(sourceId, targetId, model.streams.length + 1);
     model.streams.push(stream);
     clearPending();
@@ -256,7 +255,6 @@ export function createEditor({ svg, canEdit = () => true, onChange = () => {}, o
   function addNode(kind, location) {
     if (!allowEdit()) return false;
     if (!NODE_TYPES[kind]) return;
-    if (model.nodes.length >= 200) { announce('This model supports up to 200 units.'); return; }
     const center = location || { x: (width / 2 - panX) / scale, y: (height / 2 - panY) / scale };
     if (!location) {
       let attempt = 0;

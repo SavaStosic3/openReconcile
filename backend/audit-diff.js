@@ -23,8 +23,8 @@ const context = (before, after, kind = 'stream') => ({
 });
 
 // Kept separate from the chunked event details so a large model edit cannot
-// silently lose its physical reading points. Validated models have at most
-// 500 streams. A removed meter ends its series with null, not its cached value.
+// silently lose its physical reading points. A removed meter ends its series
+// with null, not its cached value.
 export function describeReadingChanges(before, after) {
   const prior = items(before, 'streams'), next = items(after, 'streams'), changes = [];
   for (const id of [...new Set([...prior.keys(), ...next.keys()])].sort()) {

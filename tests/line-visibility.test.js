@@ -102,8 +102,9 @@ test('storage count stays bounded while retaining recently visited model prefere
   const manyStreams = Array.from({ length: 505 }, (_, index) => `line-${index}`);
   visibility.scope('viewer', 'large-plant', manyStreams);
   for (const id of manyStreams) visibility.hide(id);
-  assert.equal(visibility.snapshot().hiddenIds.length, 500);
-  assert.deepEqual(visibility.hide('line-504'), visibility.snapshot());
+  assert.equal(visibility.snapshot().hiddenIds.length, 505);
+  assert.equal(visibility.snapshot().hiddenIds.includes('line-504'), true);
+  assert.deepEqual(createLineVisibility({ storage }).scope('viewer', 'large-plant', manyStreams), visibility.snapshot());
 });
 
 test('custom storage key and IDs containing punctuation keep scopes distinct', () => {
@@ -113,20 +114,23 @@ test('custom storage key and IDs containing punctuation keep scopes distinct', (
   assert.deepEqual(createLineVisibility({ storage, key: 'other-view-preferences' }).scope('person@example.com', 'plant:one', ['__proto__']), { hiddenIds: ['__proto__'], showHidden: false });
 });
 
-test('draft and publication unions retain later IDs after duplicate streams and cap hidden preferences', () => {
+test('draft and publication unions preserve all hidden lines beyond the former count limits', () => {
   const storage = memoryStorage(), visibility = createLineVisibility({ storage });
-  const draft = Array.from({ length: 500 }, (_, index) => ({ id: `draft-${index}` }));
-  const published = Array.from({ length: 500 }, (_, index) => ({ id: `published-${index}` }));
+  const draft = Array.from({ length: 1005 }, (_, index) => ({ id: `draft-${index}` }));
+  const published = Array.from({ length: 1005 }, (_, index) => ({ id: `published-${index}` }));
   const union = [...draft, ...draft, ...published];
   visibility.scope('viewer', 'plant', union);
-  assert.deepEqual(visibility.hide('published-499'), { hiddenIds: ['published-499'], showHidden: false });
-  for (const stream of draft.slice(0, 499)) visibility.hide(stream.id);
-  assert.equal(visibility.snapshot().hiddenIds.length, 500);
-  assert.equal(visibility.hide('draft-499').hiddenIds.includes('draft-499'), false);
-  assert.equal(JSON.parse(storage.getItem(KEY)).scopes[0].hiddenIds.length, 500);
-  assert.deepEqual(createLineVisibility({ storage }).scope('viewer', 'plant', union), visibility.snapshot());
-  visibility.show('draft-0');
-  assert.equal(visibility.hide('draft-499').hiddenIds.includes('draft-499'), true);
+  assert.deepEqual(visibility.hide('published-1004'), { hiddenIds: ['published-1004'], showHidden: false });
+  for (const stream of draft) visibility.hide(stream.id);
+  assert.equal(visibility.snapshot().hiddenIds.length, 1006);
+  assert.equal(JSON.parse(storage.getItem(KEY)).scopes[0].hiddenIds.length, 1006);
+  const reloaded = createLineVisibility({ storage });
+  assert.deepEqual(reloaded.scope('viewer', 'plant', union), visibility.snapshot());
+  reloaded.show('published-1004');
+  assert.equal(reloaded.snapshot().hiddenIds.length, 1005);
+  assert.equal(reloaded.snapshot().hiddenIds.includes('published-1004'), false);
+  reloaded.showAll();
+  assert.deepEqual(createLineVisibility({ storage }).scope('viewer', 'plant', union), visible);
 });
 
 test('unchanged scope refreshes and reveal settings avoid redundant browser storage writes', () => {

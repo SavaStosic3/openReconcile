@@ -8,6 +8,7 @@ import { permissions } from '../backend/policy.js';
 import { exampleModel, emptyModel, newStream } from '../public/model.js';
 import { reconcile } from '../public/solver.js';
 import { setItemDataMapping } from '../public/data-mapping.js';
+import { sizedModel } from './helpers/large-model-fixture.js';
 
 test('completed SQL periods align at 10:07, preview matches, and historical reruns retain prior readings and output windows', async t => {
   const f = fixture(t); let amount = 120;
@@ -237,6 +238,23 @@ test('global role and explicit model level intersect for visibility, running and
   workspace = await f.request('/api/workspace', 'GET', undefined, f.viewer);
   assert.equal(workspace.body.catalog.models.length, 0);
   assert.equal((await f.request(`/api/models/${model.entry.id}/runs`, 'POST', { trigger: 'manual' }, f.viewer)).status, 403);
+});
+
+test('API creates, saves, and publishes models above the former node and stream limits', async t => {
+  const f = fixture(t);
+  const created = await f.request('/api/models', 'POST', { model: sizedModel() });
+  assert.equal(created.status, 201, JSON.stringify(created.body));
+  const id = created.body.entry.id;
+  const model = sizedModel(202, 502);
+  const saved = await f.request(`/api/models/${id}`, 'PATCH', { model, revision: created.body.permission.revision });
+  assert.equal(saved.status, 200, JSON.stringify(saved.body));
+  const published = await f.request(`/api/models/${id}/publication`, 'PATCH', { published: true, revision: saved.body.permission.revision });
+  assert.equal(published.status, 200, JSON.stringify(published.body));
+  const loaded = await f.request('/api/workspace');
+  assert.equal(loaded.status, 200, JSON.stringify(loaded.body));
+  const entry = loaded.body.catalog.models.find(item => item.id === id);
+  assert.deepEqual(entry.model, model);
+  assert.deepEqual(entry.publishedModel, model);
 });
 
 test('only editors/admins create, creator grant is scoped to the new model, client roles rejected', async t => {

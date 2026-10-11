@@ -118,7 +118,13 @@ Read the [mathematical scope and assumptions](docs/user-guide.md#mathematical-sc
 - **Unattended scheduling for internal installations.** The standalone server runs schedules while the app service is running. The retained ChatGPT testing site continues to use browser-triggered schedules. Missed periods are not replayed automatically. Uncertain connector delivery from a manual or scheduled run pauses that model's automatic schedule until you review the destination and explicitly enable it again.
 - **20 retained runs per model.** Use output connectors for long-term reconciliation results; audit retention is configured separately.
 - **SQL requires a separate gateway.** CSV result export and JSON model import are available. Configure PI under **Data connectors → PI connection settings**, with encrypted server credentials and separate output bindings. CSV connection-structure import and dedicated SAP/ODBC connectors remain on the roadmap.
-- **One internal app instance with local SQLite storage.** High availability and multiple replicas are outside the supplied Docker deployment. Models are limited to 200 nodes and 500 streams.
+- **One internal app instance with local SQLite storage.** High availability and multiple replicas are outside the supplied Docker deployment.
+
+### Tested model size
+
+openReconcile has been tested with **200 nodes, 500 streams, and 896 calculation variables**, including tank opening/closing inventories. The balanced fixture completed in approximately **21 seconds** on the test machine in an isolated worker with a **256 MB heap limit**, while the server's main thread remained responsive. These numbers describe the largest fully benchmarked reconciliation; model validation and the editor impose no fixed node or stream count limit.
+
+Larger models are accepted, but calculation time and memory depend on topology and available resources. Request/file size limits and the standalone server's [calculation concurrency, memory, and execution safeguards](docs/self-hosting.md#calculation-limits) still apply. Benchmark intended plant models before enabling schedules.
 
 The reference models and automated checks provide reproducible verification. Validate your actual topology, readings, units, uncertainties, and source data against known company cases before using results for reporting.
 

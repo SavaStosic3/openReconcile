@@ -1,7 +1,5 @@
 // Diagram visibility is a personal browser preference, separate from plant data.
 const MAX_SCOPES = 100;
-const MAX_STREAMS = 500;
-const MAX_AVAILABLE_STREAMS = 1_000;
 const MAX_STORED_LENGTH = 2_000_000;
 const validId = value => typeof value === 'string' && value.length > 0 && value.length <= 256 && value.trim().length > 0 && !/[\u0000-\u001f\u007f]/.test(value);
 const scopeKey = (accountId, modelId) => JSON.stringify([accountId, modelId]);
@@ -25,7 +23,7 @@ export function createLineVisibility(options = {}) {
         scopes.set(scopeKey(entry.accountId, entry.modelId), {
           accountId: entry.accountId,
           modelId: entry.modelId,
-          hiddenIds: new Set(entry.hiddenIds.slice(0, MAX_STREAMS).filter(validId)),
+          hiddenIds: new Set(entry.hiddenIds.filter(validId)),
           showHidden: entry.showHidden === true
         });
       }
@@ -57,7 +55,6 @@ export function createLineVisibility(options = {}) {
         for (const stream of streams) {
           const id = typeof stream === 'string' ? stream : stream?.id;
           if (validId(id)) streamIds.add(id);
-          if (streamIds.size >= MAX_AVAILABLE_STREAMS) break;
         }
       }
       if (!validId(accountId) || !validId(modelId)) { current = null; return snapshot(); }
@@ -72,7 +69,7 @@ export function createLineVisibility(options = {}) {
     },
     snapshot,
     hide(id) {
-      if (!current || !streamIds.has(id) || current.hiddenIds.has(id) || current.hiddenIds.size >= MAX_STREAMS) return snapshot();
+      if (!current || !streamIds.has(id) || current.hiddenIds.has(id)) return snapshot();
       current.hiddenIds.add(id);
       return persist();
     },
