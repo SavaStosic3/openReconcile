@@ -1,9 +1,8 @@
 import { isStorageNode } from './inventory.js';
+import { createQuantityFormatter } from './quantity-format.js';
 
 const SUCCESSFUL_RESULTS = new Set(['ok', 'warning', 'underdetermined']);
-const formatter = new Intl.NumberFormat(undefined, { minimumFractionDigits: 3, maximumFractionDigits: 3 });
-
-export const formatPublishedMass = value => Number.isFinite(value) ? formatter.format(Object.is(value, -0) ? 0 : value) : '—';
+export const formatPublishedMass = createQuantityFormatter({ minimumFractionDigits: 3, maximumFractionDigits: 3 });
 export const hasPublishedResults = result => SUCCESSFUL_RESULTS.has(result?.status) && Array.isArray(result.streams);
 
 // Use only the solver's exposed values. A zero mass-balance residual does not

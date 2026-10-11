@@ -3,6 +3,7 @@ import { appendUnitSymbol, getUnitGeometry, portPosition, unitBounds } from './u
 import { formatPublishedMass, getPublishedUnitSummary, hasPublishedResults } from './published-results.js';
 import { getStreamRoutes } from './stream-routing.js';
 import { getMeterName, isVirtualMeter, evaluateMeterReadings } from './virtual-meters.js';
+import { createQuantityFormatter } from './quantity-format.js';
 
 const NS = 'http://www.w3.org/2000/svg';
 const BLUE = '#2563eb', INK = '#243a54', MUTED = '#7890aa';
@@ -16,7 +17,7 @@ const short = (value, length = 22) => value.length > length ? `${value.slice(0, 
 const boundary = node => node.kind === 'inlet' || node.kind === 'outlet';
 const hasInput = node => node.kind !== 'inlet';
 const hasOutput = node => node.kind !== 'outlet';
-const number = value => new Intl.NumberFormat(undefined, { maximumFractionDigits: 2 }).format(value);
+const number = createQuantityFormatter({ maximumFractionDigits: 2 });
 
 export function createEditor({ svg, canEdit = () => true, onChange = () => {}, onSelect = () => {}, onEditStream = () => {}, onEditNode = () => {}, onStatus = () => {}, onStreamContext }) {
   let model = { nodes: [], streams: [] }, results = null, selected = null, mode = 'select';

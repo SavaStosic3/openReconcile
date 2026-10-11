@@ -147,6 +147,7 @@ test('gateway allows signed accumulation only and supports a complete maximum-si
 test('SQL output skips unobservable absolute inventories but preserves observable signed accumulation', () => {
   const value = model();
   const run = { id: 'run', modelId: 'model', modelName: value.name, finishedAt: window.end, modelSnapshot: value, result: {
+    status: 'underdetermined', warnings: ['Absolute inventories are unobservable.'],
     streams: value.streams.map(stream => ({ id: stream.id, value: stream.value, raw: stream.value, correction: 0, uncertainty: 1, status: 'measured' })),
     inventories: [{ id: 'tank', opening: { value: null, raw: null, status: 'unobservable' }, closing: { value: null, raw: null, status: 'unobservable' }, accumulation: { value: -20, raw: null, uncertainty: 1, status: 'estimated' } }],
   } };

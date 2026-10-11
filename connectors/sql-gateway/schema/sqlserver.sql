@@ -7,11 +7,11 @@ CREATE TABLE dbo.mass_readings (
 CREATE INDEX mass_readings_tag_time ON dbo.mass_readings (tag, recorded_at);
 
 CREATE TABLE dbo.reconciliation_results (
-  run_id nvarchar(128) NOT NULL,
-  model_id nvarchar(128) NOT NULL,
+  run_id nvarchar(128) COLLATE Latin1_General_100_BIN2 NOT NULL,
+  model_id nvarchar(128) COLLATE Latin1_General_100_BIN2 NOT NULL,
   model_name nvarchar(200) NOT NULL,
   published_version int NULL,
-  item_id nvarchar(128) NOT NULL,
+  item_id nvarchar(128) COLLATE Latin1_General_100_BIN2 NOT NULL,
   item_type nvarchar(16) NOT NULL,
   source_name nvarchar(200) NOT NULL,
   metric nvarchar(32) NOT NULL,
@@ -26,8 +26,8 @@ CREATE TABLE dbo.reconciliation_results (
   PRIMARY KEY (run_id, item_type, item_id, metric),
   CHECK (batch_end > batch_start),
   CHECK (value_kg >= 0 OR (item_type = 'unit' AND metric = 'accumulation')),
-  CHECK ((item_type = 'stream' AND metric = 'mass' AND status IN ('measured', 'estimated'))
-    OR (item_type = 'unit' AND metric IN ('incoming_mass', 'outgoing_mass', 'opening_inventory', 'closing_inventory', 'accumulation') AND status = 'reconciled'))
+  CHECK ((item_type = 'stream' AND metric = 'mass' AND status IN ('measured', 'estimated', 'measured_questionable', 'estimated_questionable'))
+    OR (item_type = 'unit' AND metric IN ('incoming_mass', 'outgoing_mass', 'opening_inventory', 'closing_inventory', 'accumulation') AND status IN ('reconciled', 'reconciled_questionable')))
 );
 -- Grant SELECT on both tables (including output schema tests), INSERT only
 -- on results; no DDL, UPDATE, or DELETE. Use encrypted TCP SQL authentication.

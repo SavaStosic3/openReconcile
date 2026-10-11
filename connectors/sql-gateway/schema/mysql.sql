@@ -7,11 +7,11 @@ CREATE TABLE production.mass_readings (
 ) ENGINE = InnoDB;
 
 CREATE TABLE production.reconciliation_results (
-  run_id varchar(128) NOT NULL,
-  model_id varchar(128) NOT NULL,
+  run_id varchar(128) CHARACTER SET utf8mb4 COLLATE utf8mb4_bin NOT NULL,
+  model_id varchar(128) CHARACTER SET utf8mb4 COLLATE utf8mb4_bin NOT NULL,
   model_name varchar(200) NOT NULL,
   published_version int NULL,
-  item_id varchar(128) NOT NULL,
+  item_id varchar(128) CHARACTER SET utf8mb4 COLLATE utf8mb4_bin NOT NULL,
   item_type varchar(16) NOT NULL,
   source_name varchar(200) NOT NULL,
   metric varchar(32) NOT NULL,
@@ -26,8 +26,8 @@ CREATE TABLE production.reconciliation_results (
   PRIMARY KEY (run_id, item_type, item_id, metric),
   CHECK (batch_end > batch_start),
   CHECK (value_kg >= 0 OR (item_type = 'unit' AND metric = 'accumulation')),
-  CHECK ((item_type = 'stream' AND metric = 'mass' AND status IN ('measured', 'estimated'))
-    OR (item_type = 'unit' AND metric IN ('incoming_mass', 'outgoing_mass', 'opening_inventory', 'closing_inventory', 'accumulation') AND status = 'reconciled'))
+  CHECK ((item_type = 'stream' AND metric = 'mass' AND status IN ('measured', 'estimated', 'measured_questionable', 'estimated_questionable'))
+    OR (item_type = 'unit' AND metric IN ('incoming_mass', 'outgoing_mass', 'opening_inventory', 'closing_inventory', 'accumulation') AND status IN ('reconciled', 'reconciled_questionable')))
 ) ENGINE = InnoDB;
 -- Use a least-privilege account with SELECT on both tables (for tests), INSERT
 -- on results only. Use InnoDB to guarantee output transaction rollback.

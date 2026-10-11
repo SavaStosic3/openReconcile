@@ -119,6 +119,13 @@ test('connection failures leave saved sources untouched and release controls for
   assert.equal(f.calls.filter(call => call.kind === 'test').length, 2);
 });
 
+test('connector input preview shows small nonzero source readings without rounding to zero', async t => {
+  const f = setup(t); await f.ui.open(); f.validForm();
+  f.previewWith(async () => ({ window: { start: '2026-10-10T00:00:00.000Z', end: '2026-10-10T01:00:00.000Z' }, readings: [{ modelName: 'Feed', sourceName: 'FEED', value: 0.0004, unit: 'kg', timestamp: '2026-10-10T00:30:00.000Z' }] }));
+  await f.node('#sql-preview-input').onclick();
+  assert.match(f.node('#sql-preview').innerHTML, /4\.000e-4 kg/);
+});
+
 test('changing SQL configuration clears readings and verification messages from the previous configuration', async t => {
   const f = setup(t); await f.ui.open(); f.validForm();
   await f.node('#sql-preview-input').onclick();

@@ -4,7 +4,9 @@ The [Docker quickstart](../README.md#quickstart) is the installation path for an
 
 ## Hosted development locally
 
-Requires Node.js 22.13 or later. The application uses a Workers backend, D1 database, and the Sites authentication integration. Frontend assets live in `public/`; `dist/` is generated build output.
+Requires Node.js 24.13 or later. The application and SQL gateway declare the same minimum; `.nvmrc` pins the tested runtime. The application uses a Workers backend, D1 database, and the Sites authentication integration. Frontend assets live in `public/`; `dist/` is generated build output.
+
+Model node/stream IDs use the shared 1–128-character portable contract in `public/identifiers.js`; imports and draft saves reject unsupported IDs before reconciliation. UI quantities below the ordinary display resolution use four-significant-digit scientific notation rather than rounding a nonzero mass to zero. Stored, calculated, and exported numeric values retain their full numeric precision.
 
 ```powershell
 npm ci

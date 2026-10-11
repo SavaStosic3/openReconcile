@@ -196,6 +196,21 @@ Recreate the app after changing these values. The gateway's certificate must als
 
 Have an authorized database administrator provision least-privilege users, table allowlists, and the required schema. Verify a real input read, a known period's reconciliation, and committed output rows before using the integration operationally. Storage inputs require the updated gateway's exact boundary-snapshot support. Container packaging does not verify a connection to any plant database.
 
+## Calculation limits
+
+Standalone Docker and Node installations run the numerical solver in bounded worker threads, shared by manual and scheduled runs. HTTP requests, authorization checks, and scheduler lease heartbeats remain on the server thread. Each calculation receives a detached snapshot; credentials, connector operations, and database access remain in the server. The hosted testing runtime retains its existing calculation path.
+
+| `.env` setting | Default | Allowed range |
+| --- | --- | --- |
+| `CALCULATION_WORKERS` | `1` | 1–4 active workers |
+| `CALCULATION_QUEUE_LIMIT` | `8` | 1–32 queued calculations |
+| `CALCULATION_TIMEOUT_SECONDS` | `120` | 1–300 seconds per worker, including startup |
+| `CALCULATION_QUEUE_TIMEOUT_SECONDS` | `30` | 1–300 seconds waiting for a worker |
+
+Each worker has a 256 MB V8 old-generation heap limit; this is not a total process-memory limit. Workers are discarded after each calculation. A full queue, expired deadline, worker failure, or memory-limit failure produces a failed run before output delivery. Shutdown cancels pending/running calculations and saves their terminal run records before closing SQLite. The internal worker API also accepts an `AbortSignal` for cancellation; HTTP client disconnection does not cancel a durably claimed run, because reconnecting must not cause duplicate output delivery.
+
+Increase concurrency only after checking host memory and CPU capacity. Recreate the container after changing limits. Calculation deadlines bound resource use; they do not guarantee that every valid maximum-size topology completes on every host. Check the intended plant models and inspect failures before enabling schedules. Authorization, publication, source, and lease checks still fence output after calculation.
+
 ## Unattended scheduling
 
 The standalone server executes enabled schedules without a browser or an active login session. This applies to Docker installations and deployments using `npm run start:server`; it does not change the hosted testing site's browser-triggered scheduling.

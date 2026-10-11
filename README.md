@@ -124,7 +124,7 @@ The reference models and automated checks provide reproducible verification. Val
 
 ## Development and contributing
 
-Changes should include a clear reproduction or expected behavior and appropriate verification, especially for conservation, uncertainty, observability, and reporting-period behavior. Use **Node.js 24** for the full test suite, which also exercises the standalone SQLite runtime. See the [development guide](docs/development.md) for the local environment.
+Changes should include a clear reproduction or expected behavior and appropriate verification, especially for conservation, uncertainty, observability, and reporting-period behavior. Requires **Node.js 24.13 or later** for the application, SQL gateway, and full test suite, which also exercises the standalone SQLite runtime. See the [development guide](docs/development.md) for the local environment.
 
 ```sh
 npm ci

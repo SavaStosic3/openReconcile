@@ -1,6 +1,7 @@
 import { createCatalog, validateCatalog, getModelEntry, addModel, updateModel, duplicateModel, setActiveModel, setSchedule, dueSchedules, advanceSchedule, appendRun, frequencyToMinutes } from './management-store.js';
 import { executeModelRun, sameRunInputs, runMatchesModelInputs, runMatchesInputSource } from './schedule-runner.js';
 import { defaultReportingSettings, validateReportingSettings, resolveReportingPeriod, formatReportingPeriod } from './reporting-periods.js';
+import { formatQuantity } from './quantity-format.js';
 
 const CATALOG_KEY = 'openreconcile-model-library-v1';
 const LEGACY_KEY = 'massflow-model-v1';
@@ -9,7 +10,7 @@ const clone = value => structuredClone(value);
 const $ = selector => document.querySelector(selector);
 const esc = value => String(value ?? '').replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
 const date = value => value ? new Intl.DateTimeFormat(undefined, { dateStyle: 'medium', timeStyle: 'short' }).format(new Date(value)) : '—';
-const number = value => Number.isFinite(value) ? new Intl.NumberFormat(undefined, { maximumFractionDigits: 3 }).format(value) : '—';
+const number = formatQuantity;
 
 export function createManagement({ fallbackModel, beforeAction, onActivate, onRun, onNewModel, onReview, onToast, onAccessChange, backend = null, inputAdapters = {}, outputAdapters = {} }) {
   let catalog, selectedId, pageOpen = false, tickBusy = false, storageWarning = '', lastStored = null, renderedRuns = '';

@@ -107,8 +107,9 @@ test('SQL run snapshots use fresh physical readings, calculate virtual meters, a
   assert.ok(['ok', 'warning'].includes(run.status), run.error); assert.equal(run.modelSnapshot.streams[0].value, 110); assert.equal(run.modelSnapshot.streams[1].value, 110); assert.equal(run.sql.input.readings[0].originalValue, 100); assert.ok(rechecked);
   assert.deepEqual(sourceCatalog, before); assert.ok(runMatchesModelInputs(run, model));
   const changed = structuredClone(model); changed.streams[0].value = 101; assert.equal(runMatchesModelInputs(run, changed), false);
-  const payload = g.requests[1].body; assert.equal(payload.rows.length, 6); assert.deepEqual(Object.keys(payload.rows[0]), SQL_OUTPUT_COLUMNS); assert.equal(payload.rows[0].published_version, 3); assert.equal(payload.rows[0].batch_end, end); assert.equal(payload.rows[0].raw_kg, 110); assert.equal(payload.rows[0].status, 'measured');
+  const payload = g.requests[1].body; assert.equal(payload.rows.length, 6); assert.deepEqual(Object.keys(payload.rows[0]), SQL_OUTPUT_COLUMNS); assert.equal(payload.rows[0].published_version, 3); assert.equal(payload.rows[0].batch_end, end); assert.equal(payload.rows[0].raw_kg, 110); assert.equal(payload.rows[0].status, 'measured_questionable');
   assert.equal(run.sql.output.written, 6); assert.equal(run.sql.output.source.id, output.id);
+  assert.equal(run.sql.output.quality.verdict, 'questionable'); assert.ok(run.sql.output.quality.warnings.some(warning => /Virtual meter/.test(warning)));
 });
 
 test('SQL output failure retains computed result and audited input, and access revocation prevents external writes', async () => {
@@ -150,4 +151,30 @@ test('backend SQL requests conform to the real gateway contract', async () => {
   });
   const { run } = await executeModelRun(catalog(), 'model-a', { id: 'contract-run', now: () => Date.parse(end), target: 'draft', publishedVersion: null, ...sqlAdapters(g.env) });
   assert.ok(['ok', 'warning'].includes(run.status), run.error);
+});
+
+test('SQL retains global disagreement quality on every exported row without changing the output columns', async () => {
+  const g = gateway((endpoint, body) => endpoint === 'read' ? readings(body, { f1: 1000, f3: 60, f4: 35 }) : { written: body.rows.length });
+  const { run } = await executeModelRun(catalog(), 'model-a', { id: 'quality-output', now: () => Date.parse(end), ...sqlAdapters(g.env) });
+  assert.equal(run.status, 'warning'); assert.ok(run.result.warnings.some(warning => /overall disagreement/.test(warning)));
+  const batch = g.requests.find(request => request.url.endsWith('/write')).body;
+  assert.ok(batch.rows.every(row => row.status.endsWith('_questionable')));
+  assert.deepEqual(Object.keys(batch.rows[0]), SQL_OUTPUT_COLUMNS);
+  assert.equal(validateWrite(batch, { writableTables: [output.table] }).length, batch.rows.length);
+  assert.equal(run.sql.output.quality.verdict, 'questionable');
+  assert.deepEqual(run.sql.output.quality.warnings, run.result.warnings);
+});
+
+test('SQL clean runs retain existing status values and failed results never reach the gateway', async () => {
+  const model = mappedModel(), run = { id: 'clean-output', modelId: 'model-a', modelName: model.name, modelSnapshot: model, result: reconcile(model), finishedAt: end };
+  assert.equal(run.result.status, 'ok');
+  const batch = sqlOutputRows(run, sqlBatchWindow(model, end));
+  assert.equal(batch.quality.verdict, 'good'); assert.ok(batch.rows.every(row => ['measured', 'estimated', 'reconciled'].includes(row.status)));
+  const g = gateway(() => { throw new Error('No failed reconciliation may call the SQL gateway'); });
+  const context = { window: sqlBatchWindow(model, end), recordOutputAudit() {} };
+  for (const status of ['invalid', 'infeasible', 'failed', 'interrupted']) {
+    await assert.rejects(sqlAdapters(g.env).outputAdapters.sql(output, { ...run, result: { ...run.result, status } }, context), /Only successful/);
+  }
+  await assert.rejects(sqlAdapters(g.env).outputAdapters.sql(output, { ...run, status: 'failed' }, context), /Only successful/);
+  assert.equal(g.requests.length, 0);
 });

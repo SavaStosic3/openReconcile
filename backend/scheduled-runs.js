@@ -177,6 +177,7 @@ export function createScheduledRunner(env, { now = typeof env.NOW === 'function'
         trigger:job.run.trigger,id:job.id,now,target:job.run.target,publishedVersion:job.run.publishedVersion,
         period:{start:job.run.reportingPeriod.start,end:job.run.reportingPeriod.end,kind:job.run.reportingPeriod.kind},
         ...adapters,inputAdapters,
+        ...(typeof env.CALCULATE_RECONCILIATION === 'function' ? { calculate: env.CALCULATE_RECONCILIATION } : {}),
         beforeOutput: async run => {
           latestRun=run;
           if (Date.parse(run.finishedAt)<Date.parse(run.startedAt)) throw new Error('The execution clock moved before the run start.');

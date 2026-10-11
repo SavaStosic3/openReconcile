@@ -23,11 +23,16 @@ export function driverOptions(connection) {
     ...base, ssl: insecure ? false : tls, max: 4, connectionTimeoutMillis: 5000,
     idleTimeoutMillis: 30_000, statement_timeout: QUERY_TIMEOUT_MS,
     query_timeout: QUERY_TIMEOUT_MS, application_name: 'openReconcile SQL gateway',
+    // Numeric reads must preserve distinct stored floating-point values,
+    // including older PostgreSQL defaults and database-level display settings.
+    options: '-c extra_float_digits=3',
   };
   if (connection.dialect === 'mysql') return {
     ...base, ssl: insecure ? undefined : tls, connectionLimit: 4, connectTimeout: 5000,
     waitForConnections: true, queueLimit: 8, timezone: 'Z',
     multipleStatements: false, decimalNumbers: false,
+    // Do not round BIGINT counters in the driver before exact delta arithmetic.
+    supportBigNumbers: true, bigNumberStrings: true,
   };
   return {
     server: connection.host, port: connection.port, database: connection.database,

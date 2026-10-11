@@ -186,6 +186,40 @@ test('PI output preflights all destinations read-only and refuses integers or un
   assert.equal(mock.requests.filter(request => request.options.method === 'POST').length, 0, 'a late invalid target must not leave earlier destinations partially written');
 });
 
+test('PI global disagreement warnings travel as Questionable events and audited quality, rather than clean values', async () => {
+  const mock = piMock({ values: { f1: 1000, f3: 60, f4: 35 } });
+  const { run } = await executeModelRun(catalog(), 'pi-model', { id: 'pi-quality-warning', now: () => Date.parse(window.end), ...piAdapters(mock.env) });
+  assert.equal(run.status, 'warning'); assert.ok(run.result.warnings.some(warning => /overall disagreement/.test(warning)));
+  const writes = mock.requests.filter(request => request.options.method === 'POST');
+  assert.equal(writes.length, 6); assert.ok(writes.every(request => request.body.Good === true && request.body.Questionable === true));
+  const audit = connectorOutputAudit(run);
+  assert.equal(audit.quality.policy, 'conservative-v1'); assert.equal(audit.quality.verdict, 'questionable');
+  assert.deepEqual(audit.quality.warnings, run.result.warnings);
+  assert.ok(audit.events.every(event => event.good && event.questionable && event.confirmed));
+});
+
+test('PI exported quality also preserves source-data warnings and underdetermined runs', async () => {
+  for (const kind of ['input-warning', 'underdetermined']) {
+    const mock = piMock(), model = mappedModel();
+    const run = { id: `pi-${kind}`, modelId: 'pi-model', modelName: model.name, modelSnapshot: model, result: reconcile(model), finishedAt: window.end };
+    if (kind === 'input-warning') run.pi = { input: { readings: [{ sourceName: 'Feed', quality: { warnings: ['Coverage was scaled.'] } }] } };
+    else Object.assign(run.result, { status: 'underdetermined', warnings: ['An unmapped component remains unobservable.'] });
+    let audit;
+    await piAdapters(mock.env).outputAdapters.pi(piOutput, run, { window, recordOutputAudit(value) { audit = value; }, authorizeOutput: async () => {} });
+    assert.equal(audit.quality.verdict, 'questionable');
+    assert.ok(mock.requests.filter(request => request.options.method === 'POST').every(request => request.body.Questionable === true));
+  }
+});
+
+test('PI invalid and failed reconciliation results do not write archive events', async () => {
+  const mock = piMock(), model = mappedModel();
+  const run = { id: 'pi-failed-quality', modelId: 'pi-model', modelName: model.name, modelSnapshot: model, result: reconcile(model), finishedAt: window.end };
+  for (const status of ['invalid', 'infeasible', 'failed', 'interrupted']) {
+    await assert.rejects(piAdapters(mock.env).outputAdapters.pi(piOutput, { ...run, result: { ...run.result, status } }, { window, recordOutputAudit() {}, authorizeOutput: async () => {} }), /observable reconciled/);
+  }
+  assert.equal(mock.requests.filter(request => request.options.method === 'POST').length, 0);
+});
+
 test('PI output preserves partial acknowledgements and rejects any unconfirmed scalar response', async () => {
   let writes = 0;
   const mock = piMock({ onRequest: request => request.options.method === 'POST' && ++writes === 2 ? new Response('private plant error', { status: 500 }) : undefined });

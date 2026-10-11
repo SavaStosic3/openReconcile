@@ -8,6 +8,7 @@ import { handleAuthenticatedApi } from '../backend/local-auth.js';
 import { openDatabase } from './sqlite.js';
 import { loadConfig, validatePublicOrigin } from './config.js';
 import { createScheduler } from './scheduler.mjs';
+import { createCalculationPool } from './calculation-pool.mjs';
 
 const MAX_BODY_BYTES = 2_000_000;
 const MIME = {
@@ -74,7 +75,7 @@ async function writeResponse(response, outgoing, method) {
   await pipeline(Readable.fromWeb(response.body), outgoing);
 }
 
-export async function startServer({ config, DB: suppliedDatabase } = {}) {
+export async function startServer({ config, DB: suppliedDatabase, calculationPool: suppliedPool } = {}) {
   config ??= await loadConfig();
   const publicOrigin = validatePublicOrigin(config.publicOrigin);
   const assets = await staticAssets(config.publicDir);
@@ -84,8 +85,12 @@ export async function startServer({ config, DB: suppliedDatabase } = {}) {
     if (!Number(admin?.count)) throw new Error('No active administrator account is configured. Run the installation setup command before starting the server.');
   } catch (error) { if (!suppliedDatabase) DB.close(); throw error; }
   const scheduling = config.scheduler ?? { enabled: true, pollSeconds: 5 };
+  let calculations;
+  try { calculations = suppliedPool ?? createCalculationPool(config.calculation); }
+  catch (error) { if (!suppliedDatabase) DB.close(); throw error; }
   const env = { ...config.backendEnv, DB, AUTH_MODE: 'password', LOCAL_AUTH_ITERATIONS: 600_000,
-    STANDALONE_SCHEDULER: true, SCHEDULER_ENABLED: scheduling.enabled, SCHEDULER_POLL_SECONDS: scheduling.pollSeconds };
+    STANDALONE_SCHEDULER: true, SCHEDULER_ENABLED: scheduling.enabled, SCHEDULER_POLL_SECONDS: scheduling.pollSeconds,
+    CALCULATE_RECONCILIATION: model => calculations.calculate(model) };
   let scheduler;
   const activeRequests = new Set();
   const server = createServer({ maxHeaderSize: 16_384 }, async (incoming, outgoing) => {
@@ -136,6 +141,7 @@ export async function startServer({ config, DB: suppliedDatabase } = {}) {
     await new Promise((resolveListen, reject) => { server.once('error', reject); server.listen(config.port, config.host, resolveListen); });
     scheduler = createScheduler(env, scheduling);
   } catch (error) {
+    await calculations.close();
     if (server.listening) await new Promise(resolveClose => server.close(resolveClose));
     if (!suppliedDatabase) DB.close();
     throw error;
@@ -147,7 +153,7 @@ export async function startServer({ config, DB: suppliedDatabase } = {}) {
       server.closeIdleConnections();
     });
     try {
-      const outcomes = await Promise.allSettled([httpClosed, scheduler.close()]);
+      const outcomes = await Promise.allSettled([httpClosed, scheduler.close(), calculations.close()]);
       // A disconnected HTTP client can leave an authorized gateway operation
       // active. Socket closure alone is not permission to close its database.
       await Promise.allSettled([...activeRequests]);
@@ -156,7 +162,7 @@ export async function startServer({ config, DB: suppliedDatabase } = {}) {
     }
     finally { if (!suppliedDatabase) DB.close(); }
   })();
-  return { server, DB, scheduler, address: server.address(), close };
+  return { server, DB, scheduler, calculations, address: server.address(), close };
 }
 
 if (process.argv[1] && pathToFileURL(resolve(process.argv[1])).href === import.meta.url) {

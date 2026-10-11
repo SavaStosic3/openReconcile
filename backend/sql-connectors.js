@@ -4,6 +4,8 @@ import { timeToEpoch } from '../public/management-store.js';
 import { validateInputQuality } from '../public/input-quality.js';
 import { isStorageNode } from '../public/inventory.js';
 import { isVirtualMeter } from '../public/virtual-meters.js';
+import { exportQuality, sqlExportStatus } from '../public/export-quality.js';
+import { validatePortableId } from '../public/identifiers.js';
 
 const MAX_BYTES = 1_000_000;
 const safeId = value => typeof value === 'string' && /^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$/.test(value) && !['constructor', 'prototype', '__proto__'].includes(value);
@@ -20,6 +22,7 @@ const qualityErrors = {
   INSUFFICIENT_COVERAGE: 'Source data does not meet the minimum coverage for this reporting period.',
   SOURCE_DATA_GAP: 'Source data contains an uncovered interval. Review reading age, interpolation, and gap policy.',
   TOTALIZER_RESET: 'A totalizer decreased. Review its reset or rollover policy before reconciling.',
+  UNSUPPORTED_COUNTER_PRECISION: 'A totalizer requires unsupported precision. Return exact DECIMAL or BIGINT counters as text and keep the transferred amount within supported numeric precision.',
   INCOMPLETE_TOTALIZER: 'Totalizer boundaries or intervals are incomplete. Supply complete counter readings.',
   INVALID_SOURCE_DATA: 'Source data contains an invalid reading for this reporting period.',
   MISSING_SOURCE_DATA: 'Source readings are missing for this reporting period.',
@@ -168,13 +171,18 @@ export async function readSqlInput(env, source, model, window) {
 
 export function sqlOutputRows(run, window) {
   if (!run?.modelSnapshot || !Array.isArray(run.result?.streams)) throw new Error('SQL output requires reconciliation results.');
+  const quality = exportQuality(run);
+  validatePortableId(run.id, 'Run ID'); validatePortableId(run.modelId, 'Model ID');
   if (!timestamp(window?.start) || !timestamp(window?.end) || Date.parse(window.start) >= Date.parse(window.end)) throw new Error('Choose a valid batch duration for SQL output.');
   const results = new Map(run.result.streams.map(item => [item.id, item]));
   const inventories = new Map((run.result.inventories ?? []).map(item => [item.id, item]));
   const rows = []; let skipped = 0;
-  const base = (item, kind, metric, result) => ({ run_id: run.id, model_id: run.modelId, model_name: run.modelName, published_version: run.publishedVersion ?? null, item_id: item.id, item_type: kind, source_name: item.dataMapping.sourceName, metric,
-    value_kg: result.value, raw_kg: finite(result.raw) ? result.raw : null, correction_kg: finite(result.correction) ? result.correction : null, uncertainty_kg: finite(result.uncertainty) ? result.uncertainty : null, status: result.status,
-    batch_start: window.start, batch_end: window.end, finished_at: run.finishedAt });
+  const base = (item, kind, metric, result) => {
+    validatePortableId(item.id, `${kind === 'stream' ? 'Stream' : 'Process-unit'} ID`);
+    return { run_id: run.id, model_id: run.modelId, model_name: run.modelName, published_version: run.publishedVersion ?? null, item_id: item.id, item_type: kind, source_name: item.dataMapping.sourceName, metric,
+      value_kg: result.value, raw_kg: finite(result.raw) ? result.raw : null, correction_kg: finite(result.correction) ? result.correction : null, uncertainty_kg: finite(result.uncertainty) ? result.uncertainty : null, status: sqlExportStatus(result.status, kind, quality),
+      batch_start: window.start, batch_end: window.end, finished_at: run.finishedAt };
+  };
   for (const item of run.modelSnapshot.streams) {
     if (!item.dataMapping) continue;
     const result = results.get(item.id);
@@ -199,7 +207,7 @@ export function sqlOutputRows(run, window) {
     }
   }
   if (!rows.length) throw new Error('Map at least one observable stream or process unit to use SQL output.');
-  return { rows, skipped };
+  return { rows, skipped, quality };
 }
 
 export function sqlAdapters(env) {
@@ -218,8 +226,8 @@ export function sqlAdapters(env) {
       source = validateSqlSource(source);
       if (source.direction !== 'output') throw new Error('Choose an output SQL source.');
       context.recordOutputAudit({ source, window: { ...context.window }, written: 0, skipped: 0 });
-      const { rows, skipped } = sqlOutputRows(run, context.window);
-      const audit = { source, window: { ...context.window }, written: 0, skipped };
+      const { rows, skipped, quality } = sqlOutputRows(run, context.window);
+      const audit = { source, window: { ...context.window }, written: 0, skipped, quality };
       context.recordOutputAudit(audit);
       const data = await callSqlGateway(env, 'write', { connectionId: source.connectionId, table: source.table, rows });
       if (!exact(data, ['written']) || data.written !== rows.length) throw new ApiError(502, 'The SQL gateway did not confirm the complete output batch.');

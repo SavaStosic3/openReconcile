@@ -4,7 +4,7 @@ The gateway connects the hosted app to SQL Server, PostgreSQL, and MySQL through
 
 ## Setup
 
-1. Install Node.js 22.13 or later. Keep the repository directory structure, including `public/input-quality.js` (shared with the app). In this directory, run `npm ci`.
+1. Install Node.js 24.13 or later. Keep the repository directory structure, including `public/input-quality.js`, `public/identifiers.js`, and `public/export-quality.js` (shared with the app). In this directory, run `npm ci`.
 2. Have a database administrator create a read source table and/or the result table. Example DDL is in `schema/postgres.sql`, `schema/sqlserver.sql`, and `schema/mysql.sql`; adapt the table names before executing it. The gateway performs no DDL.
 3. Provision a least-privilege database account: `SELECT` on the allowlisted input tables; `SELECT` (for schema tests) and `INSERT` on the allowlisted result tables. MySQL output tables must use a transactional engine such as InnoDB.
 4. Set `SQL_GATEWAY_TOKEN` to a randomly generated secret of 32–512 non-whitespace characters. Set `SQL_CONNECTIONS_JSON` to a JSON array matching `connections.example.json`, using real values from your secret manager. Do not commit the resulting credentials. `schema` is optional informational metadata; SQL table names are exact allowlist entries, never implicitly prefixed.
@@ -64,6 +64,10 @@ An observed decrease fails under `totalizerReset: "reject"`. Explicit `"restart"
 
 Upgrade the deployed gateway and app together when enabling quality or advanced aggregations. The gateway remains a separately operated plant-side service; publishing the app does not update it.
 
+Exact SQL counter types reach aggregation as text before numeric coercion. Decimal/BIGINT strings are subtracted and summed with bounded decimal arithmetic before converting the transferred amount to a numeric model reading. For example, `9007199254740992` to `9007199254740993` transfers `1`, and a large decimal baseline can retain a small fractional transfer. Counters support at most 100 decimal digits/places and 256 source characters. Already rounded numeric counters outside the safe integer range, materially distorted fractional numeric deltas, and transferred amounts requiring unsupported numeric precision fail with `UNSUPPORTED_COUNTER_PRECISION`; they never return a successful zero. Interpolated start boundaries can produce repeating fractions using normal numeric precision, with an explicit interpolation warning.
+
+Use exact database types such as BIGINT or DECIMAL for cumulative counters. Precision already lost in a FLOAT/REAL column cannot be recovered. PostgreSQL REAL/DOUBLE PRECISION and SQL Server REAL/FLOAT totalizer columns are explicitly rejected; MONEY values retain four decimal places. MySQL's driver preserves DECIMAL/BIGINT strings and returns approximate columns as native numbers, which must pass the numeric precision checks. If necessary, provide a database view with a deliberately defined exact decimal counter representation and verify its quantization against the instrument; the application cannot recover missing increments by casting. SQL Server MAX text types cannot be passed to `SQL_VARIANT_PROPERTY` and fail the query. Verify the intended column type with an input preview.
+
 ## Inventory boundary snapshots
 
 The app automatically requests `inventoryBoundary` for measured storage endpoints, independently of the source's flow aggregation. A request has equal `start` and `end`, and the gateway queries exactly that timestamp with bound parameters. Opening reads the reporting-period start; closing reads its end. This special snapshot request does not permit an ordinary empty aggregation window.
@@ -87,10 +91,20 @@ Output is an append-only transaction with one row for each observable mapped str
 | `metric` | `mass` for streams; `incoming_mass`, `outgoing_mass`, `opening_inventory`, `closing_inventory`, or `accumulation` for units |
 | `value_kg` | Reconciled mass |
 | `raw_kg`, `correction_kg`, `uncertainty_kg` | Available source mass, adjustment, and 1σ uncertainty; otherwise null |
-| `status` | `measured` or `estimated` for streams; `reconciled` for unit throughput and inventories |
+| `status` | `measured` or `estimated` for streams; `reconciled` for units/inventories; append `_questionable` when the run has warnings or is underdetermined |
 | `batch_start`, `batch_end`, `finished_at` | UTC batch and completion timestamps |
 
 The request must contain 1–1,500 rows from one consistent model run. Only `accumulation` can be negative. Unobservable values are not fabricated or exported. A unique key on `(run_id, item_type, item_id, metric)` prevents duplicate insertion of the same result. Statements are parameterized, sequential, and enclosed in a database transaction. A statement failure triggers rollback. Communication failure during/after `COMMIT` can leave a committed result without an acknowledgement; the app records output failure separately from the successful reconciliation. Before any manual replay, inspect destination rows by `run_id`. There is no automatic output retry, upsert, update, or delete endpoint.
+
+Export quality uses the conservative `conservative-v1` policy: any reconciliation or input-quality warning, or an underdetermined model, marks every exported row questionable. This includes modeling-assumption warnings; observable numerical results remain usable for review. Only a successful run without warnings uses the original clean statuses. Failed/invalid runs and unobservable values are not exported. The run's output audit retains the verdict, original reconciliation status, and warning messages; CSV results also include these fields.
+
+**Upgrade existing output tables before exporting warning results.** Deploy the updated gateway and extend the table's `status` CHECK constraint to accept `measured_questionable`, `estimated_questionable`, and `reconciled_questionable` alongside the three existing statuses. The existing `VARCHAR(32)`/`NVARCHAR(32)` column size and 16-column layout are unchanged. Updated examples in `schema/` contain the allowed values. Have the database administrator inspect and alter the existing constraint; do not drop or recreate a populated table. Consumers should treat the suffix as a review-required verdict and use the prefix as the item classification. An old gateway or restrictive constraint rejects the batch; the application never strips the quality flag to make delivery succeed.
+
+Diagram node and stream IDs share the same portable contract on import, save, and connector export: 1–128 UTF-16 code units, without surrounding whitespace, control characters, or malformed Unicode. IDs travel unchanged; rejected model files need their IDs and connection references corrected before import.
+
+Identity columns must use binary/case-sensitive comparisons that preserve distinct IDs such as `F1` and `f1`; the supplied output schemas declare these collations explicitly. For an existing table, ask the DBA to inspect identity-column collations and migrate them if necessary, checking indexes/constraints before changing a populated table. Model/source display names do not need these identity collations.
+
+Before upgrading a workspace containing externally imported models, check draft and published model files for unsupported IDs. Standard UI-generated IDs already satisfy this contract. Repair nonportable IDs and their endpoint references in the prior application version, then republish the corrected model before upgrade. Keep a complete workspace backup; the new version rejects invalid persisted models rather than silently truncating IDs or altering their identity. Historical run snapshots remain audit records and should not be rewritten to disguise a migration.
 
 The **Test connection** operation performs `SELECT ... WHERE 1 = 0` against input columns or the complete output schema. It proves connectivity and column accessibility, without inserting dummy results. It cannot prove INSERT permissions, output constraints, transactional engine behavior, or future availability; validate those with a real approved batch before operational use.
 

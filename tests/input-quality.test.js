@@ -105,6 +105,59 @@ test('totalizers reconcile deltas and interpolate an observed start bracket', ()
   assert.match(result.quality.warnings[0], /boundary.*interpolated/);
 });
 
+test('totalizer subtraction preserves exact large integer, decimal, exponent and mixed driver counters', () => {
+  for (const [opening, closing, expected] of [
+    ['9007199254740992', '9007199254740993', 1],
+    [9007199254740992n, '9007199254740993', 1],
+    [Number.MAX_SAFE_INTEGER, '9007199254740992', 1],
+    ['999999999999.000001', '999999999999.000002', 0.000001],
+    ['9.007199254740992e15', '9007199254740993.000', 1],
+    [0.3, '0.40', 0.1],
+    ['1.0000000000000000000000000000000000000001', '1.1000000000000000000000000000000000000001', 0.1],
+  ]) assert.equal(calculate([sample(0, opening), sample(60, closing)], {}, 'totalizerDelta').value, expected);
+});
+
+test('totalizer timestamp equality compares exact values before any Number conversion', () => {
+  const points = [sample(0, '9007199254740992'), sample(60, '9007199254740993')];
+  assert.equal(calculate([...points, sample(0, '9007199254740992.00')], {}, 'totalizerDelta').quality.sampleCount, 2);
+  failure(() => calculate([...points, sample(0, '9007199254740993')], {}, 'totalizerDelta'), 'AMBIGUOUS_SOURCE_DATA');
+  failure(() => calculate([sample(0, '1000000000000000.1'), sample(0, 1000000000000000.1), sample(60, 1000000000000001)], {}, 'totalizerDelta'), 'AMBIGUOUS_SOURCE_DATA');
+  failure(() => calculate([sample(0, 1000000000000000.1), sample(0, '1000000000000000.1'), sample(60, 1000000000000001)], {}, 'totalizerDelta'), 'AMBIGUOUS_SOURCE_DATA');
+});
+
+test('totalizer interpolation subtracts exact baselines before estimating a fractional period amount', () => {
+  assert.equal(calculate([sample(-30, '9007199254740992'), sample(60, '9007199254740995')], { maxAgeMinutes: 90 }, 'totalizerDelta').value, 2);
+  assert.equal(calculate([sample(-30, '9007199254740992'), sample(60, '9007199254740993')], { maxAgeMinutes: 90 }, 'totalizerDelta').value, 2 / 3);
+});
+
+test('totalizer restart and rollover arithmetic preserves decimals and rejects unsafe modulus settings', () => {
+  assert.equal(calculate([sample(0, '999999999999.000001'), sample(30, '999999999999.000002'), sample(60, '0.000001')], { totalizerReset: 'restart' }, 'totalizerDelta').value, 0.000002);
+  assert.equal(calculate([sample(0, '999.999999'), sample(60, '0.000001')], { totalizerReset: 'rollover', rolloverValue: 1000 }, 'totalizerDelta').value, 0.000002);
+  assert.throws(() => validateInputQuality({ totalizerReset: 'rollover', rolloverValue: 9007199254740992 }), /safe integer/);
+});
+
+test('unsupported counter input or final measurement precision fails rather than silently rounding', () => {
+  for (const [opening, closing] of [
+    [9007199254740992, 9007199254740993],
+    ['0', '9007199254740992'],
+    ['0', '0.123456789012345678901'],
+    ['1'.repeat(101), '2'.repeat(101)],
+    ['1e-101', '2e-101'],
+    ['0', '1e100000'],
+  ]) failure(() => calculate([sample(0, opening), sample(60, closing)], {}, 'totalizerDelta'), 'UNSUPPORTED_COUNTER_PRECISION');
+});
+
+test('native fractional counter precision cannot materially change the transferred amount', () => {
+  assert.equal(1000000000000001 - 1000000000000000.1, 0.875);
+  for (const [opening, closing] of [[1000000000000000.1, 1000000000000001], [1000000000000000.1, '1000000000000001'], ['1000000000000000.1', 1000000000000000.1], [1000000000000.1, 1000000000000.2]]) {
+    failure(() => calculate([sample(0, opening), sample(60, closing)], {}, 'totalizerDelta'), 'UNSUPPORTED_COUNTER_PRECISION');
+  }
+  // Exactly representable large fractions and ordinary rounding stay usable.
+  assert.equal(calculate([sample(0, 1000000000000000.5), sample(60, 1000000000000001)], {}, 'totalizerDelta').value, 0.5);
+  assert.equal(calculate([sample(0, 0.3), sample(60, 0.4)], {}, 'totalizerDelta').value, 0.1);
+  failure(() => calculate([sample(0, '999999999999999.875'), sample(60, '0.1')], { totalizerReset: 'rollover', rolloverValue: 1000000000000000.1 }, 'totalizerDelta'), 'UNSUPPORTED_COUNTER_PRECISION');
+});
+
 test('totalizer resets reject unless restart-to-zero is explicitly selected and audited', () => {
   const points = [sample(0, 100), sample(20, 140), sample(40, 10), sample(60, 50)];
   failure(() => calculate(points, {}, 'totalizerDelta'), 'TOTALIZER_RESET');

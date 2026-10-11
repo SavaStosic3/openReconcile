@@ -176,6 +176,10 @@ test('output validation rejects duplicate identities, unsafe statuses, mixed run
   assert.equal(unit[0].raw_kg, null);
   assert.equal(validateWrite({ table: 'public.results', rows: [{ ...resultRow, item_id: 'i'.repeat(128) }] }, connection)[0].item_id.length, 128);
   assertInvalid(() => validateWrite({ table: 'public.results', rows: [{ ...resultRow, item_id: 'i'.repeat(129) }] }, connection));
+  for (const status of ['measured_questionable', 'estimated_questionable']) assert.equal(validateWrite({ table: 'public.results', rows: [{ ...resultRow, status }] }, connection)[0].status, status);
+  const questionableUnit = { ...resultRow, item_type: 'unit', metric: 'incoming_mass', status: 'reconciled_questionable' };
+  assert.equal(validateWrite({ table: 'public.results', rows: [questionableUnit] }, connection)[0].status, 'reconciled_questionable');
+  assertInvalid(() => validateWrite({ table: 'public.results', rows: [resultRow, { ...resultRow, item_id: 'warning', status: 'measured_questionable' }] }, connection));
 });
 
 async function startGateway(options = {}) {

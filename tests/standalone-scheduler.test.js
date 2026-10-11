@@ -8,6 +8,7 @@ import { handleApi } from '../backend/api.js';
 import { Repository } from '../backend/repository.js';
 import { createScheduledRunner } from '../backend/scheduled-runs.js';
 import { createScheduler } from '../deploy/scheduler.mjs';
+import { createCalculationPool } from '../deploy/calculation-pool.mjs';
 import { exampleModel } from '../public/model.js';
 import { showcaseModel } from '../public/showcase-model.js';
 import { storageShowcaseModel } from '../public/storage-showcase-model.js';
@@ -184,6 +185,30 @@ test('permissions and schedule changes during SQL input block output and leave a
     assert.equal(calls.filter(call => call.endpoint === 'write').length, 0);
     const runs = await f.DB.prepare('SELECT run_json FROM model_runs WHERE model_id=?').bind(id).all();
     assert.equal(runs.results.length, 1); const run = JSON.parse(runs.results[0].run_json); assert.equal(run.status, 'failed'); assert.ok(run.error);
+  });
+});
+
+test('publication and permission changes during worker calculation prevent SQL delivery', async t => {
+  for (const mutation of ['inactive', 'unpublished']) await t.test(mutation, async t => {
+    const f = await fixture(t);
+    const pool = createCalculationPool({ workerURL: new URL('./helpers/calculation-worker-fixture.mjs', import.meta.url) });
+    t.after(() => pool.close()); f.env.CALCULATE_RECONCILIATION = model => pool.calculate(model);
+    const calls = f.gateway(), model = { ...exampleModel(), name: 'Worker delay fixture' };
+    for (const stream of model.streams) stream.dataMapping = { sourceName: stream.id };
+    const id = await f.create(model, [inputSource, outputSource]);
+    await f.enable(id, { inputSourceId: inputSource.id, outputSourceId: outputSource.id }); await f.due(id);
+    const executing = f.runner().tick();
+    const deadline = Date.now() + 3000;
+    while (!pool.status().active && Date.now() < deadline) await new Promise(resolve => setTimeout(resolve, 5));
+    assert.equal(pool.status().active, 1);
+    if (mutation === 'inactive') await f.DB.prepare('UPDATE users SET active=0 WHERE id=?').bind(f.identity.id).run();
+    else { const current = await f.repo.model(id); await f.request(`/api/models/${id}/publication`, 'PATCH', { revision: current.revision, published: false }); }
+    const [run] = await executing;
+    assert.equal(run.status, 'failed'); assert.equal(run.execution.state, 'cancelled');
+    assert.equal(run.execution.delivery, 'not_attempted'); assert.ok(run.result);
+    assert.equal(calls.filter(call => call.endpoint === 'write').length, 0);
+    const saved = await f.DB.prepare('SELECT run_json FROM model_runs WHERE model_id=?').bind(id).first();
+    assert.equal(JSON.parse(saved.run_json).status, 'failed');
   });
 });
 

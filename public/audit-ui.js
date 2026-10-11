@@ -1,8 +1,9 @@
 import { auditQuery } from './workspace-api.js';
+import { createQuantityFormatter } from './quantity-format.js';
 export { auditQuery } from './workspace-api.js';
 
 const escape = value => String(value ?? '').replace(/[&<>"']/g, character => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[character]));
-const number = value => Number.isFinite(value) ? new Intl.NumberFormat(undefined, { maximumFractionDigits: 5, ...(Math.abs(value) >= 1e9 || value !== 0 && Math.abs(value) < .00001 ? { notation: 'scientific' } : {}) }).format(value) : '—';
+const number = createQuantityFormatter({ maximumFractionDigits: 5, scientificAbove: 1e9 });
 const categories = { measurement: 'Measurements', mapping: 'Mappings', model: 'Models', schedule: 'Schedules', connector: 'Connectors', publication: 'Publications', permission: 'Permissions', retention: 'Retention' };
 const time = value => {
   const date = new Date(value);

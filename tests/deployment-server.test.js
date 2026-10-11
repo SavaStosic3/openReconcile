@@ -78,6 +78,11 @@ test('standalone configuration requires persisted secrets and a canonical HTTPS 
   for (const SCHEDULER_ENABLED of ['true', 'false']) assert.equal((await loadConfig({ env: { APP_DATA_DIR: dataDir, SCHEDULER_ENABLED } })).scheduler.enabled, SCHEDULER_ENABLED === 'true');
   for (const SCHEDULER_POLL_SECONDS of ['0', '61', '0.5', '5.5', 'abc', '', '-1']) await assert.rejects(loadConfig({ env: { APP_DATA_DIR: dataDir, SCHEDULER_POLL_SECONDS } }), /SCHEDULER_POLL_SECONDS/);
   for (const SCHEDULER_POLL_SECONDS of ['1', '5', '60']) assert.equal((await loadConfig({ env: { APP_DATA_DIR: dataDir, SCHEDULER_POLL_SECONDS } })).scheduler.pollSeconds, Number(SCHEDULER_POLL_SECONDS));
+  assert.deepEqual(config.calculation, { workers: 1, maxQueue: 8, timeoutMs: 120000, queueTimeoutMs: 30000 });
+  for (const [name, maximum, property, scale] of [['CALCULATION_WORKERS', 4, 'workers', 1], ['CALCULATION_QUEUE_LIMIT', 32, 'maxQueue', 1], ['CALCULATION_TIMEOUT_SECONDS', 300, 'timeoutMs', 1000], ['CALCULATION_QUEUE_TIMEOUT_SECONDS', 300, 'queueTimeoutMs', 1000]]) {
+    for (const value of ['0', '-1', '', '1.5', 'abc', String(maximum + 1)]) await assert.rejects(loadConfig({ env: { APP_DATA_DIR: dataDir, [name]: value } }), new RegExp(name));
+    assert.equal((await loadConfig({ env: { APP_DATA_DIR: dataDir, [name]: String(maximum) } })).calculation[property], maximum * scale);
+  }
 });
 
 test('real HTTP login, publication, both analytic showcases, and persisted sessions work after a server restart', async t => {
@@ -117,6 +122,52 @@ test('real HTTP login, publication, both analytic showcases, and persisted sessi
   const logout = await f.request('/api/auth/logout', { method: 'POST', body: {}, cookie });
   assert.equal(logout.status, 200);
   assert.equal((await f.request('/api/workspace', { cookie })).status, 401);
+});
+
+test('HTTP health and workspace requests remain responsive during isolated CPU work', async t => {
+  const f = await fixture(t, 'http://localhost:8080', {
+    scheduler: { enabled: false, pollSeconds: 5 },
+    calculation: { workerURL: new URL('./helpers/calculation-worker-fixture.mjs', import.meta.url) },
+  });
+  const { cookie } = await f.login();
+  const model = { ...showcaseModel(), name: 'Worker delay fixture' };
+  const created = await f.request('/api/models', { method: 'POST', body: { model }, cookie });
+  assert.equal(created.status, 201);
+  const pending = f.request(`/api/models/${created.data.entry.id}/runs`, { method: 'POST', body: { trigger: 'manual', target: 'draft' }, cookie });
+  const deadline = Date.now() + 3000;
+  while (!f.running.calculations.status().active && Date.now() < deadline) await new Promise(resolve => setTimeout(resolve, 5));
+  assert.equal(f.running.calculations.status().active, 1);
+  const [health, workspace] = await Promise.all([f.request('/healthz'), f.request('/api/workspace', { cookie })]);
+  assert.equal(health.status, 200); assert.equal(workspace.status, 200);
+  assert.equal(f.running.calculations.status().active, 1, 'other requests must finish before the CPU calculation');
+  const executed = await pending;
+  assert.equal(executed.status, 200); closeTo(executed.data.run.result.objective, 0.4);
+  assert.equal(executed.data.run.execution.delivery, 'not_attempted');
+});
+
+test('server shutdown cancels calculation and saves its failed run before closing SQLite', async t => {
+  const f = await fixture(t, 'http://localhost:8080', {
+    scheduler: { enabled: false, pollSeconds: 5 },
+    calculation: { workerURL: new URL('./helpers/calculation-worker-fixture.mjs', import.meta.url) },
+  });
+  const { cookie } = await f.login();
+  const created = await f.request('/api/models', { method: 'POST', body: { model: { ...showcaseModel(), name: 'Worker delay fixture' } }, cookie });
+  assert.equal(created.status, 201); const id = created.data.entry.id;
+  const pending = f.request(`/api/models/${id}/runs`, { method: 'POST', body: { trigger: 'manual', target: 'draft' }, cookie });
+  const deadline = Date.now() + 3000;
+  while (!f.running.calculations.status().active && Date.now() < deadline) await new Promise(resolve => setTimeout(resolve, 5));
+  assert.equal(f.running.calculations.status().active, 1);
+  await f.running.close();
+  const response = await pending;
+  assert.equal(response.status, 200); assert.equal(response.data.run.status, 'failed');
+  assert.match(response.data.run.error, /Calculation cancelled: the server is shutting down/);
+  const DB = openDatabase({ dataDir: f.config.dataDir });
+  try {
+    const row = await DB.prepare('SELECT run_json FROM model_runs WHERE model_id=?').bind(id).first();
+    const run = JSON.parse(row.run_json);
+    assert.equal(run.status, 'failed'); assert.equal(run.result, null);
+    assert.equal(run.execution.delivery, 'not_attempted'); assert.equal(run.execution.state, 'finished');
+  } finally { DB.close(); }
 });
 
 test('a restarted standalone server runs an overdue publication while every user is logged out', async t => {

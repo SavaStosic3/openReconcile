@@ -3,11 +3,12 @@ import { validatePiSource } from './pi-sources.js';
 import { validateInputQuality } from './input-quality.js';
 import { createPeriodSelector, qualityAuditHtml } from './reporting-ui.js';
 import { createPiConnectionSettings } from './pi-configuration-ui.js';
+import { formatQuantity } from './quantity-format.js';
 
 const $ = selector => document.querySelector(selector);
 const esc = value => String(value ?? '').replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
 const dialectName = value => ({ sqlserver: 'SQL Server', postgres: 'PostgreSQL', mysql: 'MySQL' }[value] || value);
-const number = value => Number.isFinite(value) ? new Intl.NumberFormat(undefined, { maximumFractionDigits: 3 }).format(value) : '—';
+const number = formatQuantity;
 const connectorName = type => type === 'pi' ? 'PI Web API' : 'SQL';
 
 export function createSqlConnectors({ backend, beforeOpen, onBack, onMapping, onManagement, onChange, onToast, periodSelectorFactory = createPeriodSelector }) {

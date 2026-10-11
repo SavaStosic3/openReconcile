@@ -227,6 +227,18 @@ test('editable editor still supports addition, deletion, keyboard edits, and con
   assert.equal(state.changes, 4);
 });
 
+test('editing and published diagram overlays retain small positive masses', t => {
+  const f = setup(t, true);
+  const result = { status: 'ok', streams: f.model.streams.map(stream => ({ id: stream.id, value: 0.0004, status: 'reconciled' })) };
+  f.editor.setResults(result);
+  assert.ok(f.svg.querySelectorAll('[font-size]').some(item => item.textContent === '4.000e-4 kg'));
+  f.editor.setPresentation('published');
+  const texts = f.svg.querySelectorAll('[font-size]');
+  assert.ok(texts.some(item => item.textContent === '4.000e-4 kg'));
+  assert.ok(texts.some(item => item.textContent === 'Inflow 4.000e-4'));
+  assert.match(f.node('feed').getAttribute('aria-label'), /inflow: 4\.000e-4 kg/);
+});
+
 function equipmentModel() {
   const model = exampleModel();
   model.nodes = [

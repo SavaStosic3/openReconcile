@@ -47,6 +47,16 @@ export async function loadConfig({ env = process.env } = {}) {
   if (!['true', 'false'].includes(schedulerEnabled)) throw new Error('SCHEDULER_ENABLED must be true or false.');
   const schedulerPollSeconds = env.SCHEDULER_POLL_SECONDS ?? '5';
   if (!/^[1-9]\d?$/.test(schedulerPollSeconds) || Number(schedulerPollSeconds) > 60) throw new Error('SCHEDULER_POLL_SECONDS must be an integer from 1 to 60.');
+  const bounded = (name, fallback, maximum) => {
+    const value = env[name] ?? String(fallback);
+    if (!/^[1-9]\d*$/.test(value) || !Number.isSafeInteger(Number(value)) || Number(value) > maximum) throw new Error(`${name} must be an integer from 1 to ${maximum}.`);
+    return Number(value);
+  };
+  const calculation = {
+    workers: bounded('CALCULATION_WORKERS', 1, 4), maxQueue: bounded('CALCULATION_QUEUE_LIMIT', 8, 32),
+    timeoutMs: bounded('CALCULATION_TIMEOUT_SECONDS', 120, 300) * 1000,
+    queueTimeoutMs: bounded('CALCULATION_QUEUE_TIMEOUT_SECONDS', 30, 300) * 1000,
+  };
   const dataDir = resolve(env.APP_DATA_DIR || resolve(ROOT, 'data'));
   const secrets = await loadServerSecrets({ dataDir });
   const backendEnv = {
@@ -68,6 +78,6 @@ export async function loadConfig({ env = process.env } = {}) {
   return {
     host, port: Number(portText), publicOrigin, dataDir,
     publicDir: resolve(ROOT, 'public'), migrationsDir: resolve(ROOT, 'drizzle'), backendEnv,
-    scheduler: { enabled: schedulerEnabled === 'true', pollSeconds: Number(schedulerPollSeconds) },
+    scheduler: { enabled: schedulerEnabled === 'true', pollSeconds: Number(schedulerPollSeconds) }, calculation,
   };
 }

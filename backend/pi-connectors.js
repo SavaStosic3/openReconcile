@@ -274,9 +274,9 @@ function outputBindings(profile, run, window) {
     const factor = ({ kg: 1, t: 0.001, g: 1000, 'kg/h': 1 / durationHours, 't/h': 0.001 / durationHours })[binding.unit];
     const value = row.value_kg * factor;
     if (!finite(value)) throw new ApiError(422, 'A PI output result cannot be represented in the configured unit.');
-    return { binding, sourceName: binding.sourceName, metric: binding.metric, unit: binding.unit, value, timestamp: binding.metric === 'opening_inventory' ? window.start : window.end, confirmed: false };
+    return { binding, sourceName: binding.sourceName, metric: binding.metric, unit: binding.unit, value, timestamp: binding.metric === 'opening_inventory' ? window.start : window.end, good: true, questionable: batch.quality.verdict === 'questionable', confirmed: false };
   });
-  return { events, skipped: batch.skipped + batch.rows.length - selected.length };
+  return { events, skipped: batch.skipped + batch.rows.length - selected.length, quality: batch.quality };
 }
 
 export function piAdapters(env) {
@@ -298,17 +298,17 @@ export function piAdapters(env) {
       const profile = connection(env, source);
       windowBounds(context.window);
       context.recordOutputAudit({ source, window: { ...context.window }, written: 0, skipped: 0, events: [] });
-      const { events, skipped } = outputBindings(profile, run, context.window);
+      const { events, skipped, quality } = outputBindings(profile, run, context.window);
       // Validate every intended target/result before the first external write.
       const points = await resolveOutputTargets(env, profile, events.map(event => event.binding));
       for (let index = 0; index < events.length; index++) events[index].point = points[index];
       let written = 0;
-      const audit = () => context.recordOutputAudit({ source, window: { ...context.window }, written, skipped, events: events.map(({ binding, point, ...event }) => event) });
+      const audit = () => context.recordOutputAudit({ source, window: { ...context.window }, written, skipped, quality, events: events.map(({ binding, point, ...event }) => event) });
       audit();
       for (const event of events) {
         await env.PI_CONFIGURATION_CHECK?.(source);
         await context.authorizeOutput();
-        await requestPi(env, profile, `streams/${event.point.webId}/value`, { updateOption: 'Replace', bufferOption: 'DoNotBuffer' }, { Timestamp: event.timestamp, Value: event.value, Good: true, Questionable: false });
+        await requestPi(env, profile, `streams/${event.point.webId}/value`, { updateOption: 'Replace', bufferOption: 'DoNotBuffer' }, { Timestamp: event.timestamp, Value: event.value, Good: event.good, Questionable: event.questionable });
         event.confirmed = true; written++; audit();
       }
     } },

@@ -4,6 +4,18 @@ Use this checklist for each release. Check an item only when its evidence is rec
 
 Record: GitHub commit, Sites source commit, artifact/version ID, deployment URL, check date, and outstanding issues. Keep secrets and plant data out of release notes.
 
+## Calculation and export correctness
+
+- [ ] Verify both analytical reference models produce identical numeric results in the standalone calculation worker. Check an intended large model under the configured worker memory and execution limits while health/workspace requests and lease heartbeats remain responsive.
+- [ ] Exercise thread/queue bounds, execution and queue deadlines, cancellation, worker failure, and server shutdown. Failed calculations must save a terminal run and make no output attempt. Revoking permissions or changing publication during calculation must fence delivery.
+- [ ] Verify exact large integer and decimal SQL totalizers, clipped start boundaries, duplicates, reset/rollover paths, and unsupported precision errors. Re-read intended database column types; source precision already lost at storage is unrecoverable.
+- [ ] Export clean, warning, and underdetermined observable results. PI must retain the questionable flag; SQL must retain `_questionable` statuses; CSV and run audits must retain verdicts/warnings. Upgrade the gateway and existing SQL status constraints before warning export. Invalid/failed and unobservable results must not be exported.
+- [ ] Check model node/stream ID boundaries on import, save, and connector export: 128 accepted, 129/empty/control/malformed IDs rejected early with actionable errors.
+- [ ] Check small positive and negative quantities in measurements, both diagrams, storage accumulation, results, connector previews, and CSV. Nonzero display values must not appear as zero; exported numbers must stay unrounded.
+- [ ] Confirm application/gateway metadata, install instructions, `.nvmrc`, container images, and verification use Node.js 24.13 or later.
+
+Local verification on 2026-10-11: the maximum-size balanced fixture (200 nodes, 500 streams, 896 variables) completed in an isolated worker under the 256 MB old-generation heap limit in approximately 21 seconds. Every stream and opening/closing inventory matched the known consistent readings within tolerance; unit residuals were below `1e-8 kg`. Main-thread timers continued during computation. Real loopback HTTP checks passed for responsiveness during CPU work, publication/account changes fencing output, and cancellation with persisted failure before SQLite shutdown. Connector checks use controlled fixtures; actual plant SQL/PI connections and destination collation/constraint migrations still require installation acceptance testing.
+
 ## Code and deployment
 
 - [ ] Run `npm test`, `npm run typecheck`, and `npm run build` on the final source; record results and any limitations.

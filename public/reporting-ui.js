@@ -1,7 +1,8 @@
 import { defaultReportingSettings, validateReportingSettings, resolveReportingPeriod, recentReportingPeriods, formatReportingPeriod } from './reporting-periods.js';
+import { createQuantityFormatter } from './quantity-format.js';
 
 const esc = value => String(value ?? '').replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
-const number = value => Number.isFinite(value) ? new Intl.NumberFormat(undefined, { maximumFractionDigits: 2 }).format(value) : '—';
+const number = createQuantityFormatter({ maximumFractionDigits: 2 });
 const kinds = { hour: 'Hour', day: 'Day', shift: 'Shift', batch: 'Batch' };
 const utcInput = value => new Date(value).toISOString().slice(0, 16);
 

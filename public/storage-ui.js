@@ -1,9 +1,10 @@
 import { defaultInventory, inventoryToMass, isStorageNode, validateInventory } from './inventory.js';
+import { createQuantityFormatter } from './quantity-format.js';
 
 export const INVENTORY_UNITS = { mass: ['kg', 't'], volume: ['m³', 'L'], level: ['m', 'cm', 'mm'] };
 export const INVENTORY_LABELS = { mass: 'Mass inventory', volume: 'Volume inventory', level: 'Level inventory' };
 const esc = value => String(value ?? '').replace(/[&<>"']/g, character => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[character]));
-const format = value => !Number.isFinite(value) ? '—' : value !== 0 && Math.abs(value) < 0.001 ? value.toExponential(3) : new Intl.NumberFormat('en', { maximumFractionDigits: 3 }).format(value);
+const format = createQuantityFormatter({ locale: 'en' });
 const number = field => field.value === '' ? '' : Number(field.value);
 
 export function parseCalibrationPoints(text) {

@@ -75,11 +75,12 @@ function sourceHandler(source, adapters, direction) {
 export async function executeModelRun(catalog, modelId, {
   trigger = 'manual', id = crypto.randomUUID(), now = Date.now,
   inputAdapters = {}, outputAdapters = {}, target, publishedVersion = null,
-  beforeOutput = async () => {}, period = null
+  beforeOutput = async () => {}, period = null, calculate = reconcile
 } = {}) {
   if (!['manual', 'scheduled'].includes(trigger)) throw new Error('A run trigger must be manual or scheduled.');
   if (typeof id !== 'string' || !/^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$/.test(id) || ['constructor', 'prototype', '__proto__'].includes(id)) throw new Error('Choose a safe run ID of at most 128 characters.');
   if (typeof now !== 'function') throw new Error('The execution clock must be a function.');
+  if (typeof calculate !== 'function') throw new Error('The calculation handler must be a function.');
 
   const snapshot = clone(catalog);
   const entry = getModelEntry(snapshot, modelId);
@@ -126,7 +127,7 @@ export async function executeModelRun(catalog, modelId, {
         throw new Error(`${getMeterName(stream)}: ${reading?.error ?? 'The virtual meter could not be calculated.'}`);
       }
     }
-    run.result = reconcile(clone(run.modelSnapshot));
+    run.result = await calculate(clone(run.modelSnapshot));
     const qualityWarnings = [...new Set((connectorInputAudit(run)?.readings ?? []).flatMap(reading => (reading.quality?.warnings ?? []).map(warning => `${reading.sourceName}: ${warning}`)))];
     if (qualityWarnings.length && usableStatuses.has(run.result.status)) {
       run.result.warnings.push(...qualityWarnings);

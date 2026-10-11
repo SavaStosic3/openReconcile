@@ -20,11 +20,13 @@ import { INVENTORY_UNITS, fillInventoryForm, inventoryFromForm, inventoryMassHtm
 import { storageShowcaseModel, resetStorageShowcaseReadings } from './storage-showcase-model.js';
 import { createModelGallery } from './model-gallery.js';
 import { createModelActions } from './model-actions.js';
+import { createQuantityFormatter } from './quantity-format.js';
+import { resultsCsv } from './results-export.js';
 
 const $ = (s, root = document) => root.querySelector(s);
 const $$ = (s, root = document) => [...root.querySelectorAll(s)];
 const esc = value => String(value ?? '').replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
-const fmt = n => n === null || n === undefined || !Number.isFinite(n) ? '—' : new Intl.NumberFormat('en', { maximumFractionDigits: 3 }).format(Math.abs(n) < 1e-8 ? 0 : n);
+const fmt = createQuantityFormatter({ locale: 'en' });
 const clone = v => structuredClone(v);
 const isBoundary = kind => kind === 'inlet' || kind === 'outlet';
 function buildPalette() {
@@ -781,6 +783,13 @@ function renderResults() {
     const audit = document.createElement('div'); audit.className = 'sql-run-audit' + (activeRun.error ? ' is-error' : '');
     const input = connectorInputAudit(activeRun), output = connectorOutputAudit(activeRun);
     audit.innerHTML = `<strong>Run data and delivery</strong>${activeRun.reportingPeriod ? `<p>${esc(activeRun.reportingPeriod.label)} · ${fmt(activeRun.reportingPeriod.periodHours)} elapsed ${activeRun.reportingPeriod.periodHours === 1 ? 'hour' : 'hours'} · ${esc(activeRun.reportingPeriod.start)} → ${esc(activeRun.reportingPeriod.end)} (UTC).</p><p>Run ${esc(activeRun.id)}${activeRun.rerunOf ? ` · rerun of ${esc(activeRun.rerunOf)}` : ''} · ${esc(activeRun.trigger === 'scheduled' ? 'Scheduled' : 'Manual')} · model ${esc(activeRun.target === 'published' ? `published v${activeRun.publishedVersion}` : 'draft')}.</p>` : ''}${activeRun.error ? `<p>${esc(activeRun.error)}</p>` : ''}${input ? `<p>${input.source.type === 'pi' ? 'PI' : 'SQL'} input: ${esc(input.source.name)} · ${input.readings.length} physical readings · ${esc(input.window.start)} to ${esc(input.window.end)} (UTC). Saved model readings are unchanged.</p>${qualityAuditHtml(input.readings)}` : ''}${output ? `<p>${output.source.type === 'pi' ? 'PI' : 'SQL'} output: ${esc(output.source.name)} · ${output.written} ${output.source.type === 'pi' ? 'events' : 'rows'} acknowledged${output.skipped ? ` · ${output.skipped} ${output.source.type === 'pi' ? 'other results not selected for PI delivery' : 'unresolved mapped items omitted'}` : ''}.</p>` : ''}`;
+    if (output?.quality) {
+      const notice = document.createElement('p');
+      notice.textContent = output.quality.verdict === 'questionable'
+        ? 'Output result quality: Questionable. Review reconciliation and source-data warnings before consuming these values.'
+        : 'Output result quality: Good. No reconciliation or source-data warnings were reported.';
+      audit.append(notice);
+    }
     $('#view-results .view-header')?.after(audit);
   }
   if ($('#results-flowsheet')) $('#results-flowsheet').onclick = () => { switchTab('model'); editor.fit(); };
@@ -799,12 +808,7 @@ $('#auth-export-draft').onclick = () => {
 $('#import-button').onclick = () => $('#import-file').click();
 $('#import-file').onchange = async event => { const file = event.target.files[0]; event.target.value = ''; if (!file) return; try { if (file.size > 2e6) throw new Error('Choose a model file smaller than 2 MB.'); const loaded = validateEditableModel(JSON.parse(await file.text())); askReplace('Import this plant model?', () => { replaceModel(loaded); toast('Model imported.'); }); } catch (error) { toast(`Import failed: ${error.message}`); } };
 function exportResults() {
-  const cell = value => { let text = String(value ?? ''); if (typeof value === 'string' && /^[=+\-@\t\r]/.test(text)) text = `'${text}`; return `"${text.replace(/"/g, '""')}"`; };
-  const rows = [['Item', 'Item type', 'Quantity', 'Material', 'Input kg', 'Reconciled kg', 'Adjustment kg', 'Standard uncertainty kg', 'Status', 'Period start UTC', 'Period end UTC', 'Period type', 'Model time zone', 'Run ID', 'Rerun of']];
-  const add = (name, type, quantity, material, value) => rows.push([name, type, quantity, material, value.raw, value.value, value.correction, value.uncertainty, value.status, activeRun?.reportingPeriod?.start, activeRun?.reportingPeriod?.end, activeRun?.reportingPeriod?.kind, activeRun?.reportingPeriod?.timeZone, activeRun?.id, activeRun?.rerunOf]);
-  for (const value of results.streams) { const stream = model.streams.find(item => item.id === value.id); add(stream?.name, 'stream', 'transferred_mass', stream?.material, value); }
-  for (const inventory of results.inventories || []) for (const endpoint of ['opening', 'closing', 'accumulation']) add(inventory.name, 'inventory', endpoint, '', inventory[endpoint] || {});
-  download(`${safeFilename()}-results.csv`, rows.map(row => row.map(cell).join(',')).join('\r\n'), 'text/csv;charset=utf-8');
+  download(`${safeFilename()}-results.csv`, resultsCsv(model, results, activeRun), 'text/csv;charset=utf-8');
 }
 activateManagedModel(management.current(), { view: viewMode });
 if (['published-models', 'editing-models'].includes(initialPage.searchParams.get('view')) || (!initialPage.searchParams.has('view') && !initialPage.searchParams.has('model'))) {

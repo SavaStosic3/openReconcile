@@ -1,6 +1,11 @@
 import { aggregateQualityReadings, InputQualityError, validateInputQuality } from '../../../public/input-quality.js';
+import { SQL_EXPORT_STATUSES } from '../../../public/export-quality.js';
+import { validatePortableId } from '../../../public/identifiers.js';
 
 export const MAX_ROWS = 10_000;
+// A nonnumeric result from the SQL projection makes unsupported counter types
+// explicit, instead of treating approximate floating-point text as exact data.
+export const UNSUPPORTED_COUNTER_PRECISION_MARKER = '__openReconcileUnsupportedCounterPrecision__';
 // 500 streams and five exported totals/inventory values for each of 200 units.
 export const MAX_WRITE_ROWS = 1500;
 export const OUTPUT_COLUMNS = Object.freeze([
@@ -75,6 +80,16 @@ export function readQuery(connection, input) {
   const top = dialect === 'sqlserver' ? `TOP (${MAX_ROWS + 1}) ` : '';
   const limit = dialect === 'sqlserver' ? '' : ` LIMIT ${MAX_ROWS + 1}`;
   const qualitySelection = input.quality?.qualityColumn ? `, ${q(input.quality.qualityColumn)} AS ${q('quality_value')}` : '';
+  // DECIMAL/BIGINT must reach counter arithmetic before any driver's Number
+  // coercion. MySQL returns exact decimals/BIGINT strings and native floats;
+  // PostgreSQL/SQL Server reject approximate counter types instead of mistaking
+  // their round-trip FLOAT text for exact decimal values. Use a DECIMAL view
+  // when a source needs a deliberately defined decimal counter precision.
+  const counterColumn = q(input.valueColumn);
+  const valueSelection = input.aggregation !== 'totalizerDelta' ? counterColumn
+    : dialect === 'postgres' ? `CASE WHEN pg_typeof(${counterColumn})::text IN ('bigint', 'integer', 'smallint', 'numeric', 'text', 'character varying', 'character') THEN CAST(${counterColumn} AS TEXT) ELSE '${UNSUPPORTED_COUNTER_PRECISION_MARKER}' END`
+    : dialect === 'mysql' ? counterColumn
+    : `CASE WHEN SQL_VARIANT_PROPERTY(${counterColumn}, 'BaseType') IN ('money', 'smallmoney') THEN CONVERT(varchar(max), ${counterColumn}, 2) WHEN SQL_VARIANT_PROPERTY(${counterColumn}, 'BaseType') IN ('bit', 'bigint', 'int', 'smallint', 'tinyint', 'decimal', 'numeric', 'char', 'varchar', 'nchar', 'nvarchar') THEN CONVERT(varchar(max), ${counterColumn}, 0) ELSE '${UNSUPPORTED_COUNTER_PRECISION_MARKER}' END`;
   if (input.aggregation === 'inventoryBoundary') {
     return {
       sql: `SELECT ${top}${q(input.tagColumn)} AS ${q('source_name')}, ${q(input.valueColumn)} AS ${q('value')}, ${q(input.timestampColumn)} AS ${q('timestamp')}${qualitySelection} FROM ${quoteIdentifier(input.table, dialect, true)} WHERE ${q(input.tagColumn)} IN (${input.tags.map((_, i) => placeholder(i)).join(', ')}) AND ${q(input.timestampColumn)} = ${placeholder(input.tags.length)} ORDER BY ${q(input.timestampColumn)} DESC${limit}`,
@@ -93,7 +108,7 @@ export function readQuery(connection, input) {
     const windowStart = bound(new Date(input.start));
     const names = ['source_name', 'value', 'timestamp', ...(qualitySelection ? ['quality_value'] : [])].map(q).join(', ');
     return {
-      sql: `WITH source_rows AS (SELECT ${q(input.tagColumn)} AS ${q('source_name')}, ${q(input.valueColumn)} AS ${q('value')}, ${q(input.timestampColumn)} AS ${q('timestamp')}${qualitySelection} FROM ${quoteIdentifier(input.table, dialect, true)} WHERE ${q(input.tagColumn)} IN (${tagParameters}) AND ${q(input.timestampColumn)} >= ${lower} AND ${q(input.timestampColumn)} <= ${end}), seed_times AS (SELECT ${q('source_name')}, MAX(${q('timestamp')}) AS ${q('seed_timestamp')} FROM source_rows WHERE ${q('timestamp')} < ${seedStart} GROUP BY ${q('source_name')}) SELECT ${top}${names} FROM source_rows WHERE ${q('timestamp')} >= ${windowStart} OR EXISTS (SELECT 1 FROM seed_times WHERE seed_times.${q('source_name')} = source_rows.${q('source_name')} AND seed_times.${q('seed_timestamp')} = source_rows.${q('timestamp')}) ORDER BY ${q('timestamp')} DESC${limit}`,
+      sql: `WITH source_rows AS (SELECT ${q(input.tagColumn)} AS ${q('source_name')}, ${valueSelection} AS ${q('value')}, ${q(input.timestampColumn)} AS ${q('timestamp')}${qualitySelection} FROM ${quoteIdentifier(input.table, dialect, true)} WHERE ${q(input.tagColumn)} IN (${tagParameters}) AND ${q(input.timestampColumn)} >= ${lower} AND ${q(input.timestampColumn)} <= ${end}), seed_times AS (SELECT ${q('source_name')}, MAX(${q('timestamp')}) AS ${q('seed_timestamp')} FROM source_rows WHERE ${q('timestamp')} < ${seedStart} GROUP BY ${q('source_name')}) SELECT ${top}${names} FROM source_rows WHERE ${q('timestamp')} >= ${windowStart} OR EXISTS (SELECT 1 FROM seed_times WHERE seed_times.${q('source_name')} = source_rows.${q('source_name')} AND seed_times.${q('seed_timestamp')} = source_rows.${q('timestamp')}) ORDER BY ${q('timestamp')} DESC${limit}`,
       params: boundaryParams,
     };
   }
@@ -151,6 +166,7 @@ export function aggregateReadings(rawRows, input) {
   if (input.quality || ['timeWeightedAverage', 'totalizerDelta'].includes(input.aggregation)) {
     for (const row of rawRows) {
       if (typeof row.source_name !== 'string' || !grouped.has(row.source_name)) throw new GatewayError('INVALID_SOURCE_DATA', 'The source returned an unexpected tag.', 422);
+      if (input.aggregation === 'totalizerDelta' && row.value === UNSUPPORTED_COUNTER_PRECISION_MARKER) throw new GatewayError('UNSUPPORTED_COUNTER_PRECISION', `${row.source_name}: this counter column type does not provide supported exact precision. Use an exact DECIMAL/BIGINT or supported numeric-text source counter.`, 422);
       let timestamp = row.timestamp;
       if (timestamp instanceof Date) {
         if (!Number.isFinite(timestamp.getTime())) throw new GatewayError('INVALID_SOURCE_DATA', 'The source returned an invalid timestamp.', 422);
@@ -201,7 +217,9 @@ export function validateWrite(body, connection) {
   const rows = body.rows.map(row => {
     if (!row || typeof row !== 'object' || Array.isArray(row)) fail('A result row must be an object.');
     const result = {};
-    for (const key of ['run_id', 'model_id', 'item_id']) result[key] = stringField(row[key], key, 128);
+    for (const key of ['run_id', 'model_id', 'item_id']) {
+      try { result[key] = validatePortableId(row[key], key); } catch (error) { fail(error.message); }
+    }
     result.model_name = stringField(row.model_name, 'model_name');
     result.source_name = stringField(row.source_name, 'source_name');
     if (!['stream', 'unit'].includes(row.item_type)) fail('item_type must be stream or unit.');
@@ -216,7 +234,7 @@ export function validateWrite(body, connection) {
     result.raw_kg = numberField(row.raw_kg, 'raw_kg', true, signed);
     result.correction_kg = numberField(row.correction_kg, 'correction_kg', true, true);
     result.uncertainty_kg = numberField(row.uncertainty_kg, 'uncertainty_kg', true);
-    if (!(row.item_type === 'stream' ? ['measured', 'estimated'] : ['reconciled']).includes(row.status)) fail('Only observable reconciled results can be exported.');
+    if (!SQL_EXPORT_STATUSES[row.item_type].includes(row.status)) fail('Only observable reconciled results with a supported quality verdict can be exported.');
     result.status = row.status;
     for (const key of ['batch_start', 'batch_end', 'finished_at']) result[key] = dateField(row[key], key);
     if (result.batch_start >= result.batch_end) fail('The result batch window must be nonempty.');
@@ -226,6 +244,7 @@ export function validateWrite(body, connection) {
     return result;
   });
   if (new Set(rows.map(row => JSON.stringify([row.run_id, row.model_id, row.model_name, row.published_version, row.batch_start, row.batch_end, row.finished_at]))).size !== 1) fail('Export one consistent model run per request.');
+  if (new Set(rows.map(row => row.status.endsWith('_questionable'))).size !== 1) fail('Export one consistent quality verdict per model run.');
   return rows;
 }
 export function insertQuery(connection, table, row) {
