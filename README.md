@@ -130,6 +130,8 @@ The reference models and automated checks provide reproducible verification. Val
 
 ## Development and contributing
 
+Report bugs, calculation issues, and feature requests through [GitHub Issues](https://github.com/SavaStosic3/openReconcile/issues/new/choose). To contribute code or documentation, fork the repository, create a branch, and open a pull request to `main`. **@SavaStosic3 reviews contributions and controls merges.** Read [CONTRIBUTING.md](CONTRIBUTING.md) for the workflow and [repository management](docs/repository-management.md) for maintainer controls.
+
 Changes should include a clear reproduction or expected behavior and appropriate verification, especially for conservation, uncertainty, observability, and reporting-period behavior. Requires **Node.js 24.13 or later** for the application, SQL gateway, and full test suite, which also exercises the standalone SQLite runtime. See the [development guide](docs/development.md) for the local environment.
 
 ```sh

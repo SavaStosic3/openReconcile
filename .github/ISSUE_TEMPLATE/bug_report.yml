@@ -1,0 +1,53 @@
+name: Bug report
+description: Report a reproducible application, installation, or connector problem.
+title: "[Bug]: "
+labels: [bug]
+body:
+  - type: markdown
+    attributes:
+      value: Use the calculation form for incorrect balance results. Use synthetic or sanitized data; do not post credentials, plant-confidential data, or unredacted logs.
+  - type: input
+    id: version
+    attributes:
+      label: Version or Git commit
+      placeholder: Git commit SHA or release tag
+    validations:
+      required: true
+  - type: dropdown
+    id: installation
+    attributes:
+      label: Installation
+      options:
+        - Docker / internal server
+        - Standalone Node server
+        - Local development
+        - Hosted testing site
+    validations:
+      required: true
+  - type: input
+    id: environment
+    attributes:
+      label: Environment
+      description: OS, browser/version, Node/Docker version, and connector/database type where relevant.
+    validations:
+      required: true
+  - type: textarea
+    id: steps
+    attributes:
+      label: Steps to reproduce
+      description: Include the smallest synthetic model or configuration needed, with secrets removed.
+    validations:
+      required: true
+  - type: textarea
+    id: expected
+    attributes:
+      label: Expected behavior
+    validations:
+      required: true
+  - type: textarea
+    id: actual
+    attributes:
+      label: Actual behavior
+      description: Include sanitized error text, logs, or screenshots if useful.
+    validations:
+      required: true

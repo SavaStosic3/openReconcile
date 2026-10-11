@@ -1,0 +1,8 @@
+blank_issues_enabled: false
+contact_links:
+  - name: Installation and usage guide
+    url: https://github.com/SavaStosic3/openReconcile/blob/main/docs/user-guide.md
+    about: Read the user guide and README before reporting a problem.
+  - name: Report a security vulnerability privately
+    url: https://github.com/SavaStosic3/openReconcile/security/advisories/new
+    about: Do not disclose vulnerabilities or credentials in a public issue.

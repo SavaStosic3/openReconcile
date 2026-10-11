@@ -1,0 +1,27 @@
+name: Feature request
+description: Propose a capability or improvement for industrial mass reconciliation.
+title: "[Feature]: "
+labels: [enhancement]
+body:
+  - type: markdown
+    attributes:
+      value: Check existing issues and ROADMAP.md first. Describe the problem and intended workflow using nonconfidential examples.
+  - type: textarea
+    id: problem
+    attributes:
+      label: Problem or use case
+      description: Who needs this, and what are they trying to accomplish?
+    validations:
+      required: true
+  - type: textarea
+    id: proposal
+    attributes:
+      label: Proposed behavior
+      description: Describe a concrete example and how success could be checked.
+    validations:
+      required: true
+  - type: textarea
+    id: alternatives
+    attributes:
+      label: Alternatives and relevant constraints
+      description: Include current workarounds, deployment needs, or mathematical assumptions.

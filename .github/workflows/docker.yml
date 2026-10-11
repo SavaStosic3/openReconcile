@@ -3,50 +3,13 @@ name: Internal server container
 on:
   push:
     branches: [main]
-    paths:
-      - 'Dockerfile'
-      - '.dockerignore'
-      - 'compose.yaml'
-      - 'deploy/**'
-      - 'backend/**'
-      - 'public/**'
-      - 'drizzle/**'
-      - 'package.json'
-      - 'scripts/docker-smoke.mjs'
-      - 'tests/standalone-scheduler.test.js'
-      - 'tests/calculation-pool.test.js'
-      - 'tests/helpers/calculation-worker-fixture.mjs'
-      - 'tests/deployment-server.test.js'
-      - 'tests/deployment-database.test.js'
-      - 'tests/pi-*.test.js'
-      - 'tests/helpers/pi-fixture.js'
-      - 'docs/self-hosting.md'
-      - 'docs/pi-web-api.md'
-      - 'README.md'
-      - '.github/workflows/docker.yml'
   pull_request:
-    paths:
-      - 'Dockerfile'
-      - '.dockerignore'
-      - 'compose.yaml'
-      - 'deploy/**'
-      - 'backend/**'
-      - 'public/**'
-      - 'drizzle/**'
-      - 'package.json'
-      - 'scripts/docker-smoke.mjs'
-      - 'tests/standalone-scheduler.test.js'
-      - 'tests/calculation-pool.test.js'
-      - 'tests/helpers/calculation-worker-fixture.mjs'
-      - 'tests/deployment-server.test.js'
-      - 'tests/deployment-database.test.js'
-      - 'tests/pi-*.test.js'
-      - 'tests/helpers/pi-fixture.js'
-      - 'docs/self-hosting.md'
-      - 'docs/pi-web-api.md'
-      - 'README.md'
-      - '.github/workflows/docker.yml'
+    branches: [main]
   workflow_dispatch:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
 
 permissions:
   contents: read
@@ -56,10 +19,10 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 15
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
           persist-credentials: false
-      - uses: actions/setup-node@v7
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7
         with:
           node-version: '24'
           package-manager-cache: false

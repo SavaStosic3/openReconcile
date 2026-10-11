@@ -1,0 +1,48 @@
+name: Calculation issue
+description: Report an incorrect reconciliation, conversion, uncertainty, or observability result.
+title: "[Calculation]: "
+labels: [bug, calculation]
+body:
+  - type: markdown
+    attributes:
+      value: Accuracy is the baseline requirement. Supply a minimal synthetic example and an independent expected result. Do not attach confidential plant data or credentials.
+  - type: input
+    id: version
+    attributes:
+      label: Version or Git commit
+    validations:
+      required: true
+  - type: textarea
+    id: model
+    attributes:
+      label: Model and measurements
+      description: Attach sanitized model JSON or describe nodes, streams, readings, units, uncertainties, virtual formulas, and tank inventories/conversions as applicable.
+    validations:
+      required: true
+  - type: textarea
+    id: period
+    attributes:
+      label: Reporting period and input data
+      description: Include start/end, time zone, elapsed hours, input source, and relevant data-quality settings.
+    validations:
+      required: true
+  - type: textarea
+    id: expected
+    attributes:
+      label: Independent expected result
+      description: Show the equations or reference calculation, expected values, and tolerances. State what remains unknown if an independent value is unavailable.
+    validations:
+      required: true
+  - type: textarea
+    id: actual
+    attributes:
+      label: Actual result
+      description: Include fitted values, warnings, uncertainties, and unit residuals where relevant.
+    validations:
+      required: true
+  - type: textarea
+    id: reproduce
+    attributes:
+      label: Steps to reproduce
+    validations:
+      required: true
